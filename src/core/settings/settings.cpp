@@ -1,0 +1,812 @@
+#include "core/settings/settings.h"
+
+#include "core/diag/guard.h"
+#include "core/game.h"
+#include "core/log.h"
+#include "core/settings/ini_text.h"
+#include "core/ui/hotkey.h"
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
+namespace core::settings {
+
+namespace {
+
+constexpr int kMaxItems = 256; // was 48: the 49th and 50th settings were left out without a word
+constexpr DWORD kMaxFileSize = 64 * 1024;
+
+struct Slot {
+    Item item;
+    char value[kValueSize];   // in effect now
+    char saved[kValueSize];   // confirmed: what the file gets (an unconfirmed re-layout value is not saved)
+    char startup[kValueSize];
+    Apply apply[4];
+    int applyCount;
+    bool notApplied; // the callback could not apply the current value: waits for a restart
+    core::diag::Feature guard; // applying this item's changes (switched off when a callback faults)
+    char guardName[80];
+    std::string label, help; // the item's label and help with the game's names filled in (GameText)
+};
+
+Slot g_items[kMaxItems];
+int g_count = 0;
+SRWLOCK g_lock = SRWLOCK_INIT; // values and the request queue
+wchar_t g_path[MAX_PATH] = L"";
+
+struct Pending {
+    int index; // -1: save only
+    char value[kValueSize];
+    bool save;
+};
+std::vector<Pending> *g_queue = nullptr;
+void (*g_wake)() = nullptr;
+char g_saveResult[160] = "";
+
+void Copy(char *out, size_t size, const char *s)
+{
+    if (size) {
+        std::snprintf(out, size, "%s", s);
+    }
+}
+
+bool Digits(const char *s, int *v)
+{
+    if (!*s) return false;
+    int n = 0;
+    for (; *s; ++s) {
+        if (*s < '0' || *s > '9' || n > 100000) return false;
+        n = n * 10 + (*s - '0');
+    }
+    *v = n;
+    return true;
+}
+
+// "WxH" with both sides in [320, 16384].
+bool ParseSize(const char *s, int *w, int *h)
+{
+    const char *x = std::strpbrk(s, "xX");
+    if (!x || x == s) return false;
+    char a[16], b[16];
+    size_t na = static_cast<size_t>(x - s), nb = std::strlen(x + 1);
+    if (na >= sizeof(a) || nb >= sizeof(b)) return false;
+    std::memcpy(a, s, na);
+    a[na] = 0;
+    std::memcpy(b, x + 1, nb + 1);
+    return Digits(a, w) && Digits(b, h) && *w >= 320 && *h >= 320 && *w <= 16384 && *h <= 16384;
+}
+
+std::string Trimmed(const char *text)
+{
+    std::string s = text;
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r')) s.pop_back();
+    size_t b = 0;
+    while (b < s.size() && (s[b] == ' ' || s[b] == '\t')) ++b;
+    return s.substr(b);
+}
+
+std::string ReadFileText(const wchar_t *path, bool *exists)
+{
+    *exists = false;
+    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                           nullptr);
+    if (f == INVALID_HANDLE_VALUE) {
+        return std::string();
+    }
+    static char buf[kMaxFileSize];
+    DWORD size = 0;
+    bool ok = ReadFile(f, buf, sizeof(buf), &size, nullptr) != 0;
+    CloseHandle(f);
+    *exists = ok;
+    return ok ? std::string(buf, size) : std::string();
+}
+
+// Writes text next to the file, flushes it and swaps it in, so an interrupted write never leaves half a file.
+bool WriteFileAtomic(const wchar_t *path, const std::string &text, DWORD *error)
+{
+    wchar_t tmp[MAX_PATH + 8];
+    std::swprintf(tmp, sizeof(tmp) / sizeof(tmp[0]), L"%ls.tmp", path);
+    HANDLE f = CreateFileW(tmp, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) {
+        *error = GetLastError();
+        return false;
+    }
+    DWORD written = 0;
+    bool ok = WriteFile(f, text.data(), static_cast<DWORD>(text.size()), &written, nullptr) &&
+              written == text.size() && FlushFileBuffers(f);
+    *error = ok ? 0 : GetLastError();
+    CloseHandle(f);
+    if (ok && !MoveFileExW(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        *error = GetLastError();
+        ok = false;
+    }
+    if (!ok) {
+        DeleteFileW(tmp);
+    }
+    return ok;
+}
+
+void Save()
+{
+    if (!g_path[0]) {
+        Copy(g_saveResult, sizeof(g_saveResult), "not saved: the settings file has no path");
+        return;
+    }
+    bool exists = false;
+    std::string text = ReadFileText(g_path, &exists);
+    // What the file says now (the user may have edited it since start-up): the last valid line of each key.
+    std::vector<IniLine> lines;
+    ReadIni(text, &lines, nullptr);
+    std::vector<IniChange> changes;
+    AcquireSRWLockShared(&g_lock);
+    for (int i = 0; i < g_count; ++i) {
+        const Slot &s = g_items[i];
+        const char *inFile = nullptr;
+        char norm[kValueSize];
+        for (const IniLine &l : lines) {
+            if (_stricmp(l.section.c_str(), s.item.section) == 0 && _stricmp(l.key.c_str(), s.item.key) == 0 &&
+                Normalize(i, l.value.c_str(), norm, sizeof(norm))) {
+                inFile = norm; // (norm is overwritten by later lines: the last valid one wins, as when loading)
+            }
+        }
+        bool same = inFile ? std::strcmp(inFile, s.saved) == 0 : std::strcmp(s.saved, s.item.defaultValue) == 0;
+        if (!same) {
+            changes.push_back(IniChange{s.item.section, s.item.key, s.saved});
+        }
+    }
+    ReleaseSRWLockShared(&g_lock);
+    if (changes.empty()) {
+        Copy(g_saveResult, sizeof(g_saveResult), "saved (the file already had these values)");
+        return;
+    }
+    std::string out = UpdateIni(text, changes);
+    DWORD error = 0;
+    if (WriteFileAtomic(g_path, out, &error)) {
+        std::snprintf(g_saveResult, sizeof(g_saveResult), "saved %d change(s) to %s",
+                      static_cast<int>(changes.size()), core_game()->ini_file_utf8);
+        for (const IniChange &c : changes) {
+            core_log("settings: saved [%s] %s = %s", c.section.c_str(), c.key.c_str(), c.value.c_str());
+        }
+    }
+    else {
+        std::snprintf(g_saveResult, sizeof(g_saveResult), "could not save %s (error %lu)",
+                      core_game()->ini_file_utf8, error);
+        core_log("settings: %s", g_saveResult);
+    }
+}
+
+} // namespace
+
+struct Retired {
+    const char *section;
+    const char *key;
+    Migrate migrate;
+};
+Retired g_retired[16];
+int g_retiredCount = 0;
+
+void Retire(const char *section, const char *key, Migrate migrate)
+{
+    if (g_retiredCount < static_cast<int>(sizeof(g_retired) / sizeof(g_retired[0]))) {
+        g_retired[g_retiredCount++] = Retired{section, key, migrate};
+    }
+}
+
+struct Renamed {
+    const char *section;
+    const char *key;
+    const char *oldValue;
+    const char *newValue;
+};
+Renamed g_renamed[16];
+int g_renamedCount = 0;
+const char *g_template = nullptr;
+
+void SetTemplate(const char *text)
+{
+    g_template = text;
+}
+
+void RenameValue(const char *section, const char *key, const char *oldValue, const char *newValue)
+{
+    if (g_renamedCount < static_cast<int>(sizeof(g_renamed) / sizeof(g_renamed[0]))) {
+        g_renamed[g_renamedCount++] = Renamed{section, key, oldValue, newValue};
+    }
+}
+
+struct Moved {
+    const char *oldSection;
+    const char *oldKey; // nullptr: the whole section (MoveSection)
+    const char *newSection;
+    const char *newKey;
+};
+Moved g_moved[16];
+int g_movedCount = 0;
+
+void MoveKey(const char *oldSection, const char *oldKey, const char *newSection, const char *newKey)
+{
+    if (g_movedCount < static_cast<int>(sizeof(g_moved) / sizeof(g_moved[0]))) {
+        g_moved[g_movedCount++] = Moved{oldSection, oldKey, newSection, newKey};
+    }
+}
+
+void MoveSection(const char *oldSection, const char *newSection)
+{
+    if (g_movedCount < static_cast<int>(sizeof(g_moved) / sizeof(g_moved[0]))) {
+        g_moved[g_movedCount++] = Moved{oldSection, nullptr, newSection, nullptr};
+    }
+}
+
+Renamed g_movedRenamed[8];
+int g_movedRenamedCount = 0;
+
+void RenameMovedValue(const char *newSection, const char *newKey, const char *oldValue, const char *newValue)
+{
+    if (g_movedRenamedCount < static_cast<int>(sizeof(g_movedRenamed) / sizeof(g_movedRenamed[0]))) {
+        g_movedRenamed[g_movedRenamedCount++] = Renamed{newSection, newKey, oldValue, newValue};
+    }
+}
+
+namespace {
+
+// Where the line [section] key moved to (MoveKey first, then MoveSection when the new section has that setting), or
+// false.
+bool MovedTo(const std::string &section, const std::string &key, const char **newSection, const char **newKey)
+{
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int k = 0; k < g_movedCount; ++k) {
+            const Moved &m = g_moved[k];
+            if ((pass == 0) != (m.oldKey != nullptr) || _stricmp(section.c_str(), m.oldSection) != 0) {
+                continue;
+            }
+            if (m.oldKey && _stricmp(key.c_str(), m.oldKey) == 0) {
+                *newSection = m.newSection;
+                *newKey = m.newKey;
+                return true;
+            }
+            if (!m.oldKey && Find(m.newSection, key.c_str()) >= 0) {
+                *newSection = m.newSection;
+                *newKey = g_items[Find(m.newSection, key.c_str())].item.key;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// value with the setting's renamed spellings applied (RenameValue).
+const char *RenamedValue(const char *section, const char *key, const char *value)
+{
+    for (int k = 0; k < g_renamedCount; ++k) {
+        const Renamed &r = g_renamed[k];
+        if (_stricmp(section, r.section) == 0 && _stricmp(key, r.key) == 0 && _stricmp(value, r.oldValue) == 0) {
+            return r.newValue;
+        }
+    }
+    return value;
+}
+
+// value as a moved line gives it: the setting's renamed spellings, then the renames only for moved lines.
+const char *MovedValue(const char *section, const char *key, const char *value)
+{
+    value = RenamedValue(section, key, value);
+    for (int k = 0; k < g_movedRenamedCount; ++k) {
+        const Renamed &r = g_movedRenamed[k];
+        if (_stricmp(section, r.section) == 0 && _stricmp(key, r.key) == 0 && _stricmp(value, r.oldValue) == 0) {
+            return r.newValue;
+        }
+    }
+    return value;
+}
+
+// A label or help text with the game's names filled in: {product} (e.g. Yongle), {ini} (e.g. emperor_engine.ini)
+// and {native} (the game's own size, e.g. 1024x768). The registrations keep plain literals with these words, so the
+// shared texts read right for every game and the text check still reads them.
+std::string GameText(const char *text)
+{
+    std::string s = text ? text : "";
+    const core_game_info *game = core_game();
+    char native[32];
+    std::snprintf(native, sizeof(native), "%dx%d", game->native_width, game->native_height);
+    const struct {
+        const char *word, *value;
+    } words[] = {{"{product}", game->product}, {"{ini}", game->ini_file_utf8}, {"{native}", native}};
+    for (const auto &w : words) {
+        for (size_t at = s.find(w.word); at != std::string::npos; at = s.find(w.word, at + std::strlen(w.value))) {
+            s.replace(at, std::strlen(w.word), w.value);
+        }
+    }
+    return s;
+}
+
+} // namespace
+
+int Register(const Item &item)
+{
+    if (g_count >= kMaxItems) {
+        core_log("settings: no room for [%s] %s (at most %d settings): it is not a setting this time", item.section,
+                 item.key, kMaxItems);
+        return -1;
+    }
+    Slot &s = g_items[g_count];
+    s.item = item;
+    s.label = GameText(item.label);
+    s.help = GameText(item.help);
+    s.item.label = item.label ? s.label.c_str() : nullptr;
+    s.item.help = item.help ? s.help.c_str() : nullptr;
+    Copy(s.value, sizeof(s.value), item.defaultValue);
+    Copy(s.saved, sizeof(s.saved), item.defaultValue);
+    Copy(s.startup, sizeof(s.startup), item.defaultValue);
+    s.applyCount = 0;
+    s.notApplied = false;
+    std::snprintf(s.guardName, sizeof(s.guardName), "applying [%s] %s (core/settings)", item.section, item.key);
+    s.guard.name = s.guardName;
+    return g_count++;
+}
+
+int Find(const char *section, const char *key)
+{
+    for (int i = 0; i < g_count; ++i) {
+        if (_stricmp(g_items[i].item.section, section) == 0 && _stricmp(g_items[i].item.key, key) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int Count()
+{
+    return g_count;
+}
+
+const Item &Get(int index)
+{
+    return g_items[index].item;
+}
+
+void OnChange(int index, Apply apply)
+{
+    if (index >= 0 && index < g_count && g_items[index].applyCount < 4) {
+        g_items[index].apply[g_items[index].applyCount++] = apply;
+    }
+}
+
+bool Normalize(int index, const char *text, char *out, size_t size)
+{
+    if (index < 0 || index >= g_count) {
+        return false;
+    }
+    const Item &it = g_items[index].item;
+    std::string t = Trimmed(text);
+    const char *v = t.c_str();
+    switch (it.type) {
+    case Type::Bool:
+        if (_stricmp(v, "on") == 0) { Copy(out, size, "on"); return true; }
+        if (_stricmp(v, "off") == 0) { Copy(out, size, "off"); return true; }
+        return false;
+    case Type::Int: {
+        if (it.autoWord && _stricmp(v, it.autoWord) == 0) {
+            Copy(out, size, it.autoWord);
+            return true;
+        }
+        int n;
+        if (!Digits(v, &n) || n < it.min || n > it.max || (it.step > 1 && (n - it.min) % it.step != 0)) {
+            return false;
+        }
+        std::snprintf(out, size, "%d", n);
+        return true;
+    }
+    case Type::Choice:
+        for (int i = 0; i < it.choiceCount; ++i) {
+            if (_stricmp(v, it.choices[i]) == 0) {
+                Copy(out, size, it.choices[i]);
+                return true;
+            }
+        }
+        return false;
+    case Type::Resolution: {
+        if (_stricmp(v, "scaled") == 0) {
+            Copy(out, size, "scaled");
+            return true;
+        }
+        int w, h;
+        if (!ParseSize(v, &w, &h)) return false;
+        std::snprintf(out, size, "%dx%d", w, h);
+        return true;
+    }
+    case Type::Hotkey: { // one key, or two: "Insert, Ctrl+F12" (the second the alternative); empty: no key
+        if (t.empty()) {
+            Copy(out, size, "");
+            return true;
+        }
+        core::ui::Hotkey keys[core::ui::kMaxKeys];
+        const int n = core::ui::ParseHotkeyList(v, v + t.size(), keys);
+        if (n == 0) return false;
+        core::ui::FormatHotkeyList(keys, n, out, size);
+        return true;
+    }
+    }
+    return false;
+}
+
+void Load(const wchar_t *path)
+{
+    Copy(g_saveResult, sizeof(g_saveResult), "");
+    std::swprintf(g_path, MAX_PATH, L"%ls", path);
+    bool exists = false;
+    std::string text = ReadFileText(path, &exists);
+    wchar_t bak[MAX_PATH + 8];
+    std::swprintf(bak, sizeof(bak) / sizeof(bak[0]), L"%ls.bak", path);
+    // No file (e.g. deleted by mistake) and a template: the file is made again from the template, with the values of
+    // emperor_engine.ini.bak when there is one (the file as it was the last time it was rewritten), else the defaults.
+    bool fromBak = false;
+    const bool remake = !exists && g_template;
+    for (int i = 0; i < g_count; ++i) { // what the file does not set is its default (also when loaded again)
+        Copy(g_items[i].value, kValueSize, g_items[i].item.defaultValue);
+    }
+    if (remake) {
+        text = ReadFileText(bak, &fromBak);
+        if (!fromBak) {
+            text.clear();
+        }
+    }
+    std::vector<IniLine> lines;
+    std::vector<int> invalid;
+    ReadIni(text, &lines, &invalid);
+    std::vector<IniKey> retired;   // lines to remove from the file
+    std::vector<IniChange> carried; // their values carried over to current settings
+    auto findRetired = [](const IniLine &l) -> const Retired * {
+        const Retired *r = nullptr;
+        for (int k = 0; k < g_retiredCount; ++k) {
+            if (_stricmp(l.section.c_str(), g_retired[k].section) == 0 && _stricmp(l.key.c_str(), g_retired[k].key) == 0) {
+                r = &g_retired[k];
+            }
+        }
+        return r;
+    };
+    // The file sets [section] key itself: with that line, or with a line that moved there (MoveKey, MoveSection).
+    auto setsItself = [&lines, &findRetired](const char *section, const char *key, bool movedToo) {
+        for (const IniLine &o : lines) {
+            if (_stricmp(o.section.c_str(), section) == 0 && _stricmp(o.key.c_str(), key) == 0) {
+                return true;
+            }
+            const char *ns, *nk;
+            if (movedToo && !findRetired(o) && MovedTo(o.section, o.key, &ns, &nk) && _stricmp(ns, section) == 0 &&
+                _stricmp(nk, key) == 0) {
+                return true;
+            }
+        }
+        return false;
+    };
+    int movedLines = 0;
+    for (const IniLine &l : lines) {
+        const Retired *r = findRetired(l);
+        const char *newSection, *newKey;
+        if (!r && MovedTo(l.section, l.key, &newSection, &newKey)) {
+            retired.push_back(IniKey{l.section, l.key});
+            ++movedLines;
+            const int i = Find(newSection, newKey);
+            char norm[kValueSize];
+            const bool taken = !setsItself(newSection, newKey, false) &&
+                               Normalize(i, MovedValue(newSection, newKey, l.value.c_str()), norm, sizeof(norm));
+            if (taken) {
+                carried.push_back(IniChange{newSection, newKey, norm});
+            }
+            core_log("config: line %d: [%s] %s = %s is now [%s] %s: moved in the file%s", l.line, l.section.c_str(),
+                     l.key.c_str(), l.value.c_str(), newSection, newKey,
+                     taken ? "" : " (not taken: the file sets the new one, or the value is not valid)");
+            continue;
+        }
+        if (!r) {
+            continue;
+        }
+        retired.push_back(IniKey{l.section, l.key});
+        Migration m[4];
+        const int n = r->migrate ? r->migrate(l.value.c_str(), m, 4) : 0;
+        for (int k = 0; k < n && k < 4; ++k) {
+            const bool inFile = setsItself(m[k].section, m[k].key, true);
+            const int i = Find(m[k].section, m[k].key);
+            char norm[kValueSize];
+            if (!inFile && i >= 0 && Normalize(i, m[k].value, norm, sizeof(norm))) {
+                carried.push_back(IniChange{m[k].section, m[k].key, norm});
+            }
+        }
+        core_log("config: line %d: [%s] %s = %s is no longer a setting: removed from the file%s", l.line,
+                 l.section.c_str(), l.key.c_str(), l.value.c_str(), n > 0 ? " (its value carried over)" : "");
+    }
+    std::vector<IniChange> renamed; // old spellings of values, written anew
+    for (const IniLine &l : lines) {
+        int i = Find(l.section.c_str(), l.key.c_str());
+        char norm[kValueSize];
+        bool isRetired = false;
+        for (const IniKey &k : retired) {
+            isRetired = isRetired || (k.section == l.section && k.key == l.key);
+        }
+        if (isRetired) {
+            continue;
+        }
+        const char *value = l.value.c_str();
+        for (int k = 0; k < g_renamedCount; ++k) {
+            const Renamed &r = g_renamed[k];
+            if (_stricmp(l.section.c_str(), r.section) == 0 && _stricmp(l.key.c_str(), r.key) == 0 &&
+                _stricmp(value, r.oldValue) == 0) {
+                value = r.newValue;
+                renamed.push_back(IniChange{l.section, l.key, r.newValue});
+                core_log("config: line %d: [%s] %s = %s is now called %s: changed in the file", l.line,
+                         l.section.c_str(), l.key.c_str(), l.value.c_str(), r.newValue);
+                break;
+            }
+        }
+        if (i < 0 || !Normalize(i, value, norm, sizeof(norm))) {
+            core_log("config: line %d: unknown setting [%s] %s = %s (ignored)", l.line, l.section.c_str(),
+                     l.key.c_str(), l.value.c_str());
+            continue;
+        }
+        Copy(g_items[i].value, kValueSize, norm);
+    }
+    for (int n : invalid) {
+        core_log("config: line %d: not a setting (ignored)", n);
+    }
+    for (const IniChange &c : carried) {
+        const int i = Find(c.section.c_str(), c.key.c_str());
+        Copy(g_items[i].value, kValueSize, c.value.c_str());
+        core_log("config: [%s] %s = %s (carried over from a removed or moved setting)", c.section.c_str(),
+                 c.key.c_str(), c.value.c_str());
+    }
+    std::string updated = text;
+    if (!retired.empty() || !renamed.empty()) {
+        std::vector<IniChange> changes = carried;
+        changes.insert(changes.end(), renamed.begin(), renamed.end());
+        updated = UpdateIni(RemoveIniKeys(text, retired), changes);
+    }
+    FilledIni filled;
+    const bool fill = (exists || remake) && g_template;
+    if (fill) {
+        filled = FillTemplate(g_template, updated);
+        updated = filled.text;
+    }
+    const char *ini = core_game()->ini_file_utf8;
+    if (remake) {
+        // The .bak stays as it is (it is where the values came from).
+        DWORD error = 0;
+        if (WriteFileAtomic(path, updated, &error)) {
+            if (fromBak) {
+                core_log("config: %s was missing: made again from this version's template with the "
+                         "values of %s.bak (%d value(s) from it, %d setting(s) at their defaults, %d "
+                         "line(s) kept as written)",
+                         ini, ini, filled.kept, filled.added, filled.extra);
+            }
+            else {
+                core_log("config: %s was missing (and no %s.bak): made from this "
+                         "version's template, all settings at their defaults",
+                         ini, ini);
+            }
+        }
+        else {
+            char bakUsed[MAX_PATH];
+            std::snprintf(bakUsed, sizeof(bakUsed), "the values of %s.bak are used", ini);
+            core_log("config: %s is missing and could not be made (error %lu); %s", ini, error,
+                     fromBak ? bakUsed : "defaults");
+        }
+    }
+    else if (updated != text) {
+        DWORD error = 0;
+        if (WriteFileAtomic(bak, text, &error) && WriteFileAtomic(path, updated, &error)) {
+            if (!retired.empty() || !renamed.empty()) {
+                core_log("config: removed %d line(s) of settings that no longer exist, moved %d, renamed %d value(s)",
+                         static_cast<int>(retired.size()) - movedLines, movedLines, static_cast<int>(renamed.size()));
+            }
+            if (fill) {
+                core_log("config: %s rewritten from this version's template: %d value(s) kept, %d "
+                         "setting(s) added at their defaults, %d line(s) kept as written",
+                         ini, filled.kept, filled.added, filled.extra);
+            }
+            core_log("config: the file as it was: %s.bak", ini);
+        }
+        else {
+            core_log("config: could not update the file (error %lu); it is read as it is: removed settings are "
+                     "ignored, renamed values are taken as their new names",
+                     error);
+        }
+    }
+    for (int i = 0; i < g_count; ++i) {
+        Copy(g_items[i].startup, kValueSize, g_items[i].value);
+        Copy(g_items[i].saved, kValueSize, g_items[i].value);
+    }
+    char what[512];
+    Describe(what, sizeof(what));
+    char p[MAX_PATH * 2];
+    WideCharToMultiByte(CP_UTF8, 0, path, -1, p, sizeof(p), nullptr, nullptr);
+    char missing[MAX_PATH];
+    std::snprintf(missing, sizeof(missing), "%s not found, defaults", ini);
+    core_log("config: %s; %s", exists || remake ? p : missing, what);
+    for (int i = 0; i < g_count; ++i) {
+        for (int k = 0; k < g_items[i].applyCount; ++k) {
+            g_items[i].apply[k](i, g_items[i].value, true);
+        }
+    }
+}
+
+const wchar_t *Path()
+{
+    return g_path;
+}
+
+void Value(int index, char *out, size_t size)
+{
+    AcquireSRWLockShared(&g_lock);
+    Copy(out, size, index >= 0 && index < g_count ? g_items[index].value : "");
+    ReleaseSRWLockShared(&g_lock);
+}
+
+void StartupValue(int index, char *out, size_t size)
+{
+    AcquireSRWLockShared(&g_lock);
+    Copy(out, size, index >= 0 && index < g_count ? g_items[index].startup : "");
+    ReleaseSRWLockShared(&g_lock);
+}
+
+bool RestartPending(int index)
+{
+    AcquireSRWLockShared(&g_lock);
+    bool r = false;
+    if (index >= 0 && index < g_count) {
+        const Slot &s = g_items[index];
+        r = s.notApplied || (s.item.effect == Effect::Restart && std::strcmp(s.value, s.startup) != 0);
+    }
+    ReleaseSRWLockShared(&g_lock);
+    return r;
+}
+
+void Request(int index, const char *value, bool save)
+{
+    Pending p{index, "", save};
+    Copy(p.value, sizeof(p.value), value);
+    AcquireSRWLockExclusive(&g_lock);
+    if (!g_queue) {
+        g_queue = new std::vector<Pending>();
+    }
+    g_queue->push_back(p);
+    ReleaseSRWLockExclusive(&g_lock);
+    if (g_wake) {
+        g_wake();
+    }
+}
+
+void RequestSave()
+{
+    Request(-1, "", true);
+}
+
+namespace {
+
+struct ApplyCall {
+    Apply fn;
+    int index;
+    const char *value;
+    bool result;
+};
+
+void RunApply(void *p)
+{
+    ApplyCall &c = *static_cast<ApplyCall *>(p);
+    c.result = c.fn(c.index, c.value, false);
+}
+
+} // namespace
+
+void RunPending()
+{
+    std::vector<Pending> work;
+    AcquireSRWLockExclusive(&g_lock);
+    if (g_queue) {
+        work.swap(*g_queue);
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+    bool save = false;
+    for (const Pending &p : work) {
+        save = save || p.save;
+        if (p.index < 0) { // RequestSave: every current value is confirmed
+            AcquireSRWLockExclusive(&g_lock);
+            for (int i = 0; i < g_count; ++i) {
+                Copy(g_items[i].saved, kValueSize, g_items[i].value);
+            }
+            ReleaseSRWLockExclusive(&g_lock);
+            continue;
+        }
+        if (p.index >= g_count) {
+            continue;
+        }
+        Slot &s = g_items[p.index];
+        char norm[kValueSize];
+        if (!Normalize(p.index, p.value, norm, sizeof(norm))) {
+            core_log("settings: [%s] %s = %s is not a valid value (ignored)", s.item.section, s.item.key, p.value);
+            continue;
+        }
+        char savedBefore[kValueSize];
+        Copy(savedBefore, sizeof(savedBefore), s.saved);
+        if (p.save) { // only this item's value is confirmed (others may still wait for "keep")
+            AcquireSRWLockExclusive(&g_lock);
+            Copy(s.saved, kValueSize, norm);
+            ReleaseSRWLockExclusive(&g_lock);
+        }
+        if (std::strcmp(norm, s.value) == 0) {
+            continue;
+        }
+        if (s.item.effect != Effect::Restart && !core::diag::Enabled(s.guard)) {
+            core_log("settings: [%s] %s = %s not applied: applying this setting was switched off after an error",
+                     s.item.section, s.item.key, norm);
+            continue;
+        }
+        char before[kValueSize];
+        Copy(before, sizeof(before), s.value);
+        AcquireSRWLockExclusive(&g_lock);
+        Copy(s.value, kValueSize, norm);
+        ReleaseSRWLockExclusive(&g_lock);
+        bool applied = true, reverted = false;
+        if (s.item.effect != Effect::Restart) {
+            for (int k = 0; k < s.applyCount; ++k) {
+                ApplyCall call{s.apply[k], p.index, norm, false};
+                if (!core::diag::Guarded(s.guard, &RunApply, &call)) {
+                    // The callback faulted (logged by the guard): the value goes back to the one before, the
+                    // callbacks that took the new one get the old one again, and the new one is not saved.
+                    AcquireSRWLockExclusive(&g_lock);
+                    Copy(s.value, kValueSize, before);
+                    if (p.save) {
+                        Copy(s.saved, kValueSize, savedBefore);
+                    }
+                    ReleaseSRWLockExclusive(&g_lock);
+                    for (int j = 0; j < k; ++j) {
+                        s.apply[j](p.index, before, false);
+                    }
+                    reverted = true;
+                    break;
+                }
+                applied = call.result && applied;
+            }
+        }
+        if (reverted) {
+            s.notApplied = false; // the old value is in effect again
+            core_log("settings: [%s] %s %s -> %s not applied after an error; %s kept", s.item.section, s.item.key,
+                     before, norm, before);
+            continue;
+        }
+        s.notApplied = !applied;
+        core_log("settings: [%s] %s %s -> %s (%s)", s.item.section, s.item.key, before, norm,
+                 s.item.effect == Effect::Restart ? "after a restart"
+                 : applied                       ? "applied"
+                                                 : "after a restart: cannot change while the game runs");
+    }
+    if (save) {
+        Save();
+    }
+}
+
+void SetWakeup(void (*wake)())
+{
+    g_wake = wake;
+}
+
+void LastSaveResult(char *out, size_t size)
+{
+    Copy(out, size, g_saveResult);
+}
+
+void Describe(char *out, size_t size)
+{
+    size_t n = 0;
+    out[0] = 0;
+    for (int i = 0; i < g_count && n + 1 < size; ++i) {
+        int w = std::snprintf(out + n, size - n, "%s%s.%s=%s", i ? " " : "", g_items[i].item.section,
+                              g_items[i].item.key, g_items[i].value);
+        if (w < 0) break;
+        n += static_cast<size_t>(w);
+    }
+}
+
+} // namespace core::settings

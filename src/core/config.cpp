@@ -1,0 +1,327 @@
+#include "core/config.h"
+
+#include "core/game.h"
+#include "core/platform/files.h"
+
+#include "core/settings/settings.h"
+#include "core/ui/hotkey.h"
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+#include <cstdlib>
+#include <cstring>
+#include <cwchar>
+
+// The core's items in the settings model (core/settings/settings.h) and core_config, their typed view. The ini keys
+// and their meanings stayed the same; only the reading moved into the model.
+namespace {
+
+using core::settings::Effect;
+using core::settings::Item;
+using core::settings::Type;
+
+// resolution_w x resolution_h (1024 x 768 here) are set to the game's own size (core/game.h) at registration.
+core_config g_config = {CORE_BACKEND_EMULATED, CORE_SCALING_SHARP_BILINEAR, CORE_PRESENT_DISPLAY,
+                        CORE_RESOLUTION_SCALED, 1024, 768, 100, 1, 1, 0x2D /* Insert */, 0, 0,
+                        0x7A /* F11 */, 0, 0x7B /* F12 */, 0, 0, 0, 0, 0,
+                        0 /* fail_direct3d9 */, 0 /* d3d9_pacing */, 0, 0, 0, CORE_WINDOW_CENTER, CORE_WINDOW_CENTER, 0, 0 /* cpu_affinity */,
+                        1 /* present_mode_log */, 0 /* window_background_test */, 0, 0, 0, 0, 0, 0};
+
+const char *const kBackend[] = {"emulated", "system"};
+const char *const kBackendLabels[] = {"emulated (our own DirectDraw)", "system (Windows' DirectDraw, logged)"};
+const char *const kRendererLabels[] = {"auto (Direct3D 11; Direct3D 9 if it cannot start)", "direct3d (Direct3D 9)",
+                                       "direct3d11 (Direct3D 11, flip model)"};
+const char *const kScaling[] = {"nearest", "linear", "sharp_bilinear"}; // in the order of core_scaling
+const char *const kScalingLabels[] = {"nearest (plain pixels, some wider than others)", "linear (smooth, softer)",
+                                      "sharp_bilinear (sharp, edges blended)"};
+const char *const kCpuAffinity[] = {"auto", "original"};
+const char *const kCpuAffinityLabels[] = {"auto (the game on its one processor, the rest on the others)",
+                                          "original (as without this setting)"};
+const char *const kD3d9PacingLabels[] = {"vsync (each present waits for the refresh)", "timer (our own timer)",
+                                         "dwmflush (waits for the desktop's composition)"};
+
+// [debug] renderer (0.1.1) became [display] renderer. Only direct3d, a choice the player made, is carried over:
+// direct3d11 was the default of the time (and in the shipped file), and the others are no longer offered.
+int MigrateRenderer(const char *old, core::settings::Migration *out, int max)
+{
+    if (_stricmp(old, "direct3d") != 0 || max < 1) {
+        return 0;
+    }
+    out[0] = core::settings::Migration{"video", "renderer", "direct3d"};
+    return 1;
+}
+const char *const kWindow[] = {"fullscreen", "windowed"};
+const char *const kWindowLabels[] = {"fullscreen (covering the screen)", "windowed (move and size it freely)"};
+const char *const kPresent[] = {"original", "display", "cap60"};
+const char *const kPresentLabels[] = {"original (the game's own ~20 FPS)", "display (every screen refresh)",
+                                      "cap60 (at most 60 per second)"};
+
+int Index(const char *const *list, int n, const char *v)
+{
+    for (int i = 0; i < n; ++i) {
+        if (std::strcmp(list[i], v) == 0) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+// A key setting's one or two keys into the typed view (the second 0 when there is none; fallbackVk when the text
+// cannot be read, which the settings model does not let through).
+void Keys(const char *v, unsigned fallbackVk, unsigned *vk, unsigned *mods, unsigned *vk2, unsigned *mods2)
+{
+    core::ui::Hotkey keys[core::ui::kMaxKeys] = {{v[0] ? fallbackVk : 0u, 0}, {0, 0}}; // empty: no key
+    core::ui::ParseHotkeyList(v, v + std::strlen(v), keys);
+    *vk = keys[0].vk;
+    *mods = keys[0].mods;
+    *vk2 = keys[1].vk;
+    *mods2 = keys[1].mods;
+}
+
+int g_backend, g_scaling, g_present, g_resolution, g_scale, g_timer, g_smooth, g_panelScale, g_panelKey,
+    g_shotKey, g_reportKey, g_labels, g_loadingHold, g_perfOverlay, g_renderer, g_failD3d9, g_d3d9Pacing, g_window, g_windowW, g_windowH,
+    g_windowX, g_windowY, g_windowLock, g_cpuAffinity, g_presentModeLog, g_windowBackground;
+
+// Keeps core_config in step with the model (registered first, so owners' callbacks see the new typed value).
+bool Sync(int i, const char *v, bool)
+{
+    if (i == g_backend) g_config.backend = static_cast<core_display_backend>(Index(kBackend, 2, v));
+    else if (i == g_scaling) g_config.scaling = static_cast<core_scaling>(Index(kScaling, 3, v));
+    else if (i == g_present) g_config.present = static_cast<core_present_mode>(Index(kPresent, 3, v));
+    else if (i == g_resolution) {
+        if (std::strcmp(v, "scaled") == 0) {
+            g_config.resolution = CORE_RESOLUTION_SCALED;
+        }
+        else {
+            g_config.resolution = CORE_RESOLUTION_FIXED;
+            g_config.resolution_w = std::atoi(v);
+            g_config.resolution_h = std::atoi(std::strchr(v, 'x') + 1);
+        }
+    }
+    else if (i == g_window) g_config.windowed = std::strcmp(v, "windowed") == 0;
+    else if (i == g_windowW) g_config.window_w = std::strcmp(v, "auto") == 0 ? 0 : std::atoi(v);
+    else if (i == g_windowH) g_config.window_h = std::strcmp(v, "auto") == 0 ? 0 : std::atoi(v);
+    else if (i == g_windowX) g_config.window_x = std::strcmp(v, "center") == 0 ? CORE_WINDOW_CENTER : std::atoi(v);
+    else if (i == g_windowLock) g_config.window_lock_cursor = std::strcmp(v, "on") == 0;
+    else if (i == g_windowY) g_config.window_y = std::strcmp(v, "center") == 0 ? CORE_WINDOW_CENTER : std::atoi(v);
+    else if (i == g_scale) g_config.scale_percent = std::strcmp(v, "auto") == 0 ? 0 : std::atoi(v);
+    else if (i == g_timer) g_config.high_resolution_timer = std::strcmp(v, "on") == 0;
+    else if (i == g_smooth) g_config.smooth_scroll = std::strcmp(v, "on") == 0;
+    else if (i == g_panelScale) core_config_set_live(&g_config.panel_scale_percent, std::strcmp(v, "auto") == 0 ? 0 : std::atoi(v));
+    else if (i == g_panelKey) {
+        Keys(v, 0x2D, &g_config.panel_key_vk, &g_config.panel_key_mods, &g_config.panel_key2_vk,
+             &g_config.panel_key2_mods);
+    }
+    else if (i == g_labels) g_config.frame_labels = std::strcmp(v, "on") == 0;
+    else if (i == g_loadingHold) g_config.loading_stage_ms = std::atoi(v);
+    else if (i == g_perfOverlay) core_config_set_live(&g_config.perf_overlay, std::strcmp(v, "on") == 0);
+    else if (i == g_renderer) g_config.renderer = Index(core_renderer_names, 3, v);
+    else if (i == g_failD3d9) g_config.fail_direct3d9 = std::strcmp(v, "on") == 0;
+    else if (i == g_d3d9Pacing) g_config.d3d9_pacing = Index(core_d3d9_pacing_names, 3, v);
+    else if (i == g_cpuAffinity) g_config.cpu_affinity = Index(kCpuAffinity, 2, v);
+    else if (i == g_presentModeLog) g_config.present_mode_log = std::strcmp(v, "on") == 0;
+    else if (i == g_windowBackground) core_config_set_live(&g_config.window_background_test, std::strcmp(v, "on") == 0);
+    else if (i == g_shotKey) {
+        Keys(v, 0x7A, &g_config.screenshot_key_vk, &g_config.screenshot_key_mods, &g_config.screenshot_key2_vk,
+             &g_config.screenshot_key2_mods);
+    }
+    else if (i == g_reportKey) {
+        Keys(v, 0x7B, &g_config.report_key_vk, &g_config.report_key_mods, &g_config.report_key2_vk,
+             &g_config.report_key2_mods);
+    }
+    return true;
+}
+
+int Add(const Item &item)
+{
+    int i = core::settings::Register(item);
+    core::settings::OnChange(i, &Sync);
+    return i;
+}
+
+void RegisterCoreItems()
+{
+    const core_game_info *game = core_game();
+    g_config.resolution_w = game->native_width;
+    g_config.resolution_h = game->native_height;
+    // section, key, label, help, type, default, effect, inPanel, editable, min, max, step, autoWord, choices...
+    g_backend = Add(Item{"video", "backend", "DirectDraw", "emulated: our own DirectDraw (no display mode changes, "
+                         "scaled with SDL3); system: the real Windows DirectDraw behind the logging wrapper.",
+                         Type::Choice, "emulated", Effect::Restart, false, false, 0, 0, 0, nullptr, kBackend,
+                         kBackendLabels, 2});
+    // Switched at once, in the panel and in Display options.
+    g_scaling = Add(Item{"video", "scaling", "Scaling",
+                         "How the picture is enlarged when the game's pixels are not the screen's: a display scale "
+                         "other than 100%, {native}, scaled menus, a window. sharp_bilinear (default): sharp, each "
+                         "pixel's edge blended over one screen pixel; nearest: plain pixels, some a screen pixel wider "
+                         "than others; linear: smooth but softer. At 100% in full screen every pixel of the game is one "
+                         "pixel of the screen: the three look the same.",
+                         Type::Choice, "sharp_bilinear", Effect::Live, true, true, 0, 0, 0, nullptr, kScaling,
+                         kScalingLabels, 3});
+    g_present = Add(Item{"video", "present", "Frame output",
+                         "How often frames reach the screen. display: every screen refresh; cap60: at most 60 per "
+                         "second. The game's timing is the same with both. (original, the game's own ~20 per second, "
+                         "is only for troubleshooting and only in {ini}: this panel and the options "
+                         "window are not available with it.)",
+                         Type::Choice, "display", Effect::Live, true, true, 0, 0, 0, nullptr, kPresent, kPresentLabels,
+                         3, nullptr, nullptr, nullptr, nullptr, 1u << 0}); // original: no longer offered
+    // A file of an older version with original (it could be chosen in the panel and the options window until
+    // gets display, so the options window can be used; original set in [video] later stays.
+    core::settings::RenameMovedValue("video", "present", "original", "display");
+    g_resolution = Add(Item{"video", "resolution", "Resolution",
+                            "The size the game draws, scaled to the screen. Scaled (default): the screen's native "
+                            "resolution divided by the display scale -- at 100 % every pixel of the game is one pixel "
+                            "of the screen, the sharpest picture. {native} is the game's own size. Menus and loading "
+                            "screens are shown as large as the city. Windowed, a fixed size becomes the window's size.",
+                            Type::Resolution, "scaled", Effect::Relayout, true, true, 0, 0, 0, nullptr, nullptr,
+                            nullptr, 0});
+    g_scale = Add(Item{"video", "scale", "Display scale",
+                       "For Resolution = Scaled. 100 % (default): the sharpest picture, everything at its own size "
+                       "(small on a large, high-resolution screen). A larger scale makes everything bigger, menus and "
+                       "loading screens too, but softer, because the picture is enlarged. Auto: 1080 pixels high on a taller screen (2560x1440: "
+                       "1920x1080, 133 %; 4K: 1920x1080), the screen's own size otherwise. Always limited so that the "
+                       "result stays at least {native}.",
+                       Type::Int, "100", Effect::Relayout, true, true, 100, 250, 5, "auto", nullptr, nullptr, 0, "%"});
+    g_window = Add(Item{"video", "window", "Window",
+                        "fullscreen: the game covers its monitor, without a border; windowed: a window you can move "
+                        "and size (the game is laid out again for its size when you let go). F5 switches.",
+                        Type::Choice, "fullscreen", Effect::Live, true, true, 0, 0, 0, nullptr, kWindow, kWindowLabels,
+                        2});
+    g_windowW = Add(Item{"video", "window_width", "Window width",
+                         "The windowed client width in pixels (auto: three quarters of the monitor). Kept when you "
+                         "size the window.",
+                         Type::Int, "auto", Effect::Live, false, true, game->native_width, 16384, 1, "auto", nullptr,
+                         nullptr, 0});
+    g_windowH = Add(Item{"video", "window_height", "Window height", "The windowed client height in pixels.",
+                         Type::Int, "auto", Effect::Live, false, true, game->native_height, 16384, 1, "auto", nullptr,
+                         nullptr, 0});
+    g_windowX = Add(Item{"video", "window_x", "Window position x",
+                         "The window's left edge (center: centered on its monitor). Kept when you move the window.",
+                         Type::Int, "center", Effect::Live, false, true, -32000, 32000, 1, "center", nullptr, nullptr,
+                         0});
+    g_windowY = Add(Item{"video", "window_y", "Window position y", "The window's top edge (center: centered).",
+                         Type::Int, "center", Effect::Live, false, true, -32000, 32000, 1, "center", nullptr, nullptr,
+                         0});
+    g_windowLock = Add(Item{"video", "window_lock_cursor", "Window: keep the cursor inside",
+                            "Windowed: the cursor cannot leave the window while it is the active one (released when "
+                            "you switch to another program, minimize it or go fullscreen). The window's border cannot "
+                            "be reached then: switch this off, or use F5, to move or size it.",
+                            Type::Bool, "off", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0});
+    g_timer = Add(Item{"timing", "high_resolution_timer", "High-resolution timer",
+                       "timeBeginPeriod(1) while the game runs: the game's timers tick in 1 ms steps on every "
+                       "machine (otherwise 15.6 ms unless another program raised it).",
+                       Type::Bool, "on", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0});
+    g_smooth = Add(Item{"gameplay", "smooth_scroll", "Smooth scrolling",
+                        "Pixel scrolling of the city at the game's own average speed, with easing. Off: the game's "
+                        "whole-tile steps. Either way the simulation pauses while the view scrolls, as in the "
+                        "original.",
+                        Type::Bool, "on", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0});
+    g_panelScale = Add(Item{"ui", "panel_scale", "Panel size",
+                            "Size of this panel in percent. Auto: the output height divided by 1080 (1440p: 133%).",
+                            Type::Int, "auto", Effect::Live, true, true, 100, 300, 10, "auto", nullptr, nullptr, 0, "%"});
+    g_panelKey = Add(Item{"ui", "panel_key", "Debug panel: key",
+                          "Opens and closes this panel. Change: press the new key, alone or with Ctrl, Shift or Alt "
+                          "(e.g. Ctrl+F12).",
+                          Type::Hotkey, "Insert", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0});
+    g_shotKey = Add(Item{"debug", "screenshot_key", "Screenshot: key",
+                         "Saves the game's own picture (its logical resolution, without this panel) as a PNG in "
+                         "shots\\ in {product}'s folder (shown at the bottom of this panel); the file name has the screen "
+                         "number, the resolution and the time. Change: press the new key, alone or with Ctrl, Shift "
+                         "or Alt.",
+                         Type::Hotkey, "F11", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0});
+    g_reportKey = Add(Item{"debug", "report_key", "Report screenshot: key",
+                           "When something odd is on the screen (e.g. flashing blocks): marks the log, saves the "
+                           "picture shown and the screen (report<n>_... in shots\\) and the game's statistics. "
+                           "Change: press the new key, alone or with Ctrl, Shift or Alt.",
+                           Type::Hotkey, "F12", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0});
+    g_perfOverlay = Add(Item{"debug", "perf_overlay", "Performance overlay",
+                             "FPS, a graph of the time per main-loop pass and where the time goes (the game's "
+                             "simulation and drawing, our copies, the output), in the top left corner while playing.",
+                             Type::Bool, "off", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0});
+    // Moved from [debug] (0.1.1). auto is Direct3D 11 also with the Steam overlay
+    // since the thread affinity setting: the stops with Steam's FPS counter came from the driver's threads
+    // waiting on the game's processor.
+    core::settings::Retire("debug", "renderer", &MigrateRenderer);
+    // The sections take the names of the options window's pages. Keys that moved elsewhere are moved by
+    // their owners (core::settings::MoveKey).
+    core::settings::MoveSection("display", "video");
+    core::settings::MoveSection("sound", "audio");
+    g_renderer = Add(Item{"video", "renderer", "Renderer",
+                          "What puts the picture on the screen. auto (default): Direct3D 11, or Direct3D 9 if Direct3D "
+                          "11 cannot start. direct3d: Direct3D 9 (Direct3D 11 if it cannot start). direct3d11: "
+                          "Direct3D 11. Takes effect after a restart.",
+                          Type::Choice, "auto", Effect::Restart, true, true, 0, 0, 0, nullptr, core_renderer_names,
+                          kRendererLabels, 3});
+    // For testing auto's fall-back to direct3d11 once; not in the panel.
+    g_failD3d9 = Add(Item{"debug", "fail_direct3d9", "Fail Direct3D 9 (test)",
+                          "on: the Direct3D 9 renderer is made to fail at start, so renderer = direct3d falls back "
+                          "to direct3d11 (for testing that path). Takes effect after a restart.",
+                          Type::Bool, "off", Effect::Restart, false, false, 0, 0, 0, nullptr, nullptr, nullptr, 0});
+    // The experiment with Direct3D 9's pacing; not in the panel.
+    g_d3d9Pacing = Add(Item{"debug", "d3d9_pacing", "Direct3D 9 pacing (test)",
+                            "How the Direct3D 9 output is paced. vsync (default): each present waits for the "
+                            "refresh. timer: no vsync; our own high-resolution timer spaces the frames one refresh "
+                            "apart (cap60: so that at most 60 per second are shown). dwmflush: no vsync; after each "
+                            "present we wait for the desktop's next composition. Direct3D 11 is not affected. Takes "
+                            "effect after a restart.",
+                            Type::Choice, "vsync", Effect::Restart, false, false, 0, 0, 0, nullptr,
+                            core_d3d9_pacing_names, kD3d9PacingLabels, 3});
+    // Black block diagnosis: the present mode log is only in the file.
+    g_presentModeLog = Add(Item{"debug", "present_mode_log", "Present mode log",
+                                "on: the log records how Windows shows the game's frames (Direct3D 11 only) and the "
+                                "programs known to draw on the screen, for tracking down flashing black blocks. Takes "
+                                "effect after a restart.",
+                                Type::Bool, "on", Effect::Restart, false, false, 0, 0, 0, nullptr, nullptr, nullptr, 0});
+    g_windowBackground = Add(Item{"debug", "window_background_test", "Window background: test color",
+                                  "For tracking down flashing black blocks: the game window's background becomes "
+                                  "magenta. If the blocks flash magenta instead of black, press the report key and "
+                                  "tell us. Magenta may also show for a moment when the window changes size.",
+                                  Type::Bool, "off", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0});
+    g_labels = Add(Item{"debug", "frame_labels", "Frame labels",
+                        "For development: checking the framed pictures' layout. The border's dark "
+                        "lines red, the rest of the border green, padding yellow, the picture white, outside blue.",
+                        Type::Bool, "off", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0});
+    g_loadingHold = Add(Item{"debug", "loading_stage_ms", "Loading stage time (ms)",
+                             "Each of the five start-up loading screens stays on screen at least this long, to look at "
+                             "or screenshot them (they flash by on a fast computer). 0: as fast as the game loads. "
+                             "Only at start-up, so set it in {ini} before starting the game.",
+                             Type::Int, "0", Effect::Restart, true, false, 0, 5000, 100, nullptr, nullptr, nullptr, 0});
+    // Only in the file (troubleshooting), not in the panel. [debug] cpu_affinity_graphics
+    // (the 0.1.3 test builds) is part of auto now.
+    core::settings::Retire("debug", "cpu_affinity_graphics", nullptr);
+    g_cpuAffinity = Add(Item{"compat", "cpu_affinity", "Processor affinity",
+                             "For troubleshooting only. auto (default): the game's own threads stay on the one "
+                             "processor its compatibility settings give it; ours (the output, screenshots) and the "
+                             "graphics driver's run on the others. original: everything stays on the process's "
+                             "original processors, as without this setting. If the game crashes or the sound goes "
+                             "wrong, try original to see whether this is the cause. Takes effect after a restart.",
+                             Type::Choice, "auto", Effect::Restart, false, false, 0, 0, 0, nullptr, kCpuAffinity,
+                             kCpuAffinityLabels, 2});
+}
+
+} // namespace
+
+extern "C" const char *const core_renderer_names[3] = {"auto", "direct3d", "direct3d11"};
+extern "C" const char *const core_d3d9_pacing_names[3] = {"vsync", "timer", "dwmflush"};
+
+extern "C" void core_config_load(void *module)
+{
+    (void)module; // our files' folder (core/platform/files): before it is decided, the folder of this module
+    RegisterCoreItems();
+    const wchar_t *file = core_game()->ini_file;
+    core_files_bring_over(file);
+    wchar_t path[MAX_PATH * 2];
+    std::swprintf(path, sizeof(path) / sizeof(path[0]), L"%ls%ls", core_files_folder(), file);
+    core::settings::Load(path);
+}
+
+extern "C" const struct core_config *core_config_get(void)
+{
+    return &g_config;
+}
+
+extern "C" void core_config_force_system_backend(void)
+{
+    g_config.backend = CORE_BACKEND_SYSTEM;
+}

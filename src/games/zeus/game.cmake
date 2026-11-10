@@ -1,0 +1,31 @@
+# Zeus: Master of Olympus + Poseidon -- the game's part of the build (included by the root CMakeLists.txt when
+# ENGINE_GAME is zeus). Everything here is about this game only: its public name and version, its settings file,
+# its game layer and the offline tests of that layer.
+
+# The public name and version: shown in the log, the panel and the DLL's properties (version.rc.in). Test builds
+# carry a suffix (e.g. "-dev") so their logs are not taken for a release; empty for a release.
+set(GAME_PROJECT zeus_engine)
+set(GAME_VERSION 0.1.0)
+set(GAME_VERSION_SUFFIX "-dev")
+set(GAME_PRODUCT "Pericles")
+set(GAME_DESCRIPTION "Pericles: modern display layer for Zeus: Master of Olympus")
+
+# The settings file this version ships (copied next to the DLL and embedded in it), and the namespace of the
+# generated header that holds it (games/zeus/zeus.cpp: core::settings::SetTemplate).
+set(GAME_INI_SOURCE src/games/zeus/zeus_engine.ini)
+set(GAME_NAMESPACE zeus)
+
+# The game layer, linked into ddraw.dll after the core.
+set(GAME_SOURCES
+    src/games/zeus/game.cpp
+    src/games/zeus/zeus.cpp
+    src/games/zeus/debug_log.cpp
+)
+
+# The offline tests of this game layer (run by src/games/zeus/tests.ps1 through proxy/ddraw/run_tests.ps1).
+macro(game_add_tests)
+    # games/zeus/debug_log: reading the game's texts safely, the repeat limit (no game, no DLL).
+    add_executable(test_debug_log src/games/zeus/test_debug_log.cpp src/games/zeus/debug_log.cpp)
+    target_include_directories(test_debug_log PRIVATE src)
+    target_link_options(test_debug_log PRIVATE -static)
+endmacro()

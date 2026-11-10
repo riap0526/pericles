@@ -1,0 +1,785 @@
+#include "core/ui/settings_view.h"
+
+#include "core/display/common_sizes.h"
+#include "core/game.h"
+#include "core/display/logical_size.h"
+#include "core/display/virtual_display.h"
+#include "core/log.h"
+#include "core/platform/files.h"
+#include "core/settings/settings.h"
+#include "core/ui/hotkey.h"
+
+#include <imgui.h>
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+#include <algorithm>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
+namespace core::ui {
+
+namespace {
+
+namespace cs = core::settings;
+using cs::Effect;
+using cs::Type;
+
+constexpr int kMax = 256; // as core/settings kMaxItems
+constexpr DWORD kConfirmMs = 15000;
+constexpr DWORD kGraceMs = 1500; // frames after the answer, so a revert is drawn too
+
+// Drafts: what the widgets show while the user edits (output thread).
+char g_draft[kMax][cs::kValueSize];
+bool g_dirty[kMax];
+
+// "Keep these settings?": the values before the change (output thread, PanelClosed from the game thread).
+SRWLOCK g_lock = SRWLOCK_INIT;
+struct Confirm {
+    bool pending = false;
+    DWORD until = 0;
+    int count = 0;
+    int index[8];
+    char before[8][cs::kValueSize];
+} g_confirm;
+std::atomic<DWORD> g_framesUntil{0};
+std::atomic<bool> g_framesPending{false};
+bool g_askDefaults = false;
+
+// Items another window of ours lists (the game's options window; SetListedElsewhere): left out of the panel unless
+// "Show all settings" is ticked (this time only; not saved).
+std::atomic<bool> g_listed[kMax];
+bool g_showAll = false;
+
+bool Shown(int i)
+{
+    return i >= 0 && i < kMax && cs::Get(i).inPanel && (g_showAll || !g_listed[i].load());
+}
+
+void Revert(const char *why)
+{
+    AcquireSRWLockExclusive(&g_lock);
+    Confirm c = g_confirm;
+    g_confirm.pending = false;
+    ReleaseSRWLockExclusive(&g_lock);
+    if (!c.pending) {
+        return;
+    }
+    for (int k = 0; k < c.count; ++k) {
+        cs::Request(c.index[k], c.before[k], false); // the file still has these values
+        g_dirty[c.index[k]] = false;
+    }
+    g_framesUntil = GetTickCount() + kGraceMs;
+    g_framesPending = false;
+    core_log("panel: display settings reverted (%s)", why);
+}
+
+void Keep()
+{
+    AcquireSRWLockExclusive(&g_lock);
+    bool was = g_confirm.pending;
+    g_confirm.pending = false;
+    ReleaseSRWLockExclusive(&g_lock);
+    if (was) {
+        cs::RequestSave();
+        g_framesUntil = GetTickCount() + kGraceMs;
+        g_framesPending = false;
+        core_log("panel: display settings kept");
+    }
+}
+
+// Applies the drafts of the re-layout items and asks to keep them.
+void ApplyRelayout()
+{
+    Confirm c;
+    for (int i = 0; i < cs::Count() && c.count < 8; ++i) {
+        const cs::Item &it = cs::Get(i);
+        if (it.effect != Effect::Relayout || !g_dirty[i]) {
+            continue;
+        }
+        char now[cs::kValueSize];
+        cs::Value(i, now, sizeof(now));
+        g_dirty[i] = false;
+        if (std::strcmp(now, g_draft[i]) == 0) {
+            continue;
+        }
+        c.index[c.count] = i;
+        std::snprintf(c.before[c.count], cs::kValueSize, "%s", now);
+        ++c.count;
+        cs::Request(i, g_draft[i], false);
+    }
+    if (c.count == 0) {
+        return;
+    }
+    c.pending = true;
+    c.until = GetTickCount() + kConfirmMs;
+    AcquireSRWLockExclusive(&g_lock);
+    g_confirm = c;
+    ReleaseSRWLockExclusive(&g_lock);
+    g_framesPending = true;
+}
+
+void Commit(int i)
+{
+    const cs::Item &it = cs::Get(i);
+    if (it.effect == Effect::Relayout) {
+        ApplyRelayout();
+        return;
+    }
+    g_dirty[i] = false;
+    cs::Request(i, g_draft[i], true);
+}
+
+// A key setting's "Change" (city picture): the next key pressed with
+// the modifiers held is the new value. g_capture: the item waiting (-1 none); read by the game thread (the window
+// subclass then gives every key to the panel). The note under the item: its last result.
+std::atomic<int> g_capture{-1};
+int g_noteItem = -1;
+char g_note[200] = "";
+bool g_noteWarn = false;
+GameKeyNote g_gameKeyNote = nullptr;
+
+void Note(int i, bool warn, const char *text)
+{
+    g_noteItem = i;
+    g_noteWarn = warn;
+    std::snprintf(g_note, sizeof(g_note), "%s", text);
+}
+
+void HotkeyWidget(int i, const cs::Item &it)
+{
+    if (g_capture.load() == i) {
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "Press the new key or combination (Esc cancels)");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Cancel")) {
+            g_capture = -1;
+        }
+    }
+    else {
+        ImGui::Text("%s", g_draft[i]);
+        if (it.editable) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Change")) {
+                g_capture = i;
+                Note(-1, false, "");
+            }
+        }
+    }
+    if (g_noteItem == i && g_note[0]) {
+        if (g_noteWarn) {
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "%s", g_note);
+        }
+        else {
+            ImGui::TextDisabled("%s", g_note);
+        }
+    }
+}
+
+const char *EffectTag(const cs::Item &it)
+{
+    switch (it.effect) {
+    case Effect::Live: return "applies at once";
+    case Effect::Relayout: return "re-layout, asks to keep";
+    case Effect::Restart: return "after a restart";
+    }
+    return "";
+}
+
+void Help(const cs::Item &it)
+{
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::BeginItemTooltip()) {
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
+        ImGui::TextUnformatted(it.help);
+        ImGui::Text("[%s] %s", it.section, it.key);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+}
+
+// Int with an optional "auto": a checkbox and a slider (released: commit).
+void IntWidget(int i, const cs::Item &it, const char *id, float width, const char *format)
+{
+    bool isAuto = it.autoWord && std::strcmp(g_draft[i], it.autoWord) == 0;
+    int v = isAuto ? it.min : std::atoi(g_draft[i]);
+    if (it.autoWord) {
+        bool a = isAuto;
+        char label[48];
+        std::snprintf(label, sizeof(label), "Auto##%s", id);
+        if (ImGui::Checkbox(label, &a)) {
+            if (a) {
+                std::snprintf(g_draft[i], cs::kValueSize, "%s", it.autoWord);
+            }
+            else {
+                std::snprintf(g_draft[i], cs::kValueSize, "%d", v);
+            }
+            g_dirty[i] = true;
+            Commit(i);
+        }
+        ImGui::SameLine();
+    }
+    ImGui::BeginDisabled(isAuto);
+    ImGui::SetNextItemWidth(width);
+    char sid[48];
+    std::snprintf(sid, sizeof(sid), "##%s", id);
+    int top = it.max;
+    if (it.maxNow) { // only as far as it has an effect now (whole steps)
+        top = std::clamp(it.maxNow(), it.min, it.max);
+        top = it.min + (top - it.min) / std::max(it.step, 1) * std::max(it.step, 1);
+    }
+    if (ImGui::SliderInt(sid, &v, it.min, top, format, ImGuiSliderFlags_AlwaysClamp)) {
+        if (it.step > 1) {
+            v = it.min + (v - it.min + it.step / 2) / it.step * it.step;
+        }
+        std::snprintf(g_draft[i], cs::kValueSize, "%d", v);
+        g_dirty[i] = true;
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        Commit(i);
+    }
+    ImGui::EndDisabled();
+}
+
+// display.resolution: the game's own size, scaled, a common size from a list, or a custom size. The game's
+// own size, scaled and a common size apply at once (with the question whether to keep it); a custom size with the
+// Apply button. All are stored the same way ("1024x768", "scaled", "1920x1080").
+bool g_allAspects = false; // the common sizes of every aspect, not only the screen's (not saved)
+
+void ResolutionWidget(int i, float width)
+{
+    const int ownW = core_game()->native_width, ownH = core_game()->native_height;
+    static char ownKind[64] = "";
+    if (!ownKind[0]) {
+        std::snprintf(ownKind, sizeof(ownKind), "%dx%d (the game's own size)", ownW, ownH);
+    }
+    const char *const kKinds[] = {ownKind, "scaled (native / display scale)", "common size (from a list)",
+                                  "custom size (typed in)"};
+    const bool scaled = std::strcmp(g_draft[i], "scaled") == 0;
+    int w = ownW, h = ownH;
+    if (!scaled) {
+        w = std::atoi(g_draft[i]);
+        const char *x = std::strchr(g_draft[i], 'x');
+        h = x ? std::atoi(x + 1) : ownH;
+    }
+    const SIZE n = core::display::NativeSize();
+    int minW = 0, minH = 0;
+    core::display::GameMinimum(&minW, &minH);
+    core::display::CommonSize sizes[48];
+    const int count = core::display::CommonSizes(n.cx, n.cy, minW, minH, g_allAspects, sizes, 48);
+    int listed = -1;
+    for (int k = 0; k < count; ++k) {
+        if (sizes[k].w == w && sizes[k].h == h) {
+            listed = k;
+        }
+    }
+    int kind = scaled ? 1 : (w == ownW && h == ownH) ? 0 : listed >= 0 ? 2 : 3;
+    // The kind picked in the box shows until the value is changed some other way (applied, reverted, defaults):
+    // "Common size" before a size is picked from the list, "Custom size" while a size is typed.
+    static int picked = -1;
+    static char pickedValue[cs::kValueSize] = "";
+    if (picked >= 0 && std::strcmp(pickedValue, g_draft[i]) != 0 && !g_dirty[i]) {
+        picked = -1;
+    }
+    if (picked >= 0) {
+        kind = picked;
+    }
+    ImGui::SetNextItemWidth(width);
+    if (ImGui::Combo("##resolution", &kind, kKinds, 4)) {
+        picked = kind;
+        if (kind == 0) {
+            std::snprintf(g_draft[i], cs::kValueSize, "%dx%d", ownW, ownH);
+        }
+        else if (kind == 1) {
+            std::snprintf(g_draft[i], cs::kValueSize, "scaled");
+        }
+        else if (kind == 3) {
+            std::snprintf(g_draft[i], cs::kValueSize, "%ldx%ld", n.cx, n.cy);
+        }
+        std::snprintf(pickedValue, sizeof(pickedValue), "%s", g_draft[i]);
+        if (kind == 0 || kind == 1) {
+            g_dirty[i] = true;
+            Commit(i);
+        }
+        else if (kind == 3) {
+            g_dirty[i] = true; // applied with the Apply button
+        }
+        // kind 2: nothing changes until a size is picked from the list
+    }
+    if (kind == 2) {
+        // The list: e.g. "1920 x 1080  16:9  (scale 133%)", "3840 x 2160  16:9  native, heavy".
+        auto label = [&](const core::display::CommonSize &c, char *out, size_t size) {
+            const int pct = c.h > 0 ? static_cast<int>((static_cast<long long>(n.cy) * 100 + c.h / 2) / c.h) : 100;
+            std::snprintf(out, size, "%d x %d  %s%s%s", c.w, c.h, c.aspect ? c.aspect : "",
+                          c.native ? "  native" : "", c.heavy ? "  (heavy: slower in large cities)" : "");
+            if (!c.native) {
+                size_t len = std::strlen(out);
+                std::snprintf(out + len, size - len, "  (scale %d%%)", pct);
+            }
+        };
+        char current[96] = "";
+        if (listed >= 0) {
+            label(sizes[listed], current, sizeof(current));
+        }
+        ImGui::SetNextItemWidth(width);
+        if (ImGui::BeginCombo("##common", current)) {
+            for (int k = 0; k < count; ++k) {
+                char text[96];
+                label(sizes[k], text, sizeof(text));
+                if (ImGui::Selectable(text, k == listed)) {
+                    std::snprintf(g_draft[i], cs::kValueSize, "%dx%d", sizes[k].w, sizes[k].h);
+                    g_dirty[i] = true;
+                    picked = 2;
+                    Commit(i);
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::Checkbox("Show all aspects", &g_allAspects);
+    }
+    if (kind == 3) {
+        ImGui::SetNextItemWidth(width * 0.3f);
+        bool changed = ImGui::InputInt("##w", &w, 0, 0);
+        ImGui::SameLine();
+        ImGui::TextUnformatted("x");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(width * 0.3f);
+        changed = ImGui::InputInt("##h", &h, 0, 0) || changed;
+        if (changed) {
+            w = w < 320 ? 320 : w > 16384 ? 16384 : w;
+            h = h < 320 ? 320 : h > 16384 ? 16384 : h;
+            std::snprintf(g_draft[i], cs::kValueSize, "%dx%d", w, h);
+            g_dirty[i] = true;
+        }
+    }
+}
+
+// What the resolution and scale drafts give on this screen.
+void RelayoutPreview(int resolution, int scale)
+{
+    if (resolution < 0 || scale < 0) {
+        return;
+    }
+    SIZE n = core::display::NativeSize();
+    int minW = 0, minH = 0;
+    core::display::GameMinimum(&minW, &minH);
+    const char *r = g_draft[resolution];
+    core_resolution_kind kind = std::strcmp(r, "scaled") == 0 ? CORE_RESOLUTION_SCALED : CORE_RESOLUTION_FIXED;
+    int w = std::atoi(r), h = 0;
+    if (const char *x = std::strchr(r, 'x')) {
+        h = std::atoi(x + 1);
+    }
+    int pct = std::strcmp(g_draft[scale], "auto") == 0 ? 0 : std::atoi(g_draft[scale]);
+    core::display::LogicalSize l =
+        core::display::ChooseLogicalSize(n.cx, n.cy, kind, w, h, pct, minW, minH);
+    if (kind == CORE_RESOLUTION_SCALED) {
+        ImGui::TextDisabled("Result: %d x %d (scale %d%% of %ld x %ld)%s", l.w, l.h, l.scale_percent, n.cx, n.cy,
+                            l.limited ? ", limited to the minimum" : "");
+    }
+    else {
+        ImGui::TextDisabled("Result: %d x %d on a %ld x %ld screen%s", l.w, l.h, n.cx, n.cy,
+                            l.limited ? " (limited to the minimum)" : "");
+    }
+}
+
+const char *SectionTitle(const char *section)
+{
+    if (_stricmp(section, "video") == 0) return "Video";
+    if (_stricmp(section, "gameplay") == 0) return "Gameplay";
+    if (_stricmp(section, "audio") == 0) return "Audio";
+    if (_stricmp(section, "timing") == 0) return "Timing";
+    if (_stricmp(section, "ui") == 0) return "Panel";
+    if (_stricmp(section, "debug") == 0) return "Testing";
+    return section;
+}
+
+// The display scale only applies to Resolution = Scaled; it is hidden otherwise.
+bool ScaleShown(int resolution)
+{
+    return resolution < 0 || std::strcmp(g_draft[resolution], "scaled") == 0;
+}
+
+// The result of the resolution and scale drafts, and Apply / Cancel for a custom size not applied yet: under the
+// scale item, or under the resolution item when the scale is hidden. (The scale and the other choices apply at once
+// -- the slider when it is let go -- so they need no buttons.)
+void RelayoutControls(int resolution, int displayScale)
+{
+    RelayoutPreview(resolution, displayScale);
+    bool dirty = resolution >= 0 && g_dirty[resolution];
+    if (dirty) {
+        if (ImGui::Button("Apply")) {
+            ApplyRelayout();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            if (resolution >= 0) g_dirty[resolution] = false;
+            if (displayScale >= 0) g_dirty[displayScale] = false;
+        }
+    }
+}
+
+void DrawItem(int i, float scale, int resolution, int displayScale)
+{
+    const cs::Item &it = cs::Get(i);
+    const float width = 300.0f * scale;
+    ImGui::PushID(i);
+    ImGui::TextUnformatted(it.label);
+    Help(it);
+    ImGui::SameLine();
+    ImGui::TextDisabled("[%s]", EffectTag(it));
+    if (!it.editable) {
+        ImGui::BeginDisabled();
+    }
+    switch (it.type) {
+    case Type::Bool: {
+        bool on = std::strcmp(g_draft[i], "on") == 0;
+        if (ImGui::Checkbox("On", &on)) {
+            std::snprintf(g_draft[i], cs::kValueSize, "%s", on ? "on" : "off");
+            g_dirty[i] = true;
+            Commit(i);
+        }
+        break;
+    }
+    case Type::Choice: {
+        // The choices offered (cs::ChoiceListed), and the current one even when it is not (set in the file).
+        const char *labels[32];
+        int index[32], n = 0, cur = 0;
+        for (int k = 0; k < it.choiceCount && n < 32; ++k) {
+            const bool now = std::strcmp(g_draft[i], it.choices[k]) == 0;
+            if (!cs::ChoiceListed(it, k) && !now) {
+                continue;
+            }
+            if (now) cur = n;
+            labels[n] = it.choiceLabels ? it.choiceLabels[k] : it.choices[k];
+            index[n++] = k;
+        }
+        ImGui::SetNextItemWidth(width);
+        if (ImGui::Combo("##choice", &cur, labels, n)) {
+            std::snprintf(g_draft[i], cs::kValueSize, "%s", it.choices[index[cur]]);
+            g_dirty[i] = true;
+            Commit(i);
+        }
+        break;
+    }
+    case Type::Int: {
+        char format[16];
+        std::snprintf(format, sizeof(format), "%%d%s", it.unit && std::strcmp(it.unit, "%") == 0 ? "%%" : it.unit ? it.unit : "");
+        IntWidget(i, it, it.key, width, format);
+        break;
+    }
+    case Type::Resolution:
+        ResolutionWidget(i, width);
+        break;
+    case Type::Hotkey:
+        HotkeyWidget(i, it);
+        break;
+    }
+    if (!it.editable) {
+        ImGui::EndDisabled();
+    }
+    if (i == displayScale || (i == resolution && !ScaleShown(resolution))) {
+        RelayoutControls(resolution, displayScale);
+    }
+    if (cs::RestartPending(i)) {
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "Takes effect after restarting the game.");
+    }
+    if (_stricmp(it.key, "present") == 0 && std::strcmp(g_draft[i], "original") == 0) {
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+                           "With original this panel is not available (set present back in %s).",
+                           core_game()->ini_file_utf8);
+    }
+    ImGui::PopID();
+    ImGui::Spacing();
+}
+
+void RestoreDefaults()
+{
+    bool relayout = false;
+    for (int i = 0; i < cs::Count() && i < kMax; ++i) {
+        const cs::Item &it = cs::Get(i);
+        if (!Shown(i) || !it.editable) {
+            continue;
+        }
+        char now[cs::kValueSize];
+        cs::Value(i, now, sizeof(now));
+        if (std::strcmp(now, it.defaultValue) == 0) {
+            continue;
+        }
+        std::snprintf(g_draft[i], cs::kValueSize, "%s", it.defaultValue);
+        g_dirty[i] = true;
+        if (it.effect == Effect::Relayout) {
+            relayout = true;
+        }
+        else {
+            Commit(i);
+        }
+    }
+    if (relayout) {
+        ApplyRelayout();
+    }
+    core_log("panel: restore defaults");
+}
+
+void ConfirmWindow(float scale)
+{
+    AcquireSRWLockShared(&g_lock);
+    bool pending = g_confirm.pending;
+    DWORD until = g_confirm.until;
+    ReleaseSRWLockShared(&g_lock);
+    if (!pending) {
+        return;
+    }
+    LONG left = static_cast<LONG>(until - GetTickCount());
+    if (left <= 0) {
+        Revert("no answer within 15 s");
+        return;
+    }
+    ImGuiIO &io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.25f), ImGuiCond_Always,
+                            ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowFocus();
+    if (ImGui::Begin("Keep these display settings?", nullptr,
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        ImGui::Text("Reverting to the previous settings in %ld s.", (left + 999) / 1000);
+        if (ImGui::Button("Keep", ImVec2(120 * scale, 0))) {
+            Keep();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Revert", ImVec2(120 * scale, 0))) {
+            Revert("Revert");
+        }
+    }
+    ImGui::End();
+}
+
+} // namespace
+
+void DrawSettings(float scale)
+{
+    const int n = cs::Count() < kMax ? cs::Count() : kMax;
+    int resolution = cs::Find("video", "resolution"), displayScale = cs::Find("video", "scale");
+    for (int i = 0; i < n; ++i) {
+        if (!g_dirty[i]) {
+            cs::Value(i, g_draft[i], cs::kValueSize);
+        }
+    }
+    AcquireSRWLockShared(&g_lock);
+    bool pending = g_confirm.pending;
+    ReleaseSRWLockShared(&g_lock);
+    ImGui::BeginDisabled(pending);
+    bool anyListed = false;
+    for (int i = 0; i < n; ++i) {
+        anyListed = anyListed || g_listed[i].load();
+    }
+    if (anyListed) {
+        ImGui::Checkbox("Show all settings", &g_showAll);
+        if (!g_showAll) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(the others are in the game's Options)");
+        }
+        ImGui::Separator();
+    }
+    // Sections in the order of their first item.
+    const char *done[16];
+    int doneCount = 0;
+    for (int i = 0; i < n; ++i) {
+        const char *section = cs::Get(i).section;
+        bool seen = false;
+        for (int k = 0; k < doneCount; ++k) {
+            seen = seen || _stricmp(done[k], section) == 0;
+        }
+        if (seen || doneCount >= 16) {
+            continue;
+        }
+        done[doneCount++] = section;
+        bool any = false;
+        for (int j = i; j < n; ++j) {
+            any = any || (Shown(j) && _stricmp(cs::Get(j).section, section) == 0);
+        }
+        if (!any || !ImGui::CollapsingHeader(SectionTitle(section), ImGuiTreeNodeFlags_DefaultOpen)) {
+            continue;
+        }
+        for (int j = i; j < n; ++j) {
+            if (Shown(j) && _stricmp(cs::Get(j).section, section) == 0) {
+                if (j == displayScale && !ScaleShown(resolution)) {
+                    continue;
+                }
+                const cs::Item &it = cs::Get(j);
+                if (it.shownIfKey) { // only with the other item's value (its draft: follows the panel at once)
+                    const int other = cs::Find(it.section, it.shownIfKey);
+                    if (other >= 0 && other < n && std::strcmp(g_draft[other], it.shownIfValue) != 0) {
+                        continue;
+                    }
+                }
+                DrawItem(j, scale, resolution, displayScale);
+            }
+        }
+    }
+    ImGui::Separator();
+    if (ImGui::Button("Restore defaults")) {
+        g_askDefaults = true;
+    }
+    if (g_askDefaults) {
+        ImGui::SameLine();
+        ImGui::TextUnformatted("Restore every setting above?");
+        ImGui::SameLine();
+        if (ImGui::Button("Yes")) {
+            g_askDefaults = false;
+            RestoreDefaults();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("No")) {
+            g_askDefaults = false;
+        }
+    }
+    char saved[160];
+    cs::LastSaveResult(saved, sizeof(saved));
+    if (saved[0]) {
+        ImGui::TextDisabled("Settings file: %s", saved);
+    }
+    ImGui::EndDisabled();
+    // Where the log, the settings and the screenshots are (core/platform/files): the game folder, or Documents\My
+    // Games\Yongle when the game folder is protected.
+    ImGui::TextDisabled("%s's files: %s", core_game()->product, core_files_folder_utf8());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Open folder")) {
+        core_files_open_folder();
+    }
+    ConfirmWindow(scale);
+}
+
+bool WantsGameFrames()
+{
+    return g_framesPending.load() || static_cast<LONG>(g_framesUntil.load() - GetTickCount()) > 0;
+}
+
+void PanelClosed()
+{
+    g_capture = -1;
+    Revert("panel closed without an answer");
+}
+
+// The key that ended the last wait for a key, until it is released: the new value reaches the configuration on the
+// game thread a moment later, and a key poll in between would see the key go down anew (found in testing:
+// the report key changed to Ctrl+F12 also made a report).
+std::atomic<unsigned> g_settleVk{0};
+
+std::atomic<bool> g_otherCapture{false}; // SetOtherCapture: another window of ours waits for a key
+
+bool CapturingKey()
+{
+    if (g_capture.load() >= 0 || g_otherCapture.load()) {
+        return true;
+    }
+    const unsigned vk = g_settleVk.load();
+    if (vk != 0) {
+        if (GetAsyncKeyState(static_cast<int>(vk)) & 0x8000) {
+            return true;
+        }
+        g_settleVk = 0;
+    }
+    return false;
+}
+
+void CaptureKey(unsigned vk, bool ctrl, bool shift, bool alt)
+{
+    const int i = g_capture.load();
+    if (i < 0 || i >= cs::Count()) {
+        return;
+    }
+    if (vk == VK_ESCAPE) {
+        g_settleVk = vk;
+        g_capture = -1;
+        Note(i, false, "Not changed.");
+        return;
+    }
+    if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || (vk >= VK_LSHIFT && vk <= VK_RMENU) ||
+        vk == VK_LWIN || vk == VK_RWIN || vk == VK_CAPITAL || vk == VK_NUMLOCK) {
+        return; // a modifier alone: wait for the key
+    }
+    if (!IsHotkeyKey(vk)) {
+        Note(i, true, "That key cannot be used here; try another one.");
+        return;
+    }
+    const Hotkey key{vk, (ctrl ? kModCtrl : 0u) | (shift ? kModShift : 0u) | (alt ? kModAlt : 0u)};
+    char text[cs::kValueSize];
+    FormatHotkey(key, text, sizeof(text));
+    // One key, one action: the other items' keys (both of each) and this item's alternative (it would be the same key
+    // twice). The new key replaces the item's first key; its alternative stays (set in the Hotkeys window).
+    Hotkey mine[kMaxKeys] = {};
+    char now[cs::kValueSize];
+    cs::Value(i, now, sizeof(now));
+    const int mineCount = ParseHotkeyList(now, now + std::strlen(now), mine);
+    for (int j = 0; j < cs::Count(); ++j) {
+        if (cs::Get(j).type != Type::Hotkey) {
+            continue;
+        }
+        char other[cs::kValueSize];
+        cs::Value(j, other, sizeof(other));
+        Hotkey keys[kMaxKeys] = {};
+        const int n = ParseHotkeyList(other, other + std::strlen(other), keys);
+        for (int k = j == i ? 1 : 0; k < n; ++k) {
+            if (keys[k].vk == key.vk && keys[k].mods == key.mods) {
+                char why[200];
+                std::snprintf(why, sizeof(why), "%s is already the key for \"%s\"; try another one.", text,
+                              cs::Get(j).label);
+                Note(i, true, why);
+                return;
+            }
+        }
+    }
+    if (mineCount == 2) {
+        mine[0] = key;
+        FormatHotkeyList(mine, 2, text, sizeof(text));
+    }
+    g_settleVk = vk;
+    g_capture = -1;
+    std::snprintf(g_draft[i], cs::kValueSize, "%s", text);
+    g_dirty[i] = true;
+    Commit(i);
+    core_log("panel: %s.%s set to %s with a key press", cs::Get(i).section, cs::Get(i).key, text);
+    const char *game = g_gameKeyNote ? g_gameKeyNote(key.vk, key.mods) : nullptr;
+    if (game) {
+        char why[200];
+        std::snprintf(why, sizeof(why), "Saved. %s", game);
+        Note(i, true, why);
+    }
+    else {
+        Note(i, false, "Saved.");
+    }
+}
+
+void SetListedElsewhere(const int *indices, int count)
+{
+    for (int i = 0; i < kMax; ++i) {
+        g_listed[i].store(false);
+    }
+    for (int k = 0; k < count; ++k) {
+        if (indices[k] >= 0 && indices[k] < kMax) {
+            g_listed[indices[k]].store(true);
+        }
+    }
+}
+
+void SetGameKeyNote(GameKeyNote fn)
+{
+    g_gameKeyNote = fn;
+}
+
+GameKeyNote GetGameKeyNote()
+{
+    return g_gameKeyNote;
+}
+
+void SetOtherCapture(bool waiting, unsigned settleVk)
+{
+    g_otherCapture = waiting;
+    if (!waiting && settleVk != 0) {
+        g_settleVk = settleVk;
+    }
+}
+
+} // namespace core::ui
