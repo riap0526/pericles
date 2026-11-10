@@ -84,17 +84,23 @@ void __cdecl DebugLog_detour(const void *message, int a, int code)
     core::diag::Guarded(g_gameLog, [](void *p) { LogBody(*static_cast<const LogCall *>(p)); }, &c);
 }
 
-// The game's F5 switches it to its own window mode and makes DirectDraw again; that window mode needs a clipper,
-// which the emulated back end does not have. Until the keys are settled, F5 is kept from the game.
+// F5 and Alt+Enter switch between full screen and a window (ours: core's window mode, the game's picture scaled into
+// it), as in Emperor's layer. The game's own F5 must not run: it switches the game to its own window mode and makes
+// DirectDraw again, and that window mode needs a clipper, which the emulated back end does not have. The game does
+// not use Alt+Enter. F6 and F7 (the game's 800x600 and 1024x768) stay the game's.
 bool KeyFilter(UINT message, WPARAM key, LPARAM l)
 {
-    if (message != WM_KEYDOWN || key != VK_F5) {
-        return false;
+    const bool f5 = message == WM_KEYDOWN && key == VK_F5 && !(GetKeyState(VK_SHIFT) & 0x8000) &&
+                    !(GetKeyState(VK_CONTROL) & 0x8000);
+    const bool altEnter = message == WM_SYSKEYDOWN && key == VK_RETURN && (l & (1 << 29));
+    const bool otherF5 = message == WM_KEYDOWN && key == VK_F5; // with Shift or Ctrl: still not the game's
+    if (!f5 && !altEnter) {
+        return otherF5;
     }
-    static bool noted = false;
-    if (!noted && !(l & (1 << 30))) {
-        noted = true;
-        core_log("zeus: F5 kept from the game (its window mode does not work with the emulated DirectDraw)");
+    if (!(l & (1 << 30))) { // not an auto-repeat
+        const bool to = !core::display::Windowed();
+        core_log("zeus: %s -> %s (the game does not see the key)", f5 ? "F5" : "Alt+Enter", to ? "windowed" : "fullscreen");
+        core::settings::Request(core::settings::Find("video", "window"), to ? "windowed" : "fullscreen", true);
     }
     return true;
 }
@@ -132,4 +138,6 @@ extern "C" void zeus_attach(void)
         core::diag::Disable(g_gameLog, "the hook could not be installed");
     }
     core::display::SetKeyFilter(&KeyFilter);
+    core_log("zeus: F5 and Alt+Enter switch between full screen and a window (the game's own F5 is not used); F6 "
+             "and F7 stay the game's");
 }
