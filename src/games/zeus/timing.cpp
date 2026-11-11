@@ -2,18 +2,25 @@
 // in the Site and Var declarations below).
 #include "games/zeus/timing.h"
 
+#include "core/capture/screenshot.h"
 #include "core/config.h"
+#include "core/diag/environment.h"
 #include "core/diag/guard.h"
+#include "core/diag/perf.h"
+#include "core/diag/report.h"
+#include "core/diag/stall.h"
 #include "core/log.h"
 #include "core/output/sdl_output.h"
 #include "core/platform/timing.h"
 #include "core/settings/settings.h"
 #include "core/ui/panel.h"
 #include "games/zeus/anim_clock.h"
+#include "games/zeus/diag.h"
 #include "games/zeus/site.h"
 
 #include <mmsystem.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 
@@ -52,6 +59,16 @@ const Var<char> kFastForward{0xf2aa9c};    // game_frame runs ticks until a righ
 const Var<int> kTickBlock{0x665dc8};       // no tick while set (sim_tick_due 0x516910)
 const Var<int> kGameSpeed{0xf2a774};       // game_speed, percent
 const Var<unsigned char> kGameScreen{0xf2a6dd};
+const Var<int> kModeWidth{0xf2a6a0}, kModeHeight{0xf2a69c}; // dd_width, dd_height
+
+// Where the time goes (core/diag/perf.h; the panel's Performance section and the overlay): a sample is one
+// game_frame. The same idea as Yongle's "game pass" and "simulation".
+namespace perf = core::diag::perf;
+const int kFramePhase = perf::Register("game frame", perf::Thread::Game, true);
+const int kSimPhase = perf::Register("simulation (sim_tick)", perf::Thread::Game);
+const int kRenderPhase = perf::Register("city drawing (city_render)", perf::Thread::Game);
+const int kPutBackPhase = perf::Register("drawn-frame animations (copy, put back)", perf::Thread::Game);
+bool g_measured = false; // the output's frames per second measured once, in the city
 constexpr DWORD kTickTable = 0x63da1c;     // sim_tick_delay (ms, + 2 in sim_tick_due), by (100 - speed) / 10
 constexpr DWORD kAnimDue = 0x6668ec;       // anim_due, 51 bytes
 
@@ -197,13 +214,35 @@ void LogRates(const char *why)
     long long copied = 0;
     DWORD buildings = 0;
     TakeCopyStats(&copied, &buildings);
+    long multi = 0, torn = 0;
+    core::diag::TakeIntegrity(&multi, &torn);
     core_log("rates%s: frames %.0f/s (at most %d/s), sim ticks %.1f/s (%ld with game-time animation), city drawings "
              "%.1f/s counting + %.1f/s put back (%.0f MB/s, buildings 0..%lu), game presents %.1f/s, frames shown "
-             "%.1f/s over %lu ms (present=%s, display %d Hz, game speed %d%%, screen %d, timer %u us)%s",
+             "%.1f/s over %lu ms (present=%s, display %d Hz, game speed %d%%, screen %d, mode %dx%d, timer %u us); "
+             "frame check: %ld game frames with 2+ presents, %ld torn%s",
              why, g_frames / s, FrameCap(), g_ticks / s, g_animTicks, counted / s, reverted / s,
              copied / s / (1024.0 * 1024.0), static_cast<unsigned long>(buildings), presented / s, shown / s, ms,
              kPresent[core_config_get()->present], core::output::RefreshHz(), *kGameSpeed,
-             static_cast<int>(*kGameScreen), core_timer_resolution_us(), paceNote);
+             static_cast<int>(*kGameScreen), *kModeWidth, *kModeHeight, core_timer_resolution_us(), multi, torn,
+             paceNote);
+    // Where the time goes (perf phases), how evenly frames were shown, processor time given to each thread -- the
+    // same lines as Yongle's rate log.
+    char times[768], longest[768];
+    core::diag::perf::TakeWindow(times, sizeof(times), longest, sizeof(longest));
+    if (times[0]) {
+        core_log("time%s (ms): %s", why, times);
+        core_log("time max%s (ms): %s", why, longest);
+    }
+    char intervals[512];
+    core::output::TakeIntervals(intervals, sizeof(intervals));
+    if (intervals[0]) {
+        core_log("intervals%s (ms): %s", why, intervals);
+    }
+    char cpu[512];
+    core::diag::env::TakeWindow(cpu, sizeof(cpu));
+    if (cpu[0]) {
+        core_log("cpu%s: %s", why, cpu);
+    }
     g_frames = g_ticks = g_animTicks = 0;
     g_since = now;
 }
@@ -244,9 +283,38 @@ void __cdecl GameFrame_detour()
     }
     ++g_frames;
     DecideCountingFrame();
+    zeus::diag::FrameBegin();
+    core::diag::GameFrameBegin(); // frame check: presents within one frame
+    core::diag::env::NoteCore(core::diag::env::Thread::Game);
+    // A city frame of a second or more is sampled (other screens load files in one frame).
+    const bool city = *kGameScreen == 1;
+    if (city && !g_measured) {
+        g_measured = true;
+        core::output::MeasureFromNow(); // the output's frames per second, measured in the city (once)
+    }
+    if (city) {
+        core::diag::stall::Begin(core::diag::stall::Thread::Game);
+    }
+    const std::int64_t t0 = perf::Now();
     o_GameFrame();
+    perf::Add(kFramePhase, perf::Now() - t0);
+    if (city) {
+        core::diag::stall::End(core::diag::stall::Thread::Game);
+    }
+    perf::EndSample(perf::Thread::Game);
+    core::diag::GameFrameEnd();
+    zeus::diag::FrameEnd();
     if (g_since == 0) {
         g_since = GetTickCount();
+    }
+    if (int report = core::diag::TakeReportRequest()) { // the game's part of a problem report
+        char why[40];
+        std::snprintf(why, sizeof(why), " (report #%d)", report);
+        LogRates(why);
+        char state[256];
+        zeus::diag::Describe(state, sizeof(state));
+        core_log("report #%d: %s", report, state);
+        zeus::diag::CensusForReport();
     }
     const int speed = *kGameSpeed;
     if (speed != g_lastSpeed) {
@@ -441,7 +509,10 @@ void RunTick()
     if (core::diag::Enabled(g_animFeature) && core::diag::Guarded(g_animFeature, &AnimBefore, &s)) {
         ++g_animTicks;
     }
-    o_SimTick();
+    {
+        perf::Scope timed(kSimPhase);
+        o_SimTick();
+    }
     if (s.swapped) {
         std::memcpy(reinterpret_cast<unsigned char *>(kAnimDue), s.frame, sizeof(s.frame));
     }
@@ -613,21 +684,28 @@ void RenderAfter(void *p)
 template <typename F> void WithDrawnState(F draw)
 {
     RenderSwap s;
+    std::int64_t t = perf::Now();
     const bool active = g_renderDepth == 0 && g_drawnCopy && core::diag::Enabled(g_drawnFeature) &&
                         core::diag::Guarded(g_drawnFeature, &RenderBefore, &s);
+    perf::Add(kPutBackPhase, perf::Now() - t);
     ++g_renderDepth;
+    t = perf::Now();
     draw();
+    perf::Add(kRenderPhase, perf::Now() - t);
     --g_renderDepth;
     if (active) {
+        t = perf::Now();
         if (!core::diag::Guarded(g_drawnFeature, &RenderAfter, &s)) {
             core_log("zeus: drawn-frame animations off after an error: the game's own (every drawing counts)");
         }
+        perf::Add(kPutBackPhase, perf::Now() - t);
         ++(s.copied ? g_reverted : g_counted);
     }
 }
 
 void __cdecl CityRender_detour(int x, int y, int z)
 {
+    zeus::diag::CityRender(x, y, z); // a log line when the city viewport changes (reads only)
     WithDrawnState([&] { o_CityRender(x, y, z); });
 }
 
@@ -681,6 +759,15 @@ const char *const kFullSpeedLabels[] = {"capped (steady, a step above 90%)", "or
 
 namespace zeus::timing {
 
+// game_main returned (games/zeus/diag.cpp): the last rate line, the screenshots still being written (e.g. F12 just
+// before leaving), the system timer resolution back.
+void GameEnded()
+{
+    core::capture::Flush(15000);
+    LogRates(" (game ended)");
+    core_timer_end();
+}
+
 void RegisterSettings()
 {
     using core::settings::Effect;
@@ -688,9 +775,9 @@ void RegisterSettings()
     using core::settings::Type;
     int i = core::settings::Register(Item{
         "gameplay", "keep_speed", "Keep the game speed",
-        "on: ticks owed because a frame took long (a large city) are made up in the next frame, as Augustus does, so "
-        "the game runs at its set speed; off: the game's own pace (one tick per frame at most, slower when frames "
-        "are slow).",
+        "on: ticks owed because a frame took long (large city, high resolution) are made up in the next frame, as "
+        "Augustus does, so the game runs at its set speed at any resolution; off: the game's own pace (one tick per "
+        "frame at most, slower when frames are slow).",
         Type::Bool, "on", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0});
     core::settings::OnChange(i, [](int, const char *v, bool) {
         g_catchUp = std::strcmp(v, "on") == 0;
@@ -700,7 +787,8 @@ void RegisterSettings()
         "gameplay", "full_speed", "Game speed behavior",
         "Only matters at game speed 100%. capped (default): always the same pace, a step above 90% (90% runs 45 "
         "steps a second, 100% 62; Augustus does the same). original: the game's own 100% -- it runs as fast as your "
-        "computer can draw, so it changes with the city: many times faster than 90% on a fast computer.",
+        "computer can draw, so it changes with the city and the resolution: in a small city many times faster "
+        "than 90%, in a large city on a big screen only a little faster.",
         Type::Choice, "capped", Effect::Live, true, true, 0, 0, 0, nullptr, kFullSpeed, kFullSpeedLabels, 2});
     core::settings::OnChange(i, [](int, const char *v, bool) {
         g_fullSpeedCapped = std::strcmp(v, "capped") == 0;
@@ -708,8 +796,8 @@ void RegisterSettings()
     });
     i = core::settings::Register(Item{
         "gameplay", "simulate_while_scrolling", "Simulate while scrolling",
-        "on (default): the city goes on while the view scrolls at the screen edge; off: it stands still while "
-        "scrolling, as in the original.",
+        "on (default): the city goes on while the view scrolls (as in Augustus with smooth scrolling); off: it "
+        "stands still while scrolling, as in the original.",
         Type::Bool, "on", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0});
     core::settings::OnChange(i, [](int, const char *v, bool) {
         g_simWhileScrolling = std::strcmp(v, "on") == 0;

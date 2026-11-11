@@ -22,6 +22,7 @@ set(GAME_SOURCES
     src/games/zeus/debug_log.cpp
     src/games/zeus/timing.cpp
     src/games/zeus/anim_clock.cpp
+    src/games/zeus/diag.cpp
 )
 
 # The offline tests of this game layer (run by src/games/zeus/tests.ps1 through proxy/ddraw/run_tests.ps1).
