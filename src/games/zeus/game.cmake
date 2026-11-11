@@ -20,6 +20,8 @@ set(GAME_SOURCES
     src/games/zeus/game.cpp
     src/games/zeus/zeus.cpp
     src/games/zeus/debug_log.cpp
+    src/games/zeus/timing.cpp
+    src/games/zeus/anim_clock.cpp
 )
 
 # The offline tests of this game layer (run by src/games/zeus/tests.ps1 through proxy/ddraw/run_tests.ps1).
@@ -28,4 +30,8 @@ macro(game_add_tests)
     add_executable(test_debug_log src/games/zeus/test_debug_log.cpp src/games/zeus/debug_log.cpp)
     target_include_directories(test_debug_log PRIVATE src)
     target_link_options(test_debug_log PRIVATE -static)
+    # games/zeus/anim_clock: the figures' animation timer rule on the game-time clock (no game, no DLL).
+    add_executable(test_anim_clock src/games/zeus/test_anim_clock.cpp src/games/zeus/anim_clock.cpp)
+    target_include_directories(test_anim_clock PRIVATE src)
+    target_link_options(test_anim_clock PRIVATE -static)
 endmacro()

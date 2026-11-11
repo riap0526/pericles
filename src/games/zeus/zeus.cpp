@@ -1,38 +1,31 @@
-// Zeus's game layer (zeus.h): the exe check, the game's own log messages and the keys the game must not see.
+// Zeus's game layer (zeus.h): the exe check, the game's own log messages, the keys the game must not see, and the
+// frames, simulation pace and animation timing (games/zeus/timing.h).
 #include "games/zeus/zeus.h"
 
+#include "core/capture/screenshot.h"
 #include "core/diag/guard.h"
+#include "core/diag/present_mode.h"
 #include "core/display/virtual_display.h"
 #include "core/hook/hook.h"
 #include "core/log.h"
 #include "core/settings/settings.h"
 #include "games/zeus/debug_log.h"
+#include "games/zeus/site.h"
+#include "games/zeus/timing.h"
 #include "ini_template.h" // generated from src/games/zeus/zeus_engine.ini (CMakeLists.txt)
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <cstdio>
 #include <cstring>
 
 namespace {
 
-// A place in Zeus.exe 2.1.4.0 (image base 0x400000, no relocations) and the first bytes it has there. Nothing is
-// hooked unless every site matches. (Emperor's layer has the same idea in games/emperor/site.h; the two are kept
-// apart until both are settled -- the layers do not include each other.)
-struct Site {
-    const char *name;
-    DWORD address;
-    BYTE expect[8];
-};
-
-bool Matches(const Site &s)
-{
-    MEMORY_BASIC_INFORMATION mbi{};
-    if (!VirtualQuery(reinterpret_cast<void *>(s.address), &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT) {
-        return false;
-    }
-    return std::memcmp(reinterpret_cast<const void *>(s.address), s.expect, sizeof(s.expect)) == 0;
-}
+// Places in Zeus.exe 2.1.4.0 and the first bytes they have there (games/zeus/site.h). Nothing is hooked unless
+// every site matches.
+using zeus::Matches;
+using zeus::Site;
 
 // The game's log function: only "ret" and padding (the release build compiled the log out). __cdecl, called with a
 // text (often with 0 and an error code after it), a number, or other values (docs: symbols debug_log_stub).
@@ -109,7 +102,8 @@ bool KeyFilter(UINT message, WPARAM key, LPARAM l)
 
 extern "C" void zeus_register_settings(void)
 {
-    // No settings of Zeus's own yet. The settings file this version ships: an older file gets its descriptions.
+    zeus::timing::RegisterSettings(); // [gameplay] keep_speed, full_speed, simulate_while_scrolling
+    // The settings file this version ships: an older file gets its descriptions.
     core::settings::SetTemplate(zeus::kIniTemplate);
 }
 
@@ -140,4 +134,11 @@ extern "C" void zeus_attach(void)
     core::display::SetKeyFilter(&KeyFilter);
     core_log("zeus: F5 and Alt+Enter switch between full screen and a window (the game's own F5 is not used); F6 "
              "and F7 stay the game's");
+    zeus::timing::Attach(); // frames follow the display, the simulation pace, figure animations
+    // Screenshot file names and the present mode log's lines carry game_screen 0xf2a6dd (one byte, reads only).
+    core::capture::SetTagProvider([](char *out, size_t size) {
+        std::snprintf(out, size, "screen_0x%02x", *reinterpret_cast<volatile unsigned char *>(0xf2a6dd));
+    });
+    core::diag::present_mode::SetScreenProvider(
+        [] { return static_cast<int>(*reinterpret_cast<volatile unsigned char *>(0xf2a6dd)); });
 }
