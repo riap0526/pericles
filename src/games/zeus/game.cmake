@@ -26,6 +26,7 @@ set(GAME_SOURCES
     src/games/zeus/state_check.cpp
     src/games/zeus/resolution.cpp
     src/games/zeus/world_map.cpp
+    src/games/zeus/intro.cpp
 )
 
 # The offline tests of this game layer (run by src/games/zeus/tests.ps1 through proxy/ddraw/run_tests.ps1).
@@ -44,7 +45,8 @@ macro(game_add_tests)
     # parts of the DLL they call that are not under test (output, panel, games/zeus/diag) are stubbed in the test.
     add_executable(test_restore src/games/zeus/test_restore.cpp
         src/games/zeus/timing.cpp src/games/zeus/anim_clock.cpp src/games/zeus/state_check.cpp
-        src/games/zeus/resolution.cpp src/games/zeus/world_map.cpp src/core/display/logical_size.cpp
+        src/games/zeus/resolution.cpp src/games/zeus/world_map.cpp src/games/zeus/intro.cpp
+        src/core/settings/intro_movie.cpp src/core/display/logical_size.cpp
         src/core/diag/guard.cpp src/core/diag/report.cpp src/core/diag/perf.cpp src/core/diag/environment.cpp
         src/core/diag/rate_log.cpp src/core/sim/pace.cpp
         src/core/diag/stall.cpp src/core/platform/affinity.cpp src/core/log.cpp src/core/config.cpp

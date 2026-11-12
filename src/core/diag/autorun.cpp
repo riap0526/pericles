@@ -410,6 +410,18 @@ bool Active()
     return g_on && std::strcmp(g_state, "running") == 0;
 }
 
+bool Requested()
+{
+    return GetEnvironmentVariableW(L"IMPRESSIONS_AUTORUN", nullptr, 0) != 0;
+}
+
+bool IntroRequested()
+{
+    wchar_t v[16];
+    const DWORD n = GetEnvironmentVariableW(L"IMPRESSIONS_AUTORUN_INTRO", v, 16);
+    return n > 0 && n < 16 && _wcsicmp(v, L"play") == 0;
+}
+
 const char *State()
 {
     return g_state;

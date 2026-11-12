@@ -12,6 +12,7 @@
 #include "core/settings/settings.h"
 #include "games/zeus/debug_log.h"
 #include "games/zeus/diag.h"
+#include "games/zeus/intro.h"
 #include "games/zeus/resolution.h"
 #include "games/zeus/site.h"
 #include "games/zeus/state_check.h"
@@ -107,6 +108,7 @@ extern "C" void zeus_register_settings(void)
     zeus::timing::RegisterSettings(); // [gameplay] keep_speed, full_speed, simulate_while_scrolling
     zeus::diag::RegisterSettings();   // [debug] draw_census
     zeus::state_check::RegisterSettings(); // [debug] state_check
+    zeus::intro::RegisterSettings();       // [ui] intro_movie
     // The settings file this version ships: an older file gets its descriptions.
     core::settings::SetTemplate(zeus::kIniTemplate);
 }
@@ -141,6 +143,7 @@ extern "C" void zeus_attach(void)
     zeus::timing::Attach(); // frames follow the display, the simulation pace, figure animations
     zeus::diag::Attach();   // state line, panel sections, game end, layout logs
     zeus::state_check::Attach(); // [debug] state_check: drawings that do not count leave the save data as it was
+    zeus::intro::Attach();       // [ui] intro_movie (before game_main reaches the movie)
     // The allies' flags at the original's pace; the map drawn with the game's own height (without it the map
     // reads past its picture on a screen higher than 768, so the logical resolution needs it).
     const bool mapHeight = zeus::world_map::Attach();

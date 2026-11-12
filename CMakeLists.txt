@@ -113,6 +113,7 @@ set(CORE_SOURCES
     src/core/ui/perf_view.cpp
     src/core/settings/settings.cpp
     src/core/settings/ini_text.cpp
+    src/core/settings/intro_movie.cpp
 )
 add_library(ddraw SHARED proxy/ddraw/ddraw.c proxy/ddraw/ddraw.def ${CORE_SOURCES} ${GAME_SOURCES})
 # Augustus code (AGPL-3.0): third_party/augustus/README.md. Compiled as part of the DLL.

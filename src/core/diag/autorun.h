@@ -65,6 +65,15 @@ void Frame();
 
 bool Active();
 
+// Whether the process was started for a smoke test (IMPRESSIONS_AUTORUN is set), whatever Start finds later: for
+// what happens before the game's first frame (e.g. its intro movie), when Start has not run yet. A game layer skips
+// its intro movie then, unless IntroRequested().
+bool Requested();
+
+// IMPRESSIONS_AUTORUN_INTRO=play: the test runner asks for the intro movie to be played as the settings say (the
+// paths around the movie, e.g. its display mode switches).
+bool IntroRequested();
+
 // From another thread (core/output's thread, every pass): the watchdog. When the game's frames have stopped for a
 // while and the script is past its timeout -- the game is in a loop of its own, e.g. a picture or a dialog waiting
 // for a click -- a screenshot of that is asked for, then the game is ended through Game::quit. Does nothing

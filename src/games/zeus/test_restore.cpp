@@ -33,6 +33,11 @@
 //   draw_only           the panel asks: frames drawn (sim_tick_due says no) and the resolution switched in them; a
 //                           fault: off, the flag put back
 //
+// The intro movie (games/zeus/intro):
+//   intro_skip               skip: game_main's call of bink_open (seen by its return address) is left out; another
+//                           caller's movie opens with its arguments; play: game_main's opens
+//   intro_fault         a fault while skipping: off, the movie opens as the game does it
+//
 // Each scenario runs in a child process of its own (a feature switched off stays off for the rest of a process):
 //   test_restore.exe            runs every scenario and prints one line each
 //   test_restore.exe <name>     one scenario (exit code 0 = passed)
@@ -41,6 +46,7 @@
 #include "core/log.h"
 #include "core/config.h"
 #include "games/zeus/anim_clock.h"
+#include "games/zeus/intro.h"
 #include "games/zeus/resolution.h"
 #include "games/zeus/site.h"
 #include "games/zeus/state_check.h"
@@ -91,6 +97,8 @@ void SetWindowClient(int, int) {}
 namespace core::diag::autorun { // the smoke test is not started here (its own test: test_autorun)
 bool Start(const Game &) { return false; }
 void Frame() {}
+bool Requested() { return false; }
+bool IntroRequested() { return false; }
 } // namespace core::diag::autorun
 
 namespace core::capture {
@@ -611,12 +619,12 @@ void StateCheckFault()
 // The logical resolution (games/zeus/resolution) and the world map's flags (games/zeus/world_map)
 
 constexpr DWORD fModeSize = 0x50bcc0, fConfigLoad = 0x5c44c0, fSwitchMode = 0x5c4a30, fSidebarPos = 0x58e280,
-                fViewWide = 0x51cba0, fViewNarrow = 0x51cc00, fViewportInit = 0x449e50, fAnim = 0x599460;
+                fViewWide = 0x51cba0, fViewNarrow = 0x51cc00, fViewportInit = 0x449e50, fAnim = 0x599460, fBmpShot = 0x50b030;
 constexpr DWORD aModeW = 0xf2a6b4, aModeH = 0xf2a6b0, aScreenMode = 0xf2a770, aGameScreen = 0xf2a6dd,
                 aSidebarX = 0x10dff34, aSidebarX2 = 0x10dff30;
 
 struct ResCalls {
-    int switches = 0, sidebars = 0, wides = 0, narrows = 0, inits = 0, anims = 0;
+    int switches = 0, sidebars = 0, wides = 0, narrows = 0, inits = 0, anims = 0, bmpShots = 0;
     int cols = 0, rows = 0, top = 0, tileW = 0;
     int animDueSeen = -1;
 } g_res;
@@ -633,6 +641,12 @@ void __cdecl FakeModeSize(int mode) // the game's table
 int __cdecl FakeConfigLoad()
 {
     At<int>(aScreenMode) = 2; // Zeus.inf as the GOG copy has it (800x600)
+    return 1;
+}
+
+int __cdecl FakeBmpShot(const char *)
+{
+    ++g_res.bmpShots;
     return 1;
 }
 
@@ -711,6 +725,7 @@ void SetupResolution()
     Thunk(fViewWide, reinterpret_cast<void *>(&FakeViewWide));
     Thunk(fViewNarrow, reinterpret_cast<void *>(&FakeViewNarrow));
     Thunk(fViewportInit, reinterpret_cast<void *>(&FakeViewportInit));
+    Thunk(fBmpShot, reinterpret_cast<void *>(&FakeBmpShot));
     At<int>(aScreenMode) = 3;
     FakeModeSize(3);
     At<unsigned char>(aGameScreen) = 0x00; // the main menu
@@ -793,6 +808,9 @@ void ViewportLayout()
     At<int>(aModeH) = 900;
     Res<Tick_fn>("city_viewport_set_640")();
     Check(g_res.cols == 17 && g_res.rows == (900 - 30) / 15 + 1, "1024x900: 17 columns, rows for the height");
+    using Shot_fn = int(__cdecl *)(const char *);
+    Check(Res<Shot_fn>("bmp_screenshot")("shot1.bmp") == 0 && g_res.bmpShots == 0,
+          "Alt+1 / Alt+2: the game's own BMP screenshot is not run (its buffer is for 1024x768)");
 }
 
 void LayoutFault()
@@ -915,6 +933,91 @@ void MapFlags()
     Check(g_res.animDueSeen == 1, "afterwards: the game's own way");
 }
 
+// ---------------------------------------------------------------------------------------------
+// The intro movie (games/zeus/intro)
+
+constexpr DWORD fBinkOpen = 0x417b00, cIntroCall = 0x5c3bab; // game_main's call returns to 0x5c3bb0
+
+struct Bink {
+    int opens = 0;
+    void *player = nullptr;
+    const char *file = nullptr;
+    int x = 0, y = 0;
+} g_bink;
+
+char __fastcall FakeBinkOpen(void *player, void *, const char *file, int x, int y)
+{
+    ++g_bink.opens;
+    g_bink.player = player;
+    g_bink.file = file;
+    g_bink.x = x;
+    g_bink.y = y;
+    return 1;
+}
+
+using BinkOpen_fn = char(__fastcall *)(void *, void *, const char *, int, int);
+
+BinkOpen_fn IntroDetour()
+{
+    int n;
+    const zeus::Detour *d = zeus::intro::Detours(&n);
+    return reinterpret_cast<BinkOpen_fn>(d[0].detour);
+}
+
+// As game_main: push y, push x, push file, mov ecx, player, then the call at its own address (0x5c3bab) and a ret
+// where it returns to (0x5c3bb0), so the detour sees game_main's return address.
+char GameMainIntro(void *player, const char *file, int x, int y)
+{
+    BYTE *p = reinterpret_cast<BYTE *>(cIntroCall - 20 + g_imageShift);
+    BYTE *q = p;
+    const DWORD imm[4] = {static_cast<DWORD>(y), static_cast<DWORD>(x), reinterpret_cast<DWORD>(file),
+                          reinterpret_cast<DWORD>(player)};
+    for (int i = 0; i < 4; ++i) {
+        *q++ = i < 3 ? 0x68 : 0xb9; // push imm32 / mov ecx, imm32
+        *reinterpret_cast<DWORD *>(q) = imm[i];
+        q += 4;
+    }
+    CallSite(cIntroCall, reinterpret_cast<const void *>(IntroDetour()));
+    using Run_fn = char(__cdecl *)();
+    return reinterpret_cast<Run_fn>(p)();
+}
+
+void SetupIntro(bool skip)
+{
+    Thunk(fBinkOpen, reinterpret_cast<const void *>(&FakeBinkOpen));
+    zeus::intro::SkipForTest(skip);
+}
+
+void IntroSkip()
+{
+    SetupIntro(true);
+    int player = 0;
+    Check(GameMainIntro(&player, "Binks\\zeus_intro.bik", 112, 84) == 0 && g_bink.opens == 0,
+          "skip: game_main's call does not open the movie (returns 0, as with no Bink player)");
+    Check(LogContains("intro: the intro movie (Binks\\zeus_intro.bik) is skipped"), "log: skipped");
+    Check(IntroDetour()(&player, nullptr, "Binks\\victory.bik", 3, 4) == 1 && g_bink.opens == 1 &&
+              g_bink.player == &player && std::strcmp(g_bink.file, "Binks\\victory.bik") == 0 && g_bink.x == 3 &&
+              g_bink.y == 4,
+          "another caller: the game opens its movie (the player and the 3 arguments passed on)");
+    zeus::intro::SkipForTest(false);
+    Check(GameMainIntro(&player, "Binks\\zeus_intro.bik", 112, 84) == 1 && g_bink.opens == 2 && g_bink.x == 112 &&
+              g_bink.y == 84,
+          "play: game_main's call opens the movie");
+}
+
+void IntroFault()
+{
+    SetupIntro(true);
+    int player = 0;
+    // The file name is unreadable: logging it faults inside the guard.
+    const char *bad = reinterpret_cast<const char *>(static_cast<DWORD>(16));
+    Check(GameMainIntro(&player, bad, 112, 84) == 1 && g_bink.opens == 1 && g_bink.file == bad,
+          "a fault: the game opens the movie as without the setting");
+    Check(LogContains("feature \"intro movie setting (games/zeus/intro)\" switched off"), "log: intro off");
+    Check(GameMainIntro(&player, "Binks\\zeus_intro.bik", 112, 84) == 1 && g_bink.opens == 2,
+          "afterwards: the game's own way");
+}
+
 struct Scenario {
     const char *name;
     void (*run)();
@@ -935,6 +1038,8 @@ const Scenario kScenarios[] = {
     {"map_flags", &MapFlags},
     {"map_height", &MapHeight},
     {"draw_only", &DrawOnly},
+    {"intro_skip", &IntroSkip},
+    {"intro_fault", &IntroFault},
 };
 
 } // namespace

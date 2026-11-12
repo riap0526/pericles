@@ -24,6 +24,10 @@
 // screen beneath. The world map runs at the city's resolution (its layout is a later step).
 // Shift+F7 cycles a few settings until the game ends. F6 and F7 stay the game's (F6: the game's own 800x600; F7: mode 3,
 // i.e. ours).
+// The game's own screenshot (Alt+1 / Alt+2 in the city: game_wndproc -> 0x42c700 -> bmp_screenshot 0x50b030,
+// shot1.bmp / shot2.bmp; __cdecl file name, the caller pops) puts the picture into a fixed 0x2f4d60-byte buffer: enough
+// for 1024x768 x 3 bytes, not for larger modes (it would write past it, the crash Emperor had at 0x52abc0). As in
+// Emperor's layer (keys.cpp) it is not run; F11 takes our screenshots.
 //
 // Failure (each part's guard): switching (mode size, changing it, Shift+F7) -> the game's own 1024x768 from the next
 // loop; city layout (sidebar, viewport) -> the 1024 layout's values at once, then the game's own 1024x768.
@@ -51,6 +55,7 @@ const Site kSidebarPos{"ui_set_sidebar_position", 0x58e280, {0xa1, 0xb4, 0xa6, 0
 const Site kViewportWide{"city_viewport_set_640", 0x51cba0, {0xa1, 0xb4, 0xa6, 0xf2, 0x00, 0x3d, 0x80, 0x02}};
 const Site kViewportNarrow{"city_viewport_narrow", 0x51cc00, {0xa1, 0xb4, 0xa6, 0xf2, 0x00, 0x3d, 0x80, 0x02}};
 const Site kViewportInit{"viewport_init", 0x449e50, {0x8b, 0x4c, 0x24, 0x18, 0x8b, 0x44, 0x24, 0x08}};
+const Site kBmpShot{"bmp_screenshot", 0x50b030, {0x83, 0xec, 0x38, 0x53, 0x33, 0xdb, 0x68, 0x60}};
 
 const Var<int> kModeWidth{0xf2a6b4};
 const Var<int> kModeHeight{0xf2a6b0};
@@ -368,6 +373,23 @@ void Switch()
     ChangeMode();
 }
 
+// ---------------------------------------------------------------------------------------------
+// The game's own BMP screenshot (Alt+1 / Alt+2): not run
+
+using BmpShot_fn = int(__cdecl *)(const char *);
+BmpShot_fn o_BmpShot;
+
+int __cdecl BmpShot_detour(const char *file)
+{
+    static long logs = 0;
+    if (++logs <= 5) {
+        core_log("zeus: resolution: the game's own screenshot (%s) is not taken: its buffer is for the game's own "
+                 "sizes (F11 takes ours)",
+                 file ? file : "?");
+    }
+    return 0; // the game's "could not" (its callers do not look)
+}
+
 } // namespace
 
 void OnBackground()
@@ -456,6 +478,7 @@ const Detour *Detours(int *count)
         {&kSidebarPos, reinterpret_cast<void *>(&SidebarPos_detour)},
         {&kViewportWide, reinterpret_cast<void *>(&ViewportWide_detour)},
         {&kViewportNarrow, reinterpret_cast<void *>(&ViewportNarrow_detour)},
+        {&kBmpShot, reinterpret_cast<void *>(&BmpShot_detour)},
     };
     *count = static_cast<int>(sizeof(kDetours) / sizeof(kDetours[0]));
     return kDetours;
@@ -478,8 +501,8 @@ bool Attach(const core_config *cfg)
         core_log("zeus: resolution: real DirectDraw (video.backend=system): the game's own modes only");
         return false;
     }
-    const Site *sites[] = {&kModeSize, &kConfigLoad, &kSwitchMode, &kSidebarPos, &kViewportWide, &kViewportNarrow,
-                           &kViewportInit};
+    const Site *sites[] = {&kModeSize,     &kConfigLoad,     &kSwitchMode,   &kSidebarPos, &kViewportWide,
+                           &kViewportNarrow, &kViewportInit, &kBmpShot};
     for (const Site *s : sites) {
         if (!Matches(*s)) {
             core_log("zeus: resolution: %s at 0x%lx does not match; custom resolutions not installed", s->name,
@@ -492,6 +515,7 @@ bool Attach(const core_config *cfg)
     ok = Install(kSidebarPos, &SidebarPos_detour, o_SidebarPos) && ok;
     ok = Install(kViewportWide, &ViewportWide_detour, o_ViewportWide) && ok;
     ok = Install(kViewportNarrow, &ViewportNarrow_detour, o_ViewportNarrow) && ok;
+    ok = Install(kBmpShot, &BmpShot_detour, o_BmpShot) && ok; // without it Alt+1/2 would crash above 1024x768
     if (!ok) {
         core_log("zeus: resolution: a hook could not be installed; custom resolutions not used");
         core::diag::Disable(g_switching, "a hook could not be installed");
