@@ -17,8 +17,10 @@
 #include "core/settings/settings.h"
 #include "core/sim/pace.h"
 #include "core/ui/panel.h"
+#include "core/ui/settings_view.h"
 #include "games/zeus/anim_clock.h"
 #include "games/zeus/diag.h"
+#include "games/zeus/resolution.h"
 #include "games/zeus/site.h"
 #include "games/zeus/state_check.h"
 
@@ -109,6 +111,7 @@ const core::sim::PaceGame kPace{
 // Counters and the rate log (game thread only)
 
 long g_frames = 0, g_ticks = 0, g_animTicks = 0;
+unsigned g_frameNumber = 0; // every game_frame run, never reset (FrameNumber)
 DWORD g_since = 0;
 int g_lastSpeed = -1;
 bool g_paused = false;
@@ -229,12 +232,47 @@ void ResetWindow()
 // ---------------------------------------------------------------------------------------------
 // game_frame
 
+// While the panel asks whether to keep a new resolution (core::ui::WantsGameFrames), the game draws frames (at most ~60
+// a second) so that the new size can be seen; sim_tick_due says no meanwhile (SimDue_detour), so the city does not move
+// on. The same as Emperor's layer (emperor.cpp DrawOnlyFrame). g_drawOnly is in the guard's put-back list: false again
+// if a frame is abandoned.
+bool g_drawOnly = false;
+DWORD g_lastDrawOnly = 0;
+core::diag::Feature g_drawFrames{"draw-only frames while the panel asks (games/zeus/timing)"};
+
+struct DrawOnlyCall {
+    core::diag::Restore r;
+};
+
+void DrawOnlyFrame(DrawOnlyCall &c)
+{
+    ++g_frameNumber;
+    zeus::resolution::OnLoop(); // the new resolution is applied here
+    c.r.Set(&g_drawOnly, true);
+    DecideCountingFrame();
+    core::diag::GameFrameBegin();
+    Original(o_GameFrame, kGameFrame)();
+    core::diag::GameFrameEnd();
+    c.r.Undo();
+}
+
 void __cdecl GameFrame_detour()
 {
     if (core::ui::IsOpen()) {
         if (!g_paused) {
             g_paused = true;
             LogRates(" (panel opened: game paused)");
+        }
+        const DWORD now = timeGetTime();
+        if (core::ui::WantsGameFrames() && now - g_lastDrawOnly >= 16 && core::diag::Enabled(g_drawFrames)) {
+            g_lastDrawOnly = now;
+            DrawOnlyCall c;
+            if (!core::diag::Guarded(g_drawFrames, [](void *p) { DrawOnlyFrame(*static_cast<DrawOnlyCall *>(p)); },
+                                     &c, &c.r)) {
+                core_log("zeus: no more draw-only frames after an error: the game stays paused while the panel asks "
+                         "(a new resolution shows when the panel closes)");
+            }
+            return;
         }
         Sleep(5);
         return;
@@ -249,6 +287,8 @@ void __cdecl GameFrame_detour()
         return;
     }
     ++g_frames;
+    ++g_frameNumber;
+    zeus::resolution::OnLoop(); // the 1024x768 frame of the front-end screens, the configured resolution
     DecideCountingFrame();
     zeus::diag::FrameBegin();
     core::diag::GameFrameBegin(); // frame check: presents within one frame
@@ -345,6 +385,9 @@ int OriginalDue()
 
 int __cdecl SimDue_detour()
 {
+    if (g_drawOnly) {
+        return 0; // a frame drawn while the panel asks: no tick
+    }
     if (GameAddress(__builtin_return_address(0)) != kDueFromFrame) {
         return OriginalDue();
     }
@@ -762,6 +805,11 @@ const Detour *Detours(int *count)
     };
     *count = static_cast<int>(sizeof(kDetours) / sizeof(kDetours[0]));
     return kDetours;
+}
+
+unsigned FrameNumber()
+{
+    return g_frameNumber;
 }
 
 bool PrepareForTest()

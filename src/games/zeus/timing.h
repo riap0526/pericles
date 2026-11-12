@@ -28,6 +28,9 @@ void RegisterSettings();
 // From zeus_attach after the exe check. Installs the hooks above; logs what is not installed and why.
 void Attach();
 
+// The number of game_frame runs so far (game thread): changes once per frame, never reset.
+unsigned FrameNumber();
+
 // Offline tests only (src/games/zeus/test_restore.cpp): the detours above by site name; the copy buffer of the
 // drawn-frame animations without the site checks of Attach; whether each feature is still on.
 const Detour *Detours(int *count);

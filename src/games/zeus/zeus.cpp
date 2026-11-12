@@ -6,14 +6,17 @@
 #include "core/diag/guard.h"
 #include "core/diag/present_mode.h"
 #include "core/display/virtual_display.h"
+#include "core/display/window_key.h"
 #include "core/hook/hook.h"
 #include "core/log.h"
 #include "core/settings/settings.h"
 #include "games/zeus/debug_log.h"
 #include "games/zeus/diag.h"
+#include "games/zeus/resolution.h"
 #include "games/zeus/site.h"
 #include "games/zeus/state_check.h"
 #include "games/zeus/timing.h"
+#include "games/zeus/world_map.h"
 #include "ini_template.h" // generated from src/games/zeus/zeus_engine.ini (CMakeLists.txt)
 
 #define WIN32_LEAN_AND_MEAN
@@ -82,22 +85,19 @@ void __cdecl DebugLog_detour(const void *message, int a, int code)
 // F5 and Alt+Enter switch between full screen and a window (ours: core's window mode, the game's picture scaled into
 // it), as in Emperor's layer. The game's own F5 must not run: it switches the game to its own window mode and makes
 // DirectDraw again, and that window mode needs a clipper, which the emulated back end does not have. The game does
-// not use Alt+Enter. F6 and F7 (the game's 800x600 and 1024x768) stay the game's.
+// not use Alt+Enter. F6 and F7 (the game's 800x600 and 1024x768, which is our resolution) stay the game's; Shift+F7
+// cycles our resolution (games/zeus/resolution).
 bool KeyFilter(UINT message, WPARAM key, LPARAM l)
 {
-    const bool f5 = message == WM_KEYDOWN && key == VK_F5 && !(GetKeyState(VK_SHIFT) & 0x8000) &&
-                    !(GetKeyState(VK_CONTROL) & 0x8000);
-    const bool altEnter = message == WM_SYSKEYDOWN && key == VK_RETURN && (l & (1 << 29));
-    const bool otherF5 = message == WM_KEYDOWN && key == VK_F5; // with Shift or Ctrl: still not the game's
-    if (!f5 && !altEnter) {
-        return otherF5;
+    if (zeus::resolution::KeyFilter(message, key, l) || core::display::WindowKey(message, key, l, "zeus")) {
+        return true;
     }
-    if (!(l & (1 << 30))) { // not an auto-repeat
-        const bool to = !core::display::Windowed();
-        core_log("zeus: %s -> %s (the game does not see the key)", f5 ? "F5" : "Alt+Enter", to ? "windowed" : "fullscreen");
-        core::settings::Request(core::settings::Find("video", "window"), to ? "windowed" : "fullscreen", true);
-    }
-    return true;
+    return message == WM_KEYDOWN && key == VK_F5; // with Shift or Ctrl: still not the game's
+}
+
+bool ApplyResolution(int, const char *, bool initial)
+{
+    return initial || zeus::resolution::SettingsChanged(core_config_get());
 }
 
 } // namespace
@@ -141,6 +141,16 @@ extern "C" void zeus_attach(void)
     zeus::timing::Attach(); // frames follow the display, the simulation pace, figure animations
     zeus::diag::Attach();   // state line, panel sections, game end, layout logs
     zeus::state_check::Attach(); // [debug] state_check: drawings that do not count leave the save data as it was
+    // The allies' flags at the original's pace; the map drawn with the game's own height (without it the map
+    // reads past its picture on a screen higher than 768, so the logical resolution needs it).
+    const bool mapHeight = zeus::world_map::Attach();
+    if (!mapHeight) {
+        core_log("zeus: resolution: not installed (the world map needs the game's own height): the game's own sizes");
+    }
+    else if (zeus::resolution::Attach(core_config_get())) { // the logical resolution
+        core::settings::OnChange(core::settings::Find("video", "resolution"), &ApplyResolution);
+        core::settings::OnChange(core::settings::Find("video", "scale"), &ApplyResolution);
+    }
     // Screenshot file names and the present mode log's lines carry game_screen 0xf2a6dd (one byte, reads only).
     // The tag is asked for when a screenshot is taken (game thread): the draw census sums up the next frame too.
     core::capture::SetTagProvider([](char *out, size_t size) {

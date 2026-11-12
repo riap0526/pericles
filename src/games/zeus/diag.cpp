@@ -11,6 +11,7 @@
 #include "core/settings/settings.h"
 #include "core/ui/panel.h"
 #include "core/ui/perf_view.h"
+#include "games/zeus/resolution.h"
 #include "games/zeus/site.h"
 
 #include <imgui.h>
@@ -221,6 +222,7 @@ void SaveBackground(void *p)
 
 int __cdecl Jpeg_detour(const char *file, int x, int y)
 {
+    zeus::resolution::OnBackground(); // a full-screen picture outside the city starts the 1024x768 frame
     if (core::diag::Enabled(g_jpegFeature)) {
         JpegCall c{file, x, y};
         core::diag::Guarded(g_jpegFeature, &JpegLog, &c);
@@ -431,6 +433,8 @@ void Attach()
     }
     if (!Matches(kJpegBackground) || !Install(kJpegBackground, &Jpeg_detour, o_Jpeg)) {
         core::diag::Disable(g_jpegFeature, "jpeg_draw_background does not match or could not be hooked");
+        core_log("zeus: front-end screens after the first city screen stay at the city's resolution (no 1024x768 "
+                 "frame)");
     }
     if (g_censusOn) {
         using Fast = void(__fastcall *)(void *, void *, int, int, int, int, int, int);
