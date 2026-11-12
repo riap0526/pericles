@@ -12,6 +12,7 @@
 #include "games/zeus/debug_log.h"
 #include "games/zeus/diag.h"
 #include "games/zeus/site.h"
+#include "games/zeus/state_check.h"
 #include "games/zeus/timing.h"
 #include "ini_template.h" // generated from src/games/zeus/zeus_engine.ini (CMakeLists.txt)
 
@@ -105,6 +106,7 @@ extern "C" void zeus_register_settings(void)
 {
     zeus::timing::RegisterSettings(); // [gameplay] keep_speed, full_speed, simulate_while_scrolling
     zeus::diag::RegisterSettings();   // [debug] draw_census
+    zeus::state_check::RegisterSettings(); // [debug] state_check
     // The settings file this version ships: an older file gets its descriptions.
     core::settings::SetTemplate(zeus::kIniTemplate);
 }
@@ -138,9 +140,12 @@ extern "C" void zeus_attach(void)
              "and F7 stay the game's");
     zeus::timing::Attach(); // frames follow the display, the simulation pace, figure animations
     zeus::diag::Attach();   // state line, panel sections, game end, layout logs
+    zeus::state_check::Attach(); // [debug] state_check: drawings that do not count leave the save data as it was
     // Screenshot file names and the present mode log's lines carry game_screen 0xf2a6dd (one byte, reads only).
+    // The tag is asked for when a screenshot is taken (game thread): the draw census sums up the next frame too.
     core::capture::SetTagProvider([](char *out, size_t size) {
         std::snprintf(out, size, "screen_0x%02x", *reinterpret_cast<volatile unsigned char *>(0xf2a6dd));
+        zeus::diag::ScreenshotTaken();
     });
     core::diag::present_mode::SetScreenProvider(
         [] { return static_cast<int>(*reinterpret_cast<volatile unsigned char *>(0xf2a6dd)); });

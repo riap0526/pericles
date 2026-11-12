@@ -97,7 +97,63 @@ int WINAPI GameMain_detour(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 
 int g_lastScreen = -1, g_lastMode = -1, g_lastW = -1, g_lastH = -1;
 int g_lastCity[4] = {-1, -1, -1, -1};
-bool g_seen[256] = {};
+bool g_inFrame = false; // inside game_frame (FrameBegin .. FrameEnd)
+
+// A screen as the census tells screens apart: game_screen, the editor, the mode, and for the screens that show one of
+// several dialogs, which one (0x07: the sidebar panels' dialog 0x665e34; 0x09: the info window's kind 0xffa13c).
+const Var<int> kEditorMode{0x665e2c};
+const Var<int> kSidebarDialog{0x665e34};
+const Var<int> kInfoKind{0xffa13c};
+
+unsigned ScreenKey()
+{
+    const unsigned screen = *kGameScreen;
+    unsigned sub = 0;
+    if (screen == 0x07) {
+        sub = static_cast<unsigned>(*kSidebarDialog) & 0xff;
+    }
+    else if (screen == 0x09) {
+        sub = static_cast<unsigned>(*kInfoKind) & 0xff;
+    }
+    return screen | (static_cast<unsigned>(*kEditorMode & 1) << 8) | ((static_cast<unsigned>(*kScreenMode) & 0xf) << 9) |
+           (sub << 16);
+}
+
+void KeyText(unsigned key, char *out, size_t size)
+{
+    std::snprintf(out, size, "screen 0x%02x%s, mode %u", key & 0xff, (key >> 8) & 1 ? " (editor)" : "",
+                  (key >> 9) & 0xf);
+    if (key >> 16) {
+        const size_t n = std::strlen(out);
+        std::snprintf(out + n, size - n, ", %s %u", (key & 0xff) == 0x07 ? "dialog" : "kind", key >> 16);
+    }
+}
+
+constexpr int kMaxSeen = 512;
+unsigned g_seenKeys[kMaxSeen];
+int g_seenCount = 0;
+
+bool Seen(unsigned key)
+{
+    for (int i = 0; i < g_seenCount; ++i) {
+        if (g_seenKeys[i] == key) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void MarkSeen(unsigned key)
+{
+    if (!Seen(key) && g_seenCount < kMaxSeen) {
+        g_seenKeys[g_seenCount++] = key;
+    }
+}
+
+// A screen counts once it has stayed the same this long (a screen passed through on the way is not summed up).
+constexpr DWORD kSettleMs = 400;
+unsigned g_candidate = 0xffffffffu;
+DWORD g_candidateSince = 0;
 
 // ---------------------------------------------------------------------------------------------
 // Backgrounds (jpeg_draw_background)
@@ -132,22 +188,60 @@ void JpegLog(void *p)
              static_cast<unsigned>(screen), *kWidth, *kHeight);
 }
 
+bool g_censusOn = false; // [debug] draw_census, read at start-up (defined here: the background pictures use it too)
+bool g_savingCensus = false; // our own census pictures ask for the file name tag too: not a screenshot
+const Var<unsigned char *> kDrawBuffer{0xf9c100}; // draw_buffer: the back buffer the game draws into
+
+// Backgrounds drawn outside game_frame (the loading screens between the game's frames): with the census on, each
+// picture file is saved once as shots\census_<tag>_background_....png (the screen list).
+constexpr int kMaxPictures = 64;
+char g_savedPictures[kMaxPictures][48];
+int g_savedPictureCount = 0;
+
+void SaveBackground(void *p)
+{
+    const char *file = static_cast<const char *>(p);
+    for (int i = 0; i < g_savedPictureCount; ++i) {
+        if (std::strcmp(g_savedPictures[i], file) == 0) {
+            return;
+        }
+    }
+    if (g_savedPictureCount < kMaxPictures) {
+        std::snprintf(g_savedPictures[g_savedPictureCount++], sizeof(g_savedPictures[0]), "%s", file);
+    }
+    const unsigned char *px = *kDrawBuffer;
+    const int w = *kWidth, h = *kHeight;
+    if (px && w > 0 && h > 0 && core::capture::HasRoom("census background")) {
+        core_log("zeus: draw census: background %s drawn outside the game's frames, saved", file);
+        g_savingCensus = true;
+        core::capture::SaveOne(px, w * 2, w, h, "census", "background");
+        g_savingCensus = false;
+    }
+}
+
 int __cdecl Jpeg_detour(const char *file, int x, int y)
 {
     if (core::diag::Enabled(g_jpegFeature)) {
         JpegCall c{file, x, y};
         core::diag::Guarded(g_jpegFeature, &JpegLog, &c);
     }
-    return o_Jpeg(file, x, y);
+    const int r = o_Jpeg(file, x, y);
+    if (g_censusOn && !g_inFrame && file && core::diag::Enabled(g_jpegFeature)) {
+        char name[48];
+        std::snprintf(name, sizeof(name), "%s", file);
+        core::diag::Guarded(g_jpegFeature, &SaveBackground, name);
+    }
+    return r;
 }
 
 // ---------------------------------------------------------------------------------------------
 // Draw census
 
-bool g_censusOn = false;      // [debug] draw_census, read at start-up
 bool g_censusFrame = false;   // this frame is being summed up
 bool g_censusReport = false;  // the next frame: for a problem report
+bool g_censusShotRequest = false; // the next frame: a screenshot (F11) was taken
 const char *g_censusWhy = "";
+unsigned g_censusKey = 0;      // the screen as it was when this census started
 core::diag::Feature g_censusFeature{"draw census (games/zeus/diag)"};
 
 struct PakSum {
@@ -162,7 +256,8 @@ struct Big {
 constexpr int kBig = 24;
 Big g_big[kBig];
 int g_bigCount = 0;
-long g_draws = 0;
+long g_draws = 0, g_cityDraws = 0, g_offScreen = 0;
+bool g_inCity = false; // inside city_render (timing.cpp): the city's own tiles and figures, only counted
 
 using ImageDraw_fn = void(__thiscall *)(void *, int, int, int, int, int, int);
 ImageDraw_fn o_ImageDraw;
@@ -187,22 +282,38 @@ void CensusAdd(void *p)
     const DWORD e = entries + static_cast<DWORD>(index) * kEntrySize;
     const int w = *reinterpret_cast<const short *>(e + 0x14), h = *reinterpret_cast<const short *>(e + 0x16);
     ++g_draws;
+    if (g_inCity) {
+        ++g_cityDraws; // the city's tiles and figures: not part of the screen's layout
+        return;
+    }
+    // Only what lands on the screen: the area is cut to the mode, pictures wholly outside are counted apart.
+    const int sw = *kWidth, sh = *kHeight;
+    const int l = std::max(c.x, 0), t = std::max(c.y, 0), r = std::min(c.x + w, sw), btm = std::min(c.y + h, sh);
+    if (l >= r || t >= btm) {
+        ++g_offScreen;
+        return;
+    }
     PakSum &s = g_paks[pak];
     if (s.count == 0) {
-        s.left = c.x;
-        s.top = c.y;
-        s.right = c.x + w;
-        s.bottom = c.y + h;
+        s.left = l;
+        s.top = t;
+        s.right = r;
+        s.bottom = btm;
     }
     else {
-        s.left = std::min(s.left, c.x);
-        s.top = std::min(s.top, c.y);
-        s.right = std::max(s.right, c.x + w);
-        s.bottom = std::max(s.bottom, c.y + h);
+        s.left = std::min(s.left, l);
+        s.top = std::min(s.top, t);
+        s.right = std::max(s.right, r);
+        s.bottom = std::max(s.bottom, btm);
     }
     ++s.count;
-    // The largest pictures of the frame (by area).
+    // The largest pictures of the frame (by area); the same picture at the same place once.
     const Big b{c.id, c.x, c.y, w, h};
+    for (int i = 0; i < g_bigCount; ++i) {
+        if (g_big[i].id == b.id && g_big[i].x == b.x && g_big[i].y == b.y) {
+            return;
+        }
+    }
     if (g_bigCount < kBig) {
         g_big[g_bigCount++] = b;
     }
@@ -232,20 +343,45 @@ void __fastcall ImageDraw_detour(void *self, void *, int id, int x, int y, int a
     o_ImageDraw(self, id, x, y, a, b, c);
 }
 
-void CensusStart(const char *why)
+bool g_censusShot = false; // save the frame with this census (the first frame of a screen)
+
+void CensusStart(const char *why, bool shot)
 {
     std::memset(g_paks, 0, sizeof(g_paks));
     g_bigCount = 0;
-    g_draws = 0;
+    g_draws = g_cityDraws = g_offScreen = 0;
     g_censusWhy = why;
+    g_censusShot = shot;
+    g_censusKey = ScreenKey(); // the screen this census belongs to: as it is when it starts
     g_censusFrame = true;
+}
+
+
+// The frame just drawn, as census_<tag>_game_<w>x<h>_<time>.png in shots\ (the screen list: which screen number is
+// which picture). The back buffer still holds it at the end of game_frame.
+void CensusShot(void *)
+{
+    const unsigned char *px = *kDrawBuffer;
+    const int w = *kWidth, h = *kHeight;
+    if (px && w > 0 && h > 0) {
+        g_savingCensus = true;
+        core::capture::SaveOne(px, w * 2, w, h, "census", "game");
+        g_savingCensus = false;
+    }
 }
 
 void CensusEnd()
 {
     g_censusFrame = false;
-    core_log("zeus: draw census (%s), screen 0x%02x, mode %dx%d: %ld pictures drawn", g_censusWhy,
-             static_cast<unsigned>(*kGameScreen), *kWidth, *kHeight, g_draws);
+    char key[96];
+    KeyText(g_censusKey, key, sizeof(key));
+    core_log("zeus: draw census (%s), %s, %dx%d: %ld pictures drawn (%ld by the city drawing, %ld outside the "
+             "screen; the rest by image file, cut to the screen)",
+             g_censusWhy, key, *kWidth, *kHeight, g_draws, g_cityDraws, g_offScreen);
+    // No picture for an empty frame or the start-up placeholder screen 0xff.
+    if (g_censusShot && g_draws > 0 && (g_censusKey & 0xff) != 0xff && core::capture::HasRoom("census picture")) {
+        core::diag::Guarded(g_censusFeature, &CensusShot, nullptr);
+    }
     for (int p = 0; p < kMaxPaks; ++p) {
         const PakSum &s = g_paks[p];
         if (s.count) {
@@ -272,7 +408,8 @@ void RegisterSettings()
     const int i = core::settings::Register(Item{
         "debug", "draw_census", "Draw census",
         "For development: on = the log lists what each screen draws (the pictures, by image file, with their area), "
-        "the first time a screen is shown and with each problem report. Read at start-up.",
+        "the first time a screen is shown and with each problem report; the first frame of each screen is also saved "
+        "in shots\\. Read at start-up.",
         Type::Bool, "off", Effect::Restart, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0});
     core::settings::OnChange(i, [](int, const char *v, bool) {
         g_censusOn = std::strcmp(v, "on") == 0;
@@ -312,22 +449,38 @@ void Attach()
 
 void FrameBegin()
 {
+    g_inFrame = true;
     if (!g_censusOn || !core::diag::Enabled(g_censusFeature)) {
         return;
     }
-    const int screen = *kGameScreen;
+    const unsigned key = ScreenKey();
     if (g_censusReport) {
         g_censusReport = false;
-        CensusStart("problem report");
+        g_censusShotRequest = false;
+        CensusStart("problem report", false); // the report saves its own pictures
+        return;
     }
-    else if (!g_seen[screen & 0xff]) {
-        g_seen[screen & 0xff] = true;
-        CensusStart("first frame of the screen");
+    if (g_censusShotRequest) {
+        g_censusShotRequest = false;
+        CensusStart("screenshot", false); // F11 saves its own pictures
+        return;
+    }
+    // A new screen is summed up (and saved) once it has stayed the same for kSettleMs.
+    const DWORD now = GetTickCount();
+    if (key != g_candidate) {
+        g_candidate = key;
+        g_candidateSince = now;
+        return;
+    }
+    if (!Seen(key) && now - g_candidateSince >= kSettleMs) {
+        MarkSeen(key);
+        CensusStart("a new screen, settled", true);
     }
 }
 
 void FrameEnd()
 {
+    g_inFrame = false;
     if (g_censusFrame) {
         CensusEnd();
     }
@@ -349,6 +502,18 @@ void FrameEnd()
 void CensusForReport()
 {
     g_censusReport = g_censusOn;
+}
+
+void ScreenshotTaken()
+{
+    if (g_censusOn && !g_savingCensus) {
+        g_censusShotRequest = true;
+    }
+}
+
+void CityDrawing(bool on)
+{
+    g_inCity = on;
 }
 
 void CityRender(int a, int b, int c)

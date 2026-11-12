@@ -21,6 +21,8 @@ const core_game_info kZeus = {
     &zeus_register_settings,
     &zeus_attach,
     &zeus_editor_exe,
+    "382bcd286192a06eb8fdc45f5c37390a19999f5db9c940c3ce2dfcd775e90a57", // GOG and Steam: the same exe
+    "English GOG and Steam Zeus.exe 2.1.4.0",
 };
 
 } // namespace

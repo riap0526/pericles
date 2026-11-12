@@ -4,8 +4,10 @@
 
 #include "core/capture/screenshot.h"
 #include "core/config.h"
+#include "core/diag/autorun.h"
 #include "core/diag/environment.h"
 #include "core/diag/guard.h"
+#include "core/diag/rate_log.h"
 #include "core/diag/perf.h"
 #include "core/diag/report.h"
 #include "core/diag/stall.h"
@@ -13,10 +15,12 @@
 #include "core/output/sdl_output.h"
 #include "core/platform/timing.h"
 #include "core/settings/settings.h"
+#include "core/sim/pace.h"
 #include "core/ui/panel.h"
 #include "games/zeus/anim_clock.h"
 #include "games/zeus/diag.h"
 #include "games/zeus/site.h"
+#include "games/zeus/state_check.h"
 
 #include <mmsystem.h>
 
@@ -26,10 +30,12 @@
 
 namespace {
 
+using zeus::At;
 using zeus::Function;
 using zeus::GameAddress;
 using zeus::Install;
 using zeus::Matches;
+using zeus::Original;
 using zeus::Site;
 using zeus::Var;
 
@@ -85,11 +91,19 @@ SimDue_fn o_SimDue;
 SimTick_fn o_SimTick;
 
 // ---------------------------------------------------------------------------------------------
-// Settings (games/emperor/emperor.cpp has the same three; the same defaults)
-
-bool g_catchUp = true;           // gameplay.keep_speed
-bool g_fullSpeedCapped = true;   // gameplay.full_speed
-bool g_simWhileScrolling = true; // gameplay.simulate_while_scrolling
+// The simulation pace's view of Zeus (core/sim/pace.h; SimDue_detour below). The pace and its three settings
+// ([gameplay] keep_speed, full_speed, simulate_while_scrolling) are the core's, shared with every game layer.
+core::diag::Feature g_paceFeature{"simulation pace (games/zeus/timing)"};
+const core::sim::PaceGame kPace{
+    "zeus",
+    "frame",
+    &g_paceFeature,
+    [] { return kSimLastTick.ptr(); },
+    [] { return kEdgeScrolling.ptr(); },
+    [] { return *kFastForward != 0; },
+    [] { return *kGameSpeed; },
+    [](int idx) { return At<const int>(kTickTable)[idx]; },
+};
 
 // ---------------------------------------------------------------------------------------------
 // Counters and the rate log (game thread only)
@@ -99,21 +113,6 @@ DWORD g_since = 0;
 int g_lastSpeed = -1;
 bool g_paused = false;
 
-// The simulation pace (DueBody below; the same as Emperor's layer).
-struct Pace {
-    DWORD last = 0;    // our tick clock: the time the ticks run so far were owed at
-    bool valid = false;
-    int extra = 0;     // ticks owed beyond the game's own one in this frame
-    long caughtUp = 0; // extra ticks run (for the rate log)
-    int mostInOnePass = 0;
-    DWORD lastPass = 0; // falling behind: the time between frames, smoothed
-    double passMs = 0;
-    bool behind = false;
-    long dropped = 0;
-    long droppedSpell = 0;
-    long gaps = 0;
-};
-Pace g_pace;
 
 // ---------------------------------------------------------------------------------------------
 // The frame cap. The game's main loop never rests: game_frame ran 500-15000 times a second although at most one
@@ -190,23 +189,8 @@ void LogRates(const char *why)
     }
     long presented = 0, shown = 0;
     core::output::TakeCounts(&presented, &shown);
-    char paceNote[160] = "";
-    size_t len = 0;
-    if (g_pace.caughtUp > 0) {
-        len += std::snprintf(paceNote + len, sizeof(paceNote) - len, "; %ld ticks made up (at most %d in one frame)",
-                             g_pace.caughtUp, g_pace.mostInOnePass);
-        g_pace.caughtUp = 0;
-    }
-    g_pace.mostInOnePass = 0;
-    if (g_pace.dropped > 0 && len < sizeof(paceNote)) {
-        len += std::snprintf(paceNote + len, sizeof(paceNote) - len, "; %ld ticks dropped (falling behind)",
-                             g_pace.dropped);
-        g_pace.dropped = 0;
-    }
-    if (g_pace.gaps > 0 && len < sizeof(paceNote)) {
-        std::snprintf(paceNote + len, sizeof(paceNote) - len, "; %ld pause(s) not made up", g_pace.gaps);
-        g_pace.gaps = 0;
-    }
+    char paceNote[160];
+    core::sim::TakeNote(kPace, paceNote, sizeof(paceNote));
     static const char *const kPresent[] = {"original", "display", "cap60"};
     const double s = ms / 1000.0;
     long counted = 0, reverted = 0;
@@ -225,24 +209,7 @@ void LogRates(const char *why)
              kPresent[core_config_get()->present], core::output::RefreshHz(), *kGameSpeed,
              static_cast<int>(*kGameScreen), *kModeWidth, *kModeHeight, core_timer_resolution_us(), multi, torn,
              paceNote);
-    // Where the time goes (perf phases), how evenly frames were shown, processor time given to each thread -- the
-    // same lines as Yongle's rate log.
-    char times[768], longest[768];
-    core::diag::perf::TakeWindow(times, sizeof(times), longest, sizeof(longest));
-    if (times[0]) {
-        core_log("time%s (ms): %s", why, times);
-        core_log("time max%s (ms): %s", why, longest);
-    }
-    char intervals[512];
-    core::output::TakeIntervals(intervals, sizeof(intervals));
-    if (intervals[0]) {
-        core_log("intervals%s (ms): %s", why, intervals);
-    }
-    char cpu[512];
-    core::diag::env::TakeWindow(cpu, sizeof(cpu));
-    if (cpu[0]) {
-        core_log("cpu%s: %s", why, cpu);
-    }
+    core::diag::LogRateTail(why); // time, time max, intervals, cpu (the same lines in every game)
     g_frames = g_ticks = g_animTicks = 0;
     g_since = now;
 }
@@ -296,7 +263,7 @@ void __cdecl GameFrame_detour()
         core::diag::stall::Begin(core::diag::stall::Thread::Game);
     }
     const std::int64_t t0 = perf::Now();
-    o_GameFrame();
+    Original(o_GameFrame, kGameFrame)();
     perf::Add(kFramePhase, perf::Now() - t0);
     if (city) {
         core::diag::stall::End(core::diag::stall::Thread::Game);
@@ -328,6 +295,30 @@ void __cdecl GameFrame_detour()
     if (GetTickCount() - g_since >= kRateLogMs) {
         LogRates("");
     }
+    core::diag::autorun::Frame(); // the unattended smoke test's steps (only when it was started for one)
+}
+
+// ---------------------------------------------------------------------------------------------
+// The unattended smoke test (core/diag/autorun.h): the game's screen, its tick count and its own way to end.
+// quit_request 0xf1389d: 1 makes the main loop send WM_CLOSE, which the window procedure takes (quit_request = 3,
+// then DefWindowProc and WM_DESTROY's PostQuitMessage): the game's own exit, Zeus.inf written as always, no question
+// asked (Ghidra).
+
+const Var<char> kQuitRequest{0xf1389d};
+
+int AutorunScreen()
+{
+    return *kGameScreen;
+}
+
+long AutorunTicks()
+{
+    return *kTickCount;
+}
+
+void AutorunQuit()
+{
+    *kQuitRequest = 1;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -341,128 +332,23 @@ void __cdecl ScreenPresent_detour(int param)
     else if (core::output::FrameWanted()) {
         param = 1; // present the frame just drawn: the output thread is ready for it
     }
-    o_ScreenPresent(param);
+    Original(o_ScreenPresent, kScreenPresent)(param);
 }
 
 // ---------------------------------------------------------------------------------------------
-// Simulation pace (as Emperor's layer). The game runs at most one tick per frame and sets
-// its tick time to "now" when it runs one, so a slow frame stretches the interval to the next tick. As Augustus
-// does: the time owed is kept and the ticks owed run in the same frame, at most 20, the rest carried over.
-//   sim_tick_due still decides whether a tick may run (pause, screen, dialogs); only the time test is ours: its tick
-//   time is set so that its own test agrees with ours, and set back to our clock afterwards.
-//   100% (2 ms, "as fast as it can"): 16 ms unless gameplay.full_speed = original.
+// Simulation pace (core/sim/pace.h): only game_frame's own calls (return addresses 0x5135a9, 0x5135c8) go through it.
 
-constexpr int kMaxTicksPerFrame = 20;
-constexpr double kBehindMs = 50.0;   // fewer than 20 frames a second: at most kBehindTicks per frame
-constexpr double kCaughtUpMs = 35.0;
-constexpr int kBehindTicks = 2;
-constexpr DWORD kGapMs = 250;        // a longer gap between frames is a pause (panel, loading): not made up
-constexpr DWORD kCappedMs = 16;
-core::diag::Feature g_paceFeature{"simulation pace (games/zeus/timing)"};
-
-// The length of one tick at the current speed, as the pace runs it (0: the game's own pace, no fixed length).
-DWORD TickInterval()
+int OriginalDue()
 {
-    int idx = (100 - *kGameSpeed) / 10;
-    idx = idx < 0 ? 0 : idx;
-    if (idx >= 10) {
-        return 0;
-    }
-    if (idx == 0) {
-        return g_fullSpeedCapped ? kCappedMs : 0;
-    }
-    return static_cast<DWORD>(reinterpret_cast<const int *>(kTickTable)[idx] + 2);
-}
-
-struct DueCall {
-    int result;
-    core::diag::Restore r;
-};
-
-void DueBody(DueCall &c)
-{
-    g_pace.extra = 0;
-    if (g_simWhileScrolling) {
-        c.r.Set(kEdgeScrolling.ptr(), 0);
-    }
-    const DWORD interval = TickInterval();
-    if (!g_catchUp || interval == 0) {
-        g_pace.valid = false;
-        c.result = o_SimDue();
-        c.r.Undo();
-        return;
-    }
-    const DWORD now = timeGetTime();
-    if (!g_pace.valid) {
-        g_pace.last = *kSimLastTick;
-        g_pace.valid = true;
-    }
-    if (g_pace.lastPass != 0) {
-        double dt = static_cast<double>(now - g_pace.lastPass);
-        dt = dt > 200 ? 200 : dt;
-        g_pace.passMs = g_pace.passMs * 0.9 + dt * 0.1;
-        if (!g_pace.behind && g_pace.passMs > kBehindMs) {
-            g_pace.behind = true;
-            g_pace.droppedSpell = 0;
-            core_log("zeus: falling behind (a frame every %.0f ms): at most %d ticks per frame, the rest is dropped "
-                     "(the game runs slower instead of jumping)", g_pace.passMs, kBehindTicks);
-        }
-        else if (g_pace.behind && g_pace.passMs < kCaughtUpMs) {
-            g_pace.behind = false;
-            core_log("zeus: no longer behind (a frame every %.0f ms): ticks are made up again; %ld dropped",
-                     g_pace.passMs, g_pace.droppedSpell);
-        }
-    }
-    if (g_pace.lastPass != 0 && now - g_pace.lastPass > kGapMs) {
-        g_pace.last = now - interval; // after a pause: one tick as soon as allowed, nothing made up
-        ++g_pace.gaps;
-    }
-    g_pace.lastPass = now;
-    if (static_cast<int>(now - g_pace.last) < 0) {
-        g_pace.last = now - interval; // the clock went back: one tick owed
-    }
-    const bool owed = now - g_pace.last >= interval;
-    // The game's own time test agrees with ours: far in the past when a tick is owed, now when not.
-    c.r.Set(kSimLastTick.ptr(), owed ? now - 100000 : now);
-    c.result = o_SimDue();
-    c.r.Undo();
-    if (c.result > 0) {
-        DWORD n = (now - g_pace.last) / interval;
-        const DWORD cap = g_pace.behind ? kBehindTicks : kMaxTicksPerFrame;
-        if (n > cap) {
-            if (g_pace.behind) {
-                g_pace.dropped += static_cast<long>(n - cap);
-                g_pace.droppedSpell += static_cast<long>(n - cap);
-            }
-            n = cap;
-            g_pace.last = now - (now - g_pace.last) % interval;
-        }
-        else {
-            g_pace.last += n * interval;
-        }
-        g_pace.extra = *kFastForward ? 0 : static_cast<int>(n) - 1;
-        if (g_pace.extra + 1 > g_pace.mostInOnePass) {
-            g_pace.mostInOnePass = g_pace.extra + 1;
-        }
-    }
-    else if (owed) {
-        g_pace.last = now - interval; // held back (pause, another screen, a dialog): one tick as soon as allowed
-    }
-    *kSimLastTick = g_pace.last;
+    return Original(o_SimDue, kSimDue)();
 }
 
 int __cdecl SimDue_detour()
 {
-    if (GameAddress(__builtin_return_address(0)) != kDueFromFrame || !core::diag::Enabled(g_paceFeature)) {
-        return o_SimDue();
+    if (GameAddress(__builtin_return_address(0)) != kDueFromFrame) {
+        return OriginalDue();
     }
-    DueCall c{0, {}};
-    if (core::diag::Guarded(g_paceFeature, [](void *p) { DueBody(*static_cast<DueCall *>(p)); }, &c, &c.r)) {
-        return c.result;
-    }
-    g_pace = Pace{};
-    core_log("zeus: simulation pace back to the game's own after an error");
-    return o_SimDue();
+    return core::sim::Due(kPace, &OriginalDue);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -484,7 +370,7 @@ DWORD AnimStep()
     const DWORD now = timeGetTime();
     const DWORD wall = g_lastTickWall == 0 ? zeus::anim::kStepMs : now - g_lastTickWall;
     g_lastTickWall = now;
-    const DWORD interval = g_catchUp ? TickInterval() : 0;
+    const DWORD interval = core::sim::TickInterval(kPace);
     if (interval != 0) {
         return interval;
     }
@@ -494,7 +380,7 @@ DWORD AnimStep()
 void AnimBefore(void *p)
 {
     AnimSwap &s = *static_cast<AnimSwap *>(p);
-    unsigned char *due = reinterpret_cast<unsigned char *>(kAnimDue);
+    unsigned char *due = At<unsigned char>(kAnimDue);
     std::memcpy(s.frame, due, sizeof(s.frame));
     unsigned char tick[zeus::anim::kTimers];
     zeus::anim::Advance(g_animClock, AnimStep(), tick);
@@ -511,42 +397,38 @@ void RunTick()
     }
     {
         perf::Scope timed(kSimPhase);
-        o_SimTick();
+        Original(o_SimTick, kSimTick)();
     }
     if (s.swapped) {
-        std::memcpy(reinterpret_cast<unsigned char *>(kAnimDue), s.frame, sizeof(s.frame));
+        std::memcpy(At<unsigned char>(kAnimDue), s.frame, sizeof(s.frame));
     }
 }
 
 // The ticks made up, right after the game's own one, each as game_frame runs one: sim_after_tick (which game_frame
-// runs after every tick; for the last one it does so itself), the counter, then the tick.
-void ExtraTicks(int n)
+// runs after every tick; for the last one it does so itself), the counter, then the tick. They stop when the last
+// tick opened a dialog, paused the game or changed the screen (also tick_block 0x665dc8, which Emperor has not).
+unsigned char g_tickScreen = 0;
+
+bool ExtraTickAllowed()
 {
-    const unsigned char screen = *kGameScreen;
-    for (int k = 0; k < n; ++k) {
-        if (*kFastForward || *kSimPaused || *kTickBlock || *kGameScreen != screen) {
-            break; // the last tick opened a dialog, paused the game or changed the screen
-        }
-        Function<void(__cdecl *)()>(kAfterTick)();
-        *kTickCount = *kTickCount + 1;
-        ++g_ticks;
-        ++g_pace.caughtUp;
-        RunTick();
-    }
+    return !*kFastForward && !*kSimPaused && !*kTickBlock && *kGameScreen == g_tickScreen;
+}
+
+void ExtraTick()
+{
+    Function<void(__cdecl *)()>(kAfterTick)();
+    *kTickCount = *kTickCount + 1;
+    ++g_ticks;
+    RunTick();
 }
 
 void __cdecl SimTick_detour()
 {
     ++g_ticks;
     RunTick();
-    if (g_pace.extra > 0 && GameAddress(__builtin_return_address(0)) == kTickFromFrame &&
-        core::diag::Enabled(g_paceFeature)) {
-        int n = g_pace.extra;
-        g_pace.extra = 0;
-        if (!core::diag::Guarded(g_paceFeature, [](void *p) { ExtraTicks(*static_cast<int *>(p)); }, &n)) {
-            g_pace = Pace{};
-            core_log("zeus: simulation pace back to the game's own after an error in a tick made up");
-        }
+    if (GameAddress(__builtin_return_address(0)) == kTickFromFrame) {
+        g_tickScreen = *kGameScreen;
+        core::sim::RunOwedTicks(kPace, &ExtraTickAllowed, &ExtraTick);
     }
 }
 
@@ -582,7 +464,7 @@ DWORD g_buildingsUsed = kBuildingCount; // records 0 .. g_buildingsUsed - 1 are 
 void CountBuildingsInUse()
 {
     DWORD n = kBuildingCount;
-    while (n > 1 && *reinterpret_cast<const short *>(kBuildings + (n - 1) * kBuildingSize + kBuildingType) == 0) {
+    while (n > 1 && *At<const short>(kBuildings + (n - 1) * kBuildingSize + kBuildingType) == 0) {
         --n;
     }
     g_buildingsUsed = n;
@@ -596,6 +478,14 @@ const Region kDrawnState[] = {
     {0x847d14, 8},              // drawing counters 0x847d14, 0x847d18
     {0x847d24, 2},              // and 0x847d24 (a word)
 };
+// The game's random number generator: the city drawing turns it for building
+// type 80 (0x44cd10), so a drawing that does not count must put it back too, or the simulation's random numbers move
+// on with every such drawing. 0xf13624 .. 0xf137e7: the pool's index, the pool (100 x 4 B), the six values taken from
+// the last turn and the two shift registers (0xf137b8 .. 0xf137c3 is used by no code; 0xf137dc only by
+// window_create). Put back only when random_generate_next is the known one.
+const Site kRandomNext{"random_generate_next", 0x4488c0, {0xa1, 0x24, 0x36, 0xf1, 0x00, 0x8b, 0x0d, 0xd4}};
+constexpr DWORD kRandomState = 0xf13624, kRandomSize = 0xf137e8 - 0xf13624;
+bool g_randomPutBack = false; // AttachDrawnState: kRandomNext matches
 core::diag::Feature g_drawnFeature{"animations of drawn frames (games/zeus/timing)"};
 unsigned char *g_drawnCopy = nullptr; // one buffer for all regions
 DWORD g_drawnSize = 0;
@@ -638,13 +528,15 @@ struct RenderSwap {
     bool flags = false;  // anim_due replaced (put back after)
     bool copied = false; // the regions copied (put back after a drawing that does not count)
     DWORD buildings = 0; // building records copied
+    bool random = false; // the random number state copied (into randomCopy)
+    unsigned char randomCopy[kRandomSize];
 };
 long long g_copiedBytes = 0; // put back, for the rate log
 
 void RenderBefore(void *p)
 {
     RenderSwap &s = *static_cast<RenderSwap *>(p);
-    unsigned char *due = reinterpret_cast<unsigned char *>(kAnimDue);
+    unsigned char *due = At<unsigned char>(kAnimDue);
     std::memcpy(s.frame, due, sizeof(s.frame));
     if (!g_countingFrame) {
         unsigned char *dst = g_drawnCopy;
@@ -652,11 +544,15 @@ void RenderBefore(void *p)
         for (const Region &r : kDrawnState) {
             const DWORD size = r.address == kBuildings ? s.buildings * kBuildingSize : r.size;
             for (DWORD i = 0; i < r.count; ++i) {
-                std::memcpy(dst, reinterpret_cast<const void *>(r.address + i * r.stride), size);
+                std::memcpy(dst, At<const void>(r.address + i * r.stride), size);
                 dst += size;
             }
         }
         s.copied = true;
+        if (g_randomPutBack) {
+            std::memcpy(s.randomCopy, At<const void>(kRandomState), kRandomSize);
+            s.random = true;
+        }
     }
     std::memcpy(due, g_renderFlags, sizeof(g_renderFlags));
     s.flags = true;
@@ -665,53 +561,78 @@ void RenderBefore(void *p)
 void RenderAfter(void *p)
 {
     RenderSwap &s = *static_cast<RenderSwap *>(p);
+    // anim_due first: if putting a region back fails, the frame's own flags are back all the same.
+    if (s.flags) {
+        std::memcpy(At<unsigned char>(kAnimDue), s.frame, sizeof(s.frame));
+    }
+    if (s.random) {
+        std::memcpy(At<void>(kRandomState), s.randomCopy, kRandomSize);
+        g_copiedBytes += kRandomSize;
+    }
     if (s.copied) {
         const unsigned char *src = g_drawnCopy;
         for (const Region &r : kDrawnState) {
             const DWORD size = r.address == kBuildings ? s.buildings * kBuildingSize : r.size;
             for (DWORD i = 0; i < r.count; ++i) {
-                std::memcpy(reinterpret_cast<void *>(r.address + i * r.stride), src, size);
+                std::memcpy(At<void>(r.address + i * r.stride), src, size);
                 src += size;
             }
         }
         g_copiedBytes += static_cast<long long>(src - g_drawnCopy);
-    }
-    if (s.flags) {
-        std::memcpy(reinterpret_cast<unsigned char *>(kAnimDue), s.frame, sizeof(s.frame));
     }
 }
 
 template <typename F> void WithDrawnState(F draw)
 {
     RenderSwap s;
+    // [debug] state_check (state_check.h): the game's memory before anything of ours or the drawing's, once a second
+    // around a drawing that does not count. Not timed: only while checking.
+    const bool want = g_renderDepth == 0 && g_drawnCopy && core::diag::Enabled(g_drawnFeature) && !g_countingFrame &&
+                      zeus::state_check::Wanted();
+    if (want) {
+        zeus::state_check::Before();
+    }
     std::int64_t t = perf::Now();
     const bool active = g_renderDepth == 0 && g_drawnCopy && core::diag::Enabled(g_drawnFeature) &&
                         core::diag::Guarded(g_drawnFeature, &RenderBefore, &s);
     perf::Add(kPutBackPhase, perf::Now() - t);
+    const bool check = want && active && s.copied;
+    if (want && !check) {
+        zeus::state_check::Cancel();
+    }
     ++g_renderDepth;
     t = perf::Now();
+    zeus::diag::CityDrawing(true);
     draw();
+    zeus::diag::CityDrawing(false);
     perf::Add(kRenderPhase, perf::Now() - t);
     --g_renderDepth;
+    if (check) {
+        zeus::state_check::AfterDraw(); // what the drawing changed (and our anim_due swap)
+    }
     if (active) {
         t = perf::Now();
-        if (!core::diag::Guarded(g_drawnFeature, &RenderAfter, &s)) {
+        const bool putBack = core::diag::Guarded(g_drawnFeature, &RenderAfter, &s);
+        if (!putBack) {
             core_log("zeus: drawn-frame animations off after an error: the game's own (every drawing counts)");
         }
         perf::Add(kPutBackPhase, perf::Now() - t);
         ++(s.copied ? g_reverted : g_counted);
+        if (check) {
+            putBack ? zeus::state_check::AfterPutBack() : zeus::state_check::Cancel(); // what is left after ours
+        }
     }
 }
 
 void __cdecl CityRender_detour(int x, int y, int z)
 {
     zeus::diag::CityRender(x, y, z); // a log line when the city viewport changes (reads only)
-    WithDrawnState([&] { o_CityRender(x, y, z); });
+    WithDrawnState([&] { Original(o_CityRender, kCityRender)(x, y, z); });
 }
 
 void __cdecl CityRender2_detour(int x, int y, int z, int w)
 {
-    WithDrawnState([&] { o_CityRender2(x, y, z, w); });
+    WithDrawnState([&] { Original(o_CityRender2, kCityRender2)(x, y, z, w); });
 }
 
 void TakeDrawnCounts(long *counted, long *reverted)
@@ -728,6 +649,18 @@ void TakeCopyStats(long long *bytes, DWORD *buildings)
     g_copiedBytes = 0;
 }
 
+// The one buffer the regions are copied into (AttachDrawnState; the offline test calls it without the site checks).
+bool AllocateDrawnCopy()
+{
+    g_drawnSize = 0;
+    for (const Region &r : kDrawnState) {
+        g_drawnSize += r.size * r.count;
+    }
+    g_drawnCopy = static_cast<unsigned char *>(VirtualAlloc(nullptr, g_drawnSize, MEM_COMMIT | MEM_RESERVE,
+                                                            PAGE_READWRITE));
+    return g_drawnCopy != nullptr;
+}
+
 void AttachDrawnState()
 {
     if (!Matches(kTileAnimClear) || !Matches(kBuildingsClear) || !Matches(kFiguresClear) || !Matches(kCityRender) ||
@@ -736,15 +669,14 @@ void AttachDrawnState()
         core::diag::Disable(g_drawnFeature, "a site does not match");
         return;
     }
-    for (const Region &r : kDrawnState) {
-        g_drawnSize += r.size * r.count;
-    }
-    g_drawnCopy = static_cast<unsigned char *>(VirtualAlloc(nullptr, g_drawnSize, MEM_COMMIT | MEM_RESERVE,
-                                                            PAGE_READWRITE));
-    if (!g_drawnCopy) {
+    if (!AllocateDrawnCopy()) {
         core::diag::Disable(g_drawnFeature, "no memory for the copy");
         return;
     }
+    g_randomPutBack = Matches(kRandomNext);
+    core_log("zeus: drawn-frame animations: the random number state (0x%lx, %lu bytes) %s",
+             static_cast<unsigned long>(kRandomState), static_cast<unsigned long>(kRandomSize),
+             g_randomPutBack ? "is put back too" : "is not put back (random_generate_next does not match)");
     bool ok = Install(kCityRender, &CityRender_detour, o_CityRender);
     ok = Install(kCityRender2, &CityRender2_detour, o_CityRender2) && ok;
     core_log("zeus: drawn-frame animations: one city drawing every %lu ms counts (%lu bytes put back after the "
@@ -752,8 +684,6 @@ void AttachDrawnState()
              ok ? "" : "; a hook could not be installed");
 }
 
-const char *const kFullSpeed[] = {"capped", "original"};
-const char *const kFullSpeedLabels[] = {"capped (steady, a step above 90%)", "original (as fast as the computer can)"};
 
 } // namespace
 
@@ -765,44 +695,13 @@ void GameEnded()
 {
     core::capture::Flush(15000);
     LogRates(" (game ended)");
+    zeus::state_check::Report(" (game ended)");
     core_timer_end();
 }
 
 void RegisterSettings()
 {
-    using core::settings::Effect;
-    using core::settings::Item;
-    using core::settings::Type;
-    int i = core::settings::Register(Item{
-        "gameplay", "keep_speed", "Keep the game speed",
-        "on: ticks owed because a frame took long (large city, high resolution) are made up in the next frame, as "
-        "Augustus does, so the game runs at its set speed at any resolution; off: the game's own pace (one tick per "
-        "frame at most, slower when frames are slow).",
-        Type::Bool, "on", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0});
-    core::settings::OnChange(i, [](int, const char *v, bool) {
-        g_catchUp = std::strcmp(v, "on") == 0;
-        return true;
-    });
-    i = core::settings::Register(Item{
-        "gameplay", "full_speed", "Game speed behavior",
-        "Only matters at game speed 100%. capped (default): always the same pace, a step above 90% (90% runs 45 "
-        "steps a second, 100% 62; Augustus does the same). original: the game's own 100% -- it runs as fast as your "
-        "computer can draw, so it changes with the city and the resolution: in a small city many times faster "
-        "than 90%, in a large city on a big screen only a little faster.",
-        Type::Choice, "capped", Effect::Live, true, true, 0, 0, 0, nullptr, kFullSpeed, kFullSpeedLabels, 2});
-    core::settings::OnChange(i, [](int, const char *v, bool) {
-        g_fullSpeedCapped = std::strcmp(v, "capped") == 0;
-        return true;
-    });
-    i = core::settings::Register(Item{
-        "gameplay", "simulate_while_scrolling", "Simulate while scrolling",
-        "on (default): the city goes on while the view scrolls (as in Augustus with smooth scrolling); off: it "
-        "stands still while scrolling, as in the original.",
-        Type::Bool, "on", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0});
-    core::settings::OnChange(i, [](int, const char *v, bool) {
-        g_simWhileScrolling = std::strcmp(v, "on") == 0;
-        return true;
-    });
+    core::sim::RegisterSettings(); // [gameplay] keep_speed, full_speed, simulate_while_scrolling
 }
 
 void Attach()
@@ -820,13 +719,11 @@ void Attach()
     if (!Matches(kAfterTick)) {
         core_log("zeus: %s at 0x%lx does not match: the game's own simulation pace", kAfterTick.name,
                  static_cast<unsigned long>(kAfterTick.address));
-        g_catchUp = false;
-        core::diag::Disable(g_paceFeature, "sim_after_tick does not match");
+        core::sim::TurnOff(kPace, "sim_after_tick does not match");
     }
     if (!Matches(kTickTableUse)) {
         core_log("zeus: the tick table is not where expected: the game's own simulation pace");
-        g_catchUp = false;
-        core::diag::Disable(g_paceFeature, "the tick table does not match");
+        core::sim::TurnOff(kPace, "the tick table does not match");
     }
     if (!Matches(kAnimDueUse)) {
         core_log("zeus: the animation flags are not where expected: the game's own animation timing");
@@ -840,12 +737,52 @@ void Attach()
         g_frameCapOn = true;
     }
     AttachDrawnState();
+    // The smoke test's steps run in game_frame's detour: only with it (main menu 0x00, city 0x01).
+    if (ok) {
+        core::diag::autorun::Start({&AutorunScreen, 0x00, 0x01, &AutorunTicks, &AutorunQuit});
+    }
     core_log("zeus: frame and timing hooks %s (screen_present %s; keep_speed %s, full_speed %s, simulate while "
              "scrolling %s; figure animations on the game's time %s)",
              ok ? "installed" : "partly installed (see above)",
              threaded ? "hooked: frames follow the display" : "not hooked: the game's own ~20 FPS",
-             g_catchUp ? "on" : "off", g_fullSpeedCapped ? "capped" : "original", g_simWhileScrolling ? "on" : "off",
+             core::sim::KeepSpeed() ? "on" : "off", core::sim::FullSpeedCapped() ? "capped" : "original",
+             core::sim::SimulateWhileScrolling() ? "on" : "off",
              core::diag::Enabled(g_animFeature) ? "on" : "off");
+}
+
+const Detour *Detours(int *count)
+{
+    static const Detour kDetours[] = {
+        {&kGameFrame, reinterpret_cast<void *>(&GameFrame_detour)},
+        {&kScreenPresent, reinterpret_cast<void *>(&ScreenPresent_detour)},
+        {&kSimDue, reinterpret_cast<void *>(&SimDue_detour)},
+        {&kSimTick, reinterpret_cast<void *>(&SimTick_detour)},
+        {&kCityRender, reinterpret_cast<void *>(&CityRender_detour)},
+        {&kCityRender2, reinterpret_cast<void *>(&CityRender2_detour)},
+    };
+    *count = static_cast<int>(sizeof(kDetours) / sizeof(kDetours[0]));
+    return kDetours;
+}
+
+bool PrepareForTest()
+{
+    g_randomPutBack = true; // no site checks in the offline test
+    return AllocateDrawnCopy();
+}
+
+bool PaceWorking()
+{
+    return core::diag::Enabled(g_paceFeature);
+}
+
+bool AnimWorking()
+{
+    return core::diag::Enabled(g_animFeature);
+}
+
+bool DrawnWorking()
+{
+    return core::diag::Enabled(g_drawnFeature);
 }
 
 } // namespace zeus::timing

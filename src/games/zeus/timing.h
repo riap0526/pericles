@@ -18,6 +18,8 @@
 //                            buildings, one figure field and the drawing counters are put back (timing.cpp).
 #pragma once
 
+#include "games/zeus/site.h"
+
 namespace zeus::timing {
 
 // From zeus_register_settings: [gameplay] keep_speed, full_speed, simulate_while_scrolling.
@@ -25,5 +27,13 @@ void RegisterSettings();
 
 // From zeus_attach after the exe check. Installs the hooks above; logs what is not installed and why.
 void Attach();
+
+// Offline tests only (src/games/zeus/test_restore.cpp): the detours above by site name; the copy buffer of the
+// drawn-frame animations without the site checks of Attach; whether each feature is still on.
+const Detour *Detours(int *count);
+bool PrepareForTest();
+bool PaceWorking();
+bool AnimWorking();
+bool DrawnWorking();
 
 } // namespace zeus::timing

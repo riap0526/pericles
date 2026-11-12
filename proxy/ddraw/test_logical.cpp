@@ -1,5 +1,5 @@
-// Offline test of core/display/logical_size (not the game): the display scale rules of
-// Augustus, with Emperor's 1024x768 minimum.
+// Offline test of core/display/logical_size (not the game): the display scale rules
+// (fixed, scale, auto, cap) with Emperor's 1024x768 minimum.
 #include "core/display/logical_size.h"
 
 #include <cstdio>

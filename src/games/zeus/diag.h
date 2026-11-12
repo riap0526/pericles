@@ -13,8 +13,12 @@
 //   Backgrounds     jpeg_draw_background 0x504fa0 (__cdecl: file, x, y): a line per new picture or position.
 //   Draw census     [debug] draw_census (read at start-up): image_draw 0x5acf50 (__thiscall, ecx = the image
 //                   paks, 6 arguments, ret 0x18) is hooked and, on the first frame of each screen and on each problem
-//                   report, what the frame draws is summed up by image file (count and area) with its largest
-//                   pictures.
+//                   report, what the frame draws outside the city drawing is summed up by image file (count and area,
+//                   cut to the screen) with its largest pictures. A screen is told apart by game_screen, the editor,
+//                   the mode and (0x07, 0x09) which dialog; a new one is summed up once it has stayed 0.4 s, and its
+//                   frame saved as shots\census_screen_0x.._game_....png (the screen list; not for an empty frame or
+//                   screen 0xff). F11 also sums up the next frame. Background pictures drawn outside game_frame (the
+//                   loading screens) are saved once per file.
 #pragma once
 
 #include <cstddef>
@@ -28,9 +32,13 @@ void Attach();           // after the exe check
 void FrameBegin();
 void FrameEnd();
 void CensusForReport(); // the next frame is summed up (a problem report)
+void ScreenshotTaken(); // from the screenshot file-name tag (F11, F12): the next frame is summed up
 
 // From timing.cpp's city_render hook (game thread), with its arguments.
 void CityRender(int a, int b, int c);
+// From timing.cpp around the game's city drawing: the census counts those pictures apart (the city's own tiles and
+// figures are not part of a screen's layout).
+void CityDrawing(bool on);
 
 // The game's state in one line (game thread).
 void Describe(char *out, std::size_t size);
