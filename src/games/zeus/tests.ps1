@@ -6,6 +6,16 @@
 #               fire at 90%, 100% capped and 50%, the clock's wrap-around)
 #   test_restore the failure fallbacks of the game layer: real detours on a copy of the game's address range with
 #               fake game functions that fault on purpose; one child process per scenario (no DLL)
+#   test_sg3    core/assets/sg3 on the player's own DATA\Zeus_Interface.sg3, if present (no DLL; nothing
+#               written)
 Run 'test_debug_log' 'emulated' @()
 Run 'test_anim_clock' 'emulated' @()
 Run 'test_restore' 'emulated' @()
+# The framing's panel tiles from the player's own DATA\Zeus_Interface.sg3 (version 213), if present:
+# they must decode exactly as the Python reader decodes them (hashes from the Python reader, GOG Zeus 2.1.4.0;
+# nothing written).
+$pack = Join-Path $repo 'zeus\DATA\Zeus_Interface.sg3'
+if (Test-Path $pack) {
+    Run 'test_sg3' 'emulated' @((Resolve-Path $pack).Path, '340', '144', 'd0d8c6a1') # the dialog panel (group 0x83)
+    Run 'test_sg3' 'emulated' @((Resolve-Path $pack).Path, '484', '49', 'a106b497')  # the inset panel (group 0x84)
+}

@@ -78,6 +78,9 @@ set(CORE_SOURCES
     src/core/sim/pace.cpp
     src/core/display/virtual_display.cpp
     src/core/display/logical_size.cpp
+    src/core/display/resolution_switch.cpp
+    src/core/sim/panel_pause.cpp
+    src/core/display/framed_screens.cpp
     src/core/display/framing.cpp
     src/core/display/moved_rect.cpp
     src/core/display/scaled_rect.cpp

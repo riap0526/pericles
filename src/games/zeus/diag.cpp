@@ -11,6 +11,7 @@
 #include "core/settings/settings.h"
 #include "core/ui/panel.h"
 #include "core/ui/perf_view.h"
+#include "games/zeus/fullscreen.h"
 #include "games/zeus/resolution.h"
 #include "games/zeus/site.h"
 
@@ -88,6 +89,7 @@ GameMain_fn o_GameMain;
 int WINAPI GameMain_detour(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 {
     const int r = o_GameMain(inst, prev, cmd, show);
+    zeus::fullscreen::OnGameEnd(); // the city seen last saved (before the screenshots still being written)
     zeus::timing::GameEnded();
     core_log("zeus: game_main returned %d", r);
     return r;
@@ -164,6 +166,7 @@ Jpeg_fn o_Jpeg;
 char g_lastJpeg[128] = "";
 int g_lastJpegX = -99999, g_lastJpegY = -99999, g_lastJpegScreen = -1;
 core::diag::Feature g_jpegFeature{"background picture log (games/zeus/diag)"};
+bool g_picturesHooked = false; // jpeg_draw_background is hooked (the framing needs it)
 
 struct JpegCall {
     const char *file;
@@ -227,7 +230,9 @@ int __cdecl Jpeg_detour(const char *file, int x, int y)
         JpegCall c{file, x, y};
         core::diag::Guarded(g_jpegFeature, &JpegLog, &c);
     }
+    zeus::fullscreen::BeforePicture(file); // debug.loading_stage_ms (not guarded: only a wait)
     const int r = o_Jpeg(file, x, y);
+    zeus::fullscreen::AfterPicture(file, x, y); // framed (the core's guard, not this log's)
     if (g_censusOn && !g_inFrame && file && core::diag::Enabled(g_jpegFeature)) {
         char name[48];
         std::snprintf(name, sizeof(name), "%s", file);
@@ -419,6 +424,16 @@ void RegisterSettings()
     });
 }
 
+bool GameMainMatches()
+{
+    return Matches(kGameMain);
+}
+
+bool PicturesHooked()
+{
+    return g_picturesHooked;
+}
+
 void Attach()
 {
     core::ddraw::SetStateDescriber(&DescribeState);
@@ -434,7 +449,10 @@ void Attach()
     if (!Matches(kJpegBackground) || !Install(kJpegBackground, &Jpeg_detour, o_Jpeg)) {
         core::diag::Disable(g_jpegFeature, "jpeg_draw_background does not match or could not be hooked");
         core_log("zeus: front-end screens after the first city screen stay at the city's resolution (no 1024x768 "
-                 "frame)");
+                 "frame, not framed)");
+    }
+    else {
+        g_picturesHooked = true;
     }
     if (g_censusOn) {
         using Fast = void(__fastcall *)(void *, void *, int, int, int, int, int, int);

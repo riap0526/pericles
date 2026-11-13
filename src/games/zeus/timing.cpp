@@ -16,10 +16,12 @@
 #include "core/platform/timing.h"
 #include "core/settings/settings.h"
 #include "core/sim/pace.h"
+#include "core/sim/panel_pause.h"
 #include "core/ui/panel.h"
 #include "core/ui/settings_view.h"
 #include "games/zeus/anim_clock.h"
 #include "games/zeus/diag.h"
+#include "games/zeus/fullscreen.h"
 #include "games/zeus/resolution.h"
 #include "games/zeus/site.h"
 #include "games/zeus/smoke.h"
@@ -115,7 +117,6 @@ long g_frames = 0, g_ticks = 0, g_animTicks = 0;
 unsigned g_frameNumber = 0; // every game_frame run, never reset (FrameNumber)
 DWORD g_since = 0;
 int g_lastSpeed = -1;
-bool g_paused = false;
 
 
 // ---------------------------------------------------------------------------------------------
@@ -233,56 +234,48 @@ void ResetWindow()
 // ---------------------------------------------------------------------------------------------
 // game_frame
 
-// While the panel asks whether to keep a new resolution (core::ui::WantsGameFrames), the game draws frames (at most ~60
-// a second) so that the new size can be seen; sim_tick_due says no meanwhile (SimDue_detour), so the city does not move
-// on. The same as Emperor's layer (emperor.cpp DrawOnlyFrame). g_drawOnly is in the guard's put-back list: false again
-// if a frame is abandoned.
-bool g_drawOnly = false;
-DWORD g_lastDrawOnly = 0;
-core::diag::Feature g_drawFrames{"draw-only frames while the panel asks (games/zeus/timing)"};
+// While the panel is open the game is paused (core/sim/panel_pause, shared with Emperor's layer); while it asks whether
+// to keep a new resolution (core::ui::WantsGameFrames), the game draws frames (at most ~60 a second) so that the new
+// size can be seen; sim_tick_due says no meanwhile (SimDue_detour), so the city does not move on.
 
-struct DrawOnlyCall {
-    core::diag::Restore r;
-};
+// Zeus has no window of ours over the game yet (the options window is a later step): never open.
+bool OwnWindowOpen()
+{
+    return false;
+}
 
-void DrawOnlyFrame(DrawOnlyCall &c)
+void Paused(bool)
+{
+    LogRates(" (panel opened: game paused)");
+}
+
+void Resumed()
+{
+    core_log("zeus: panel closed: game resumed");
+    ResetWindow();
+    g_nextFrameMs = 0;
+}
+
+int DrawOnlyFrame()
 {
     ++g_frameNumber;
     zeus::resolution::OnLoop(); // the new resolution is applied here
-    c.r.Set(&g_drawOnly, true);
+    zeus::fullscreen::OnLoop(); // ... and the framing of a front-end screen follows it
     DecideCountingFrame();
     core::diag::GameFrameBegin();
     Original(o_GameFrame, kGameFrame)();
     core::diag::GameFrameEnd();
-    c.r.Undo();
+    return 0;
 }
+
+const core::sim::panel_pause::PauseGame kPause("zeus", &OwnWindowOpen, &Paused, &Resumed, &DrawOnlyFrame);
 
 void __cdecl GameFrame_detour()
 {
-    if (core::ui::IsOpen()) {
-        if (!g_paused) {
-            g_paused = true;
-            LogRates(" (panel opened: game paused)");
-        }
-        const DWORD now = timeGetTime();
-        if (core::ui::WantsGameFrames() && now - g_lastDrawOnly >= 16 && core::diag::Enabled(g_drawFrames)) {
-            g_lastDrawOnly = now;
-            DrawOnlyCall c;
-            if (!core::diag::Guarded(g_drawFrames, [](void *p) { DrawOnlyFrame(*static_cast<DrawOnlyCall *>(p)); },
-                                     &c, &c.r)) {
-                core_log("zeus: no more draw-only frames after an error: the game stays paused while the panel asks "
-                         "(a new resolution shows when the panel closes)");
-            }
-            return;
-        }
-        Sleep(5);
+    int unused = 0;
+    if (core::sim::panel_pause::Loop(kPause, &unused)) {
+        zeus::fullscreen::WhilePaused(); // the panel's blur or brightness shows on a menu without game_frame
         return;
-    }
-    if (g_paused) {
-        g_paused = false;
-        core_log("zeus: panel closed: game resumed");
-        ResetWindow();
-        g_nextFrameMs = 0;
     }
     if (!FrameDue()) {
         return;
@@ -290,6 +283,7 @@ void __cdecl GameFrame_detour()
     ++g_frames;
     ++g_frameNumber;
     zeus::resolution::OnLoop(); // the 1024x768 frame of the front-end screens, the configured resolution
+    zeus::fullscreen::OnLoop(); // the front-end screens framed (the menus pass here too)
     DecideCountingFrame();
     zeus::diag::FrameBegin();
     core::diag::GameFrameBegin(); // frame check: presents within one frame
@@ -386,7 +380,7 @@ int OriginalDue()
 
 int __cdecl SimDue_detour()
 {
-    if (g_drawOnly) {
+    if (core::sim::panel_pause::DrawOnly()) {
         return 0; // a frame drawn while the panel asks: no tick
     }
     if (GameAddress(__builtin_return_address(0)) != kDueFromFrame) {
@@ -626,9 +620,12 @@ void RenderAfter(void *p)
     }
 }
 
-template <typename F> void WithDrawnState(F draw)
+// True when this was an outermost drawing that counts (shown with the game's own state kept; the city kept for
+// the menus' background is taken only from those).
+template <typename F> bool WithDrawnState(F draw)
 {
     RenderSwap s;
+    const bool outer = g_renderDepth == 0;
     // [debug] state_check (state_check.h): the game's memory before anything of ours or the drawing's, once a second
     // around a drawing that does not count. Not timed: only while checking.
     const bool want = g_renderDepth == 0 && g_drawnCopy && core::diag::Enabled(g_drawnFeature) && !g_countingFrame &&
@@ -666,12 +663,15 @@ template <typename F> void WithDrawnState(F draw)
             putBack ? zeus::state_check::AfterPutBack() : zeus::state_check::Cancel(); // what is left after ours
         }
     }
+    return outer && (!active || !s.copied);
 }
 
 void __cdecl CityRender_detour(int x, int y, int z)
 {
     zeus::diag::CityRender(x, y, z); // a log line when the city viewport changes (reads only)
-    WithDrawnState([&] { Original(o_CityRender, kCityRender)(x, y, z); });
+    if (WithDrawnState([&] { Original(o_CityRender, kCityRender)(x, y, z); })) {
+        zeus::fullscreen::CityDrawn(); // the city on screen, kept every few seconds for the menus' background
+    }
 }
 
 void __cdecl CityRender2_detour(int x, int y, int z, int w)
@@ -759,6 +759,12 @@ void Attach()
                      s->name, static_cast<unsigned long>(s->address));
             return;
         }
+    }
+    // As Emperor's layer: game_main too, where the end of the game flushes the screenshots and ends the timer
+    // resolution (games/zeus/diag hooks it).
+    if (!zeus::diag::GameMainMatches()) {
+        core_log("zeus: game_main does not match: no frame or timing hooks (the game's own ~20 FPS and pace)");
+        return;
     }
     if (!Matches(kAfterTick)) {
         core_log("zeus: %s at 0x%lx does not match: the game's own simulation pace", kAfterTick.name,

@@ -6,8 +6,12 @@
 // mode_width/height and dd_width/height lie outside that block. screen_set_mode 0x50bd20 derives dd_width/height, the
 // pitch, dialog_offset and the clip from the returned size.
 //
+// The switching itself (the setting, the 1024x768 frame of the front-end screens, Shift+F7, the panel's setting, the
+// way back to the game's own size) is the core's (core/display/resolution_switch, shared with Emperor's layer); this
+// layer gives it the game's variables, the city screens and the mode change.
+//
 // Hooked:
-//   screen_mode_size 0x50bcc0 (__cdecl mode; ret): mode 3's size is ours;
+//   screen_mode_size 0x50bcc0 (__cdecl mode; ret): mode 3's size is ours (the core's OnModeSize);
 //   config_load 0x5c44c0 (no arguments; eax; ret): a Zeus.inf with mode 1 or 2 (800x600 is the game's default) starts
 //                       in mode 3, a value the original reads too;
 //   ui_set_sidebar_position 0x58e280 (no arguments; ret): the sidebar starts where the city's clip ends with the
@@ -17,31 +21,34 @@
 //   city_viewport_set_640 0x51cba0 and 0x51cc00 (no arguments; ret; screen_after_mode_change picks one by 0x10dff60):
 //                       the city viewport (viewport_init 0x449e50) for any size, with formulas that give the game's
 //                       own columns and half rows at 640, 800 and 1024; the game uses 8 x 31 for any other width.
-// Front-end screens (menus, adventure screens, scores, loading pictures) are laid out for the game's own sizes and
-// their 800x600 pictures are centred for them: from a full-screen picture (jpeg_draw_background, games/zeus/diag) until
-// the next city screen the game runs at 1024x768 and the output scales it to the screen (OnLoop calls the game's own
-// screen_switch_mode 0x5c4a30, __cdecl mode, as its F7 does). Overlays (menus, messages, the file dialog) keep the
-// screen beneath. The world map runs at the city's resolution (its layout is a later step).
-// Shift+F7 cycles a few settings until the game ends. F6 and F7 stay the game's (F6: the game's own 800x600; F7: mode 3,
-// i.e. ours).
+// Front-end screens (menus, adventure screens, scores, loading pictures) are laid out for the game's own 1024x768: from
+// a full-screen picture (jpeg_draw_background, games/zeus/diag) until the next city screen the game runs at 1024x768
+// and the output frames it (the core's OnLoop calls the game's own screen_switch_mode 0x5c4a30, __cdecl mode, as its
+// F7 does). Overlays (menus, messages, the file dialog) keep the screen beneath. The world map runs at the city's
+// resolution (its layout is a later step).
+// Shift+F7 cycles a few settings until the game ends (on a front-end screen it applies on the next city screen). F6
+// and F7 stay the game's (F6: the game's own 800x600; F7: mode 3, i.e. ours).
 // The game's own screenshot (Alt+1 / Alt+2 in the city: game_wndproc -> 0x42c700 -> bmp_screenshot 0x50b030,
 // shot1.bmp / shot2.bmp; __cdecl file name, the caller pops) puts the picture into a fixed 0x2f4d60-byte buffer: enough
 // for 1024x768 x 3 bytes, not for larger modes (it would write past it, the crash Emperor had at 0x52abc0). As in
 // Emperor's layer (keys.cpp) it is not run; F11 takes our screenshots.
 //
-// Failure (each part's guard): switching (mode size, changing it, Shift+F7) -> the game's own 1024x768 from the next
-// loop; city layout (sidebar, viewport) -> the 1024 layout's values at once, then the game's own 1024x768.
+// Failure (each part's guard): switching (mode size, changing it, Shift+F7; the core's guard) -> the game's own
+// 1024x768 from the next loop; city layout (sidebar, viewport) -> the 1024 layout's values at once, then the game's
+// own 1024x768.
 #include "games/zeus/resolution.h"
 
 #include "core/diag/guard.h"
 #include "core/display/logical_size.h"
-#include "core/display/virtual_display.h"
+#include "core/display/resolution_switch.h"
 #include "core/hook/hook.h"
 #include "core/log.h"
 
 #include <cstring>
 
 namespace zeus::resolution {
+
+namespace switching = core::display::resolution;
 
 namespace {
 
@@ -65,78 +72,20 @@ const Var<char> kRedraw{0xf2a6ce};
 const Var<int> kSidebarX{0x10dff34};
 const Var<int> kSidebarX2{0x10dff30};
 
-constexpr int kMinW = 1024, kMinH = 768;  // the game's largest size
+constexpr int kMinW = 1024;               // the game's largest size
 constexpr int kSidebarWidth = 186;        // the sidebar (1024 - 838)
 constexpr int kSidebarX2Offset = 0x78;    // sidebar_x2 - sidebar_x
 constexpr int kTopBar = 0x1e;             // the city viewport starts below the top bar
 constexpr int kTileW = 0x3a, kTileH = 0x1e;
 constexpr int kViewCols = 231, kViewRows = 457; // the view grid 0x7d3bec (0x449f30 fills 0xe7 x 457)
 
-// Guards (core/diag): each part is switched off on its own.
-core::diag::Feature g_switching{"resolution switching (games/zeus/resolution)"};
+// Guard (core/diag) of the city layout; switching has the core's.
 core::diag::Feature g_layout{"city layout at this resolution (games/zeus/resolution)"};
-
-// ---------------------------------------------------------------------------------------------
-// The setting
-
-struct Setting {
-    core_resolution_kind kind;
-    int w, h;
-    int scale; // 0 = auto
-};
-Setting g_setting{CORE_RESOLUTION_SCALED, 1024, 768, 100};
-int g_lastW = 0, g_lastH = 0;
-
-const Setting kFrontEnd{CORE_RESOLUTION_FIXED, 1024, 768, 0};
-bool g_frontEnd = true; // until the first city screen
-
-// Windowed, the game is laid out for the window: its client area at rest divided by the display scale (a fixed
-// resolution setting: 100%), never below 1024x768.
-Setting g_windowedSetting{CORE_RESOLUTION_SCALED, 0, 0, 100};
-
-const Setting &Target()
-{
-    if (g_frontEnd) {
-        return kFrontEnd;
-    }
-    if (core::display::Windowed()) {
-        g_windowedSetting.scale = g_setting.kind == CORE_RESOLUTION_SCALED ? g_setting.scale : 100;
-        return g_windowedSetting;
-    }
-    return g_setting;
-}
 
 // The screens the game draws the city for; overlays on them keep the city's size.
 bool CityScreen(unsigned char s)
 {
     return s == 0x01 || s == 0x20 || s == 0x48;
-}
-
-core::display::LogicalSize Logical(const Setting &s)
-{
-    SIZE native = core::display::NativeSize();
-    return core::display::ChooseLogicalSize(native.cx, native.cy, s.kind, s.w, s.h, s.scale, kMinW, kMinH);
-}
-
-void Describe(const Setting &s, char *out, int size)
-{
-    core::display::DescribeSetting(s.kind, s.w, s.h, s.scale, out, size);
-}
-
-// ---------------------------------------------------------------------------------------------
-// Back to the game's own 1024x768
-
-bool g_installed = false;
-bool g_toGameSize = false; // a mode change to the game's own size is due (OnLoop)
-DWORD g_lastTry = 0;
-
-void ToGameSize(const char *why)
-{
-    core::diag::Disable(g_switching, why);
-    if (!g_toGameSize && (*kModeWidth != kMinW || *kModeHeight != kMinH)) {
-        g_toGameSize = true;
-        core_log("zeus: resolution: back to the game's own 1024x768 on the next loop (%s)", why);
-    }
 }
 
 using Mode_fn = void(__cdecl *)(int);
@@ -147,50 +96,27 @@ Mode_fn o_ModeSize;
 Config_fn o_ConfigLoad;
 Void_fn o_SidebarPos, o_ViewportWide, o_ViewportNarrow;
 
-// The game's own mode change (as its F7). It does nothing on screens 0x0f, 0x0e, 0x21 and 0x05; OnLoop tries again.
+// The game's own mode change (as its F7). It does nothing on screens 0x0f, 0x0e, 0x21 and 0x05; the core tries again.
 void ChangeMode()
 {
     Function<Mode_fn>(kSwitchMode)(3);
     *kRedraw = 1;
 }
 
+switching::SwitchGame Game()
+{
+    return switching::SwitchGame("zeus: resolution", kModeWidth, kModeHeight, kScreenMode, kGameScreen, &CityScreen,
+                                 &ChangeMode);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Mode size and the start-up mode
-
-struct ModeCall {
-    core::diag::Restore r;
-};
-
-// Mode 3's size: ours (mode_width/height in c.r: the game's own 1024x768 comes back if this is abandoned).
-void ModeSize(ModeCall &c)
-{
-    core::display::LogicalSize l = Logical(Target());
-    c.r.Set(kModeWidth.ptr(), l.w);
-    c.r.Set(kModeHeight.ptr(), l.h);
-    if (l.w != g_lastW || l.h != g_lastH) {
-        char what[64];
-        Describe(Target(), what, sizeof(what));
-        if (g_frontEnd) {
-            std::strcat(what, ", front-end screen");
-        }
-        SIZE native = core::display::NativeSize();
-        core_log("zeus: resolution: mode 3 = %dx%d (%s; native %ldx%ld, scale %d%%%s)", l.w, l.h, what, native.cx,
-                 native.cy, l.scale_percent, l.limited ? ", limited to the 1024x768 minimum" : "");
-        g_lastW = l.w;
-        g_lastH = l.h;
-    }
-    c.r.Forget();
-}
 
 void __cdecl ModeSize_detour(int mode)
 {
     Original(o_ModeSize, kModeSize)(mode);
-    if (mode != 3 || !core::diag::Enabled(g_switching)) {
-        return; // the game's own size
-    }
-    ModeCall c;
-    if (!core::diag::Guarded(g_switching, [](void *p) { ModeSize(*static_cast<ModeCall *>(p)); }, &c, &c.r)) {
-        ToGameSize("the mode size could not be worked out");
+    if (mode == 3) {
+        switching::OnModeSize(); // ours, guarded; the game's own size when switching is off
     }
 }
 
@@ -218,7 +144,7 @@ bool StandardSize(int w, int h)
 
 void LayoutFallBack(const char *what)
 {
-    ToGameSize(what);
+    switching::ToGameSize(what);
 }
 
 // The city's columns with the sidebar open, for widths of 1024 or more (1024 -> 14, as the game): as many 60 px
@@ -314,66 +240,6 @@ void __cdecl ViewportNarrow_detour()
 }
 
 // ---------------------------------------------------------------------------------------------
-// Shift+F7
-
-const Setting kCycle[] = {
-    {CORE_RESOLUTION_FIXED, 1024, 768, 0}, {CORE_RESOLUTION_SCALED, 0, 0, 0},   {CORE_RESOLUTION_SCALED, 0, 0, 100},
-    {CORE_RESOLUTION_SCALED, 0, 0, 125},   {CORE_RESOLUTION_SCALED, 0, 0, 150}, {CORE_RESOLUTION_SCALED, 0, 0, 175},
-    {CORE_RESOLUTION_SCALED, 0, 0, 200},   {CORE_RESOLUTION_SCALED, 0, 0, 250},
-};
-int g_cycle = -1; // -1: the setting from zeus_engine.ini
-
-void CycleSetting()
-{
-    const int n = sizeof(kCycle) / sizeof(kCycle[0]);
-    for (int tries = 0; tries < n; ++tries) { // the next setting that gives another size on this screen
-        g_cycle = (g_cycle + 1) % n;
-        core::display::LogicalSize next = Logical(kCycle[g_cycle]);
-        if (next.w != g_lastW || next.h != g_lastH) {
-            break;
-        }
-    }
-    g_setting = kCycle[g_cycle];
-    char what[48];
-    Describe(g_setting, what, sizeof(what));
-    core_log("zeus: resolution: Shift+F7 -> %s (until the game ends; zeus_engine.ini is not changed)%s", what,
-             g_frontEnd ? " (applies on the city screen)" : "");
-    if (!g_frontEnd) {
-        ChangeMode();
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Switching
-
-long g_switchLogs = 0;
-constexpr long kSwitchLogs = 40;
-
-void Switch()
-{
-    const unsigned char s = *kGameScreen;
-    if (g_frontEnd && CityScreen(s)) {
-        g_frontEnd = false;
-        if (++g_switchLogs <= kSwitchLogs) {
-            core_log("zeus: resolution: city screen 0x%02x -> the configured resolution", s);
-        }
-    }
-    if (*kScreenMode != 3) {
-        return; // F6 (800x600) or a video: the game's own mode
-    }
-    core::display::LogicalSize t = Logical(Target());
-    if (t.w == *kModeWidth && t.h == *kModeHeight) {
-        return;
-    }
-    DWORD now = GetTickCount();
-    if (now - g_lastTry < 500) {
-        return; // screen_switch_mode does nothing on a few screens; try again later
-    }
-    g_lastTry = now;
-    ChangeMode();
-}
-
-// ---------------------------------------------------------------------------------------------
 // The game's own BMP screenshot (Alt+1 / Alt+2): not run
 
 using BmpShot_fn = int(__cdecl *)(const char *);
@@ -394,80 +260,22 @@ int __cdecl BmpShot_detour(const char *file)
 
 void OnBackground()
 {
-    if (!g_installed) {
-        return;
-    }
-    const unsigned char s = *kGameScreen;
-    // Only our own flag (nothing that can fault), so not guarded; with switching off it is left alone.
-    if (!g_frontEnd && !CityScreen(s) && core::diag::Enabled(g_switching)) {
-        g_frontEnd = true; // OnLoop switches to the 1024x768 frame
-        if (++g_switchLogs <= kSwitchLogs) {
-            core_log("zeus: resolution: full-screen picture on screen 0x%02x -> 1024x768 frame", s);
-        }
-    }
+    switching::EnterFrontEnd(-1);
 }
 
 void OnLoop()
 {
-    if (!g_installed) {
-        return;
-    }
-    if (g_toGameSize) {
-        // Back to the game's own size: mode 3 is 1024x768 again (switching is off).
-        if (*kScreenMode == 3 && (*kModeWidth != kMinW || *kModeHeight != kMinH)) {
-            DWORD now = GetTickCount();
-            if (now - g_lastTry >= 500) {
-                g_lastTry = now;
-                ChangeMode();
-            }
-            return;
-        }
-        g_toGameSize = false;
-        core_log("zeus: resolution: the game runs at its own %dx%d", *kModeWidth, *kModeHeight);
-        return;
-    }
-    if (!core::diag::Enabled(g_switching)) {
-        return;
-    }
-    if (!core::diag::Guarded(g_switching, [](void *) { Switch(); }, nullptr)) {
-        ToGameSize("the resolution could not be changed");
-    }
+    switching::OnLoop();
 }
 
 bool KeyFilter(UINT message, WPARAM key, LPARAM l)
 {
-    if (!g_installed || message != WM_KEYDOWN || key != VK_F7 || !(GetKeyState(VK_SHIFT) & 0x8000)) {
-        return false;
-    }
-    if ((l & (1 << 30)) || !core::diag::Enabled(g_switching)) {
-        return true; // auto-repeat: one step per press; off: Shift+F7 does nothing (the game does not see it)
-    }
-    if (!core::diag::Guarded(g_switching, [](void *) { CycleSetting(); }, nullptr)) {
-        ToGameSize("Shift+F7 could not change the resolution");
-    }
-    return true;
+    return switching::CycleKey(message, key, l);
 }
 
 bool SettingsChanged(const core_config *cfg)
 {
-    if (!g_installed) {
-        return true;
-    }
-    if (!core::diag::Enabled(g_switching)) {
-        core_log("zeus: resolution: setting not applied: resolution switching was switched off after an error (the "
-                 "game runs at its own 1024x768)");
-        return false;
-    }
-    g_setting = Setting{cfg->resolution, cfg->resolution_w, cfg->resolution_h, cfg->scale_percent};
-    g_cycle = -1;
-    g_lastTry = 0;
-    char what[48];
-    Describe(g_setting, what, sizeof(what));
-    core_log("zeus: resolution: setting changed to %s%s", what, g_frontEnd ? " (applies on the city screen)" : "");
-    if (core::display::Windowed() && g_setting.kind == CORE_RESOLUTION_FIXED) {
-        core::display::SetWindowClient(g_setting.w, g_setting.h);
-    }
-    return true;
+    return switching::SettingsChanged(cfg);
 }
 
 const Detour *Detours(int *count)
@@ -486,13 +294,12 @@ const Detour *Detours(int *count)
 
 void InstalledForTest(const core_config *cfg)
 {
-    g_setting = Setting{cfg->resolution, cfg->resolution_w, cfg->resolution_h, cfg->scale_percent};
-    g_installed = true;
+    switching::InstalledForTest(Game(), cfg);
 }
 
 bool FrontEndForTest()
 {
-    return g_frontEnd;
+    return switching::FrontEnd();
 }
 
 bool Attach(const core_config *cfg)
@@ -510,7 +317,6 @@ bool Attach(const core_config *cfg)
             return false;
         }
     }
-    g_setting = Setting{cfg->resolution, cfg->resolution_w, cfg->resolution_h, cfg->scale_percent};
     bool ok = Install(kModeSize, &ModeSize_detour, o_ModeSize);
     ok = Install(kSidebarPos, &SidebarPos_detour, o_SidebarPos) && ok;
     ok = Install(kViewportWide, &ViewportWide_detour, o_ViewportWide) && ok;
@@ -518,7 +324,7 @@ bool Attach(const core_config *cfg)
     ok = Install(kBmpShot, &BmpShot_detour, o_BmpShot) && ok; // without it Alt+1/2 would crash above 1024x768
     if (!ok) {
         core_log("zeus: resolution: a hook could not be installed; custom resolutions not used");
-        core::diag::Disable(g_switching, "a hook could not be installed");
+        switching::ToGameSize("a hook could not be installed");
         core::diag::Disable(g_layout, "a hook could not be installed");
         return false;
     }
@@ -527,10 +333,10 @@ bool Attach(const core_config *cfg)
                  "only)",
                  kConfigLoad.name);
     }
-    core::display::SetGameMinimum(kMinW, kMinH);
-    g_installed = true;
+    switching::Install(Game(), cfg);
     char what[48];
-    Describe(g_setting, what, sizeof(what));
+    core::display::DescribeSetting(cfg->resolution, cfg->resolution_w, cfg->resolution_h, cfg->scale_percent, what,
+                                   sizeof(what));
     core_log("zeus: resolution: installed (video.resolution %s; front-end screens at 1024x768; Shift+F7 cycles the "
              "resolution; each part guarded)",
              what);

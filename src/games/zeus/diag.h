@@ -28,6 +28,12 @@ namespace zeus::diag {
 void RegisterSettings(); // [debug] draw_census
 void Attach();           // after the exe check
 
+// Whether game_main is where expected (checked before any hook of games/zeus/timing, as Emperor's layer installs
+// nothing without it: the end of the game flushes the screenshots and ends the timer resolution there).
+bool GameMainMatches();
+// Whether jpeg_draw_background is hooked (Attach): the framed front-end screens need it.
+bool PicturesHooked();
+
 // From timing.cpp's game_frame hook (game thread).
 void FrameBegin();
 void FrameEnd();

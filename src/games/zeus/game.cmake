@@ -25,6 +25,7 @@ set(GAME_SOURCES
     src/games/zeus/diag.cpp
     src/games/zeus/state_check.cpp
     src/games/zeus/resolution.cpp
+    src/games/zeus/fullscreen.cpp
     src/games/zeus/world_map.cpp
     src/games/zeus/intro.cpp
     src/games/zeus/smoke.cpp
@@ -47,7 +48,10 @@ macro(game_add_tests)
     add_executable(test_restore src/games/zeus/test_restore.cpp
         src/games/zeus/timing.cpp src/games/zeus/anim_clock.cpp src/games/zeus/state_check.cpp
         src/games/zeus/resolution.cpp src/games/zeus/world_map.cpp src/games/zeus/intro.cpp
+        src/games/zeus/fullscreen.cpp src/core/display/framed_screens.cpp src/core/display/framing.cpp
+        src/core/display/scaled_rect.cpp src/core/assets/sg3.cpp
         src/games/zeus/smoke.cpp src/core/settings/intro_movie.cpp src/core/display/logical_size.cpp
+        src/core/display/resolution_switch.cpp src/core/sim/panel_pause.cpp
         src/core/diag/guard.cpp src/core/diag/report.cpp src/core/diag/perf.cpp src/core/diag/environment.cpp
         src/core/diag/rate_log.cpp src/core/sim/pace.cpp
         src/core/diag/stall.cpp src/core/platform/affinity.cpp src/core/log.cpp src/core/config.cpp

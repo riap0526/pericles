@@ -38,6 +38,22 @@
 //                           caller's movie opens with its arguments; play: game_main's opens
 //   intro_fault         a fault while skipping: off, the movie opens as the game does it
 //
+// The framed front-end screens (games/zeus/fullscreen with the core's core/display/framed_screens and
+// core/display/resolution_switch; without the player's interface pack, so no background is composed):
+//   framed_screens              the main menu framed whole at the city's scale, a loading picture by its 800x600, the same
+//                           picture again does nothing, not framed on a video or the city screen
+//   framed_setting      the panel's resolution setting and Shift+F7 on a front-end screen: no mode change, the
+//                           framing follows the new scale at once (the changed listener)
+//   framed_fault        a fault while the framing follows the setting: framing off (the game's own frame), the
+//                           resolution switching stays on and the setting is applied
+//   city_around         menu_screens = city: the panel pattern before an episode and in the editors; the
+//                           drop-down menu 0x03 judged by the screen under it
+//   keep_city           the city on screen kept after city_render's detour, saved when a front-end screen comes
+//                           up, at most every 3 s, not on a front-end screen (the map editor) or in the editors'
+//                           city (editor_mode)
+//   switch_fault        the game's mode change faults while switching (the core's resolution_switch, Emperor's
+//                           switch_fault): switching off, back to the game's own 1024x768, new settings refused
+//
 // The smoke test's actions (games/zeus/smoke; only in a smoke test, no detour):
 //   smoke_actions       win calls cheat_run(0) (a __cdecl fake) only in the city, not governing on, with the
 //                           code and table as expected; lose writes the three values at their sizes; the dialog offset
@@ -49,7 +65,10 @@
 #include "core/diag/guard.h"
 #include "core/log.h"
 #include "core/config.h"
+#include "core/display/framed_screens.h"
+#include "core/output/sdl_output.h"
 #include "games/zeus/anim_clock.h"
+#include "games/zeus/fullscreen.h"
 #include "games/zeus/intro.h"
 #include "games/zeus/resolution.h"
 #include "games/zeus/site.h"
@@ -69,6 +88,14 @@
 // ---------------------------------------------------------------------------------------------
 // Stubs for the parts of the DLL these files call that are not under test
 
+const char *volatile g_fault = ""; // a fake faults once when its name is the armed one (Fires, below)
+bool Fires(const char *name);
+void Fault();
+
+// What the framing (core/display/framed_screens) handed to the output.
+core::output::Framing g_framing;
+int g_framings = 0, g_backgrounds = 0, g_cityPictures = 0;
+
 namespace core::output {
 bool FrameWanted() { return false; }
 void HoldNextFrame(DWORD) {}
@@ -76,7 +103,13 @@ void TakeCounts(long *a, long *b) { *a = *b = 0; }
 int RefreshHz() { return 60; }
 void MeasureFromNow() {}
 void TakeIntervals(char *out, std::size_t) { out[0] = 0; }
+void SetBackground(int, int, int, int, double, const void *, int, const void *, int) { ++g_backgrounds; }
+void SetCaption(const char *, int) {}
 } // namespace core::output
+
+namespace core::assets { // no player's picture
+bool LoadPicture565(const wchar_t *, int, int, std::vector<WORD> *, int *, int *) { return false; }
+} // namespace core::assets
 
 bool g_panelOpen = false, g_panelWantsFrames = false; // draw_only
 
@@ -97,6 +130,20 @@ SIZE NativeSize()
 }
 bool Windowed() { return false; }
 void SetWindowClient(int, int) {}
+SIZE ClientSize() { return SIZE{1920, 1080}; }
+SIZE ModeSize() // the game's mode size (mode_width / mode_height of the copy)
+{
+    return SIZE{*reinterpret_cast<volatile int *>(0xf2a6b4 + zeus::g_imageShift),
+                *reinterpret_cast<volatile int *>(0xf2a6b0 + zeus::g_imageShift)};
+}
+void SetFraming(const core::output::Framing &f)
+{
+    if (Fires("set_framing")) {
+        Fault();
+    }
+    g_framing = f;
+    ++g_framings;
+}
 } // namespace core::display
 
 namespace core::diag::autorun { // the smoke test is not started here (its own test: test_autorun)
@@ -108,6 +155,11 @@ bool IntroRequested() { return false; }
 
 namespace core::capture {
 int Flush(unsigned long) { return 0; }
+bool SaveAs(const void *, int, int, int, const char *, bool) // the city kept for the menus (menu_background_auto.png)
+{
+    ++g_cityPictures;
+    return true;
+}
 } // namespace core::capture
 
 extern "C" unsigned core_timer_resolution_us(void) { return 1000; }
@@ -123,6 +175,8 @@ void Describe(char *out, std::size_t size)
 {
     std::snprintf(out, size, "test");
 }
+bool GameMainMatches() { return true; }
+bool PicturesHooked() { return true; }
 } // namespace zeus::diag
 
 namespace {
@@ -189,8 +243,9 @@ template <typename F> F Timing(const char *name)
     ExitProcess(3);
 }
 
-// A fake faults once when its name is the armed one.
-const char *volatile g_fault = "";
+} // namespace
+
+// A fake faults once when its name is the armed one (g_fault, above the stubs).
 bool Fires(const char *name)
 {
     if (std::strcmp(g_fault, name) == 0) {
@@ -203,6 +258,8 @@ void Fault()
 {
     *static_cast<volatile int *>(nullptr) = 1;
 }
+
+namespace {
 
 // ---------------------------------------------------------------------------------------------
 // The game's places used below (the same as games/zeus/timing.cpp)
@@ -658,6 +715,9 @@ int __cdecl FakeBmpShot(const char *)
 void __cdecl FakeSwitchMode(int)
 {
     ++g_res.switches;
+    if (Fires("screen_switch_mode")) {
+        Fault();
+    }
 }
 
 void __cdecl FakeSidebarPos()
@@ -784,7 +844,7 @@ void ModeSizeFault()
     zeus::resolution::SettingsChanged(&c);
     Res<Mode_fn>("screen_mode_size")(3);
     Check(At<int>(aModeW) == 1024 && At<int>(aModeH) == 768, "a fault after the size was written: 1024x768 back");
-    Check(LogContains("feature \"resolution switching (games/zeus/resolution)\" switched off"), "log: switching off");
+    Check(LogContains("feature \"resolution switching (core/display/resolution_switch)\" switched off"), "log: switching off");
     Res<Mode_fn>("screen_mode_size")(3);
     Check(At<int>(aModeW) == 1024, "afterwards mode 3 is the game's own 1024x768");
     Check(!zeus::resolution::SettingsChanged(&c), "a new setting is refused (the game runs at its own size)");
@@ -818,6 +878,36 @@ void ViewportLayout()
           "Alt+1 / Alt+2: the game's own BMP screenshot is not run (its buffer is for 1024x768)");
 }
 
+// The game's mode change faults while switching to a new setting (Emperor's switch_fault, now the core's
+// resolution_switch for both games): switching off, the next loop goes back to the game's own 1024x768 with the
+// game's mode change, and a new setting is refused.
+void SwitchFault()
+{
+    SetupResolution();
+    ToCity();
+    core_config c = *core_config_get();
+    c.resolution = CORE_RESOLUTION_FIXED;
+    c.resolution_w = 1280;
+    c.resolution_h = 1024;
+    Check(zeus::resolution::SettingsChanged(&c), "a new setting in the city");
+    g_fault = "screen_switch_mode";
+    const int switches = g_res.switches;
+    Sleep(510); // the mode change is tried at most every 500 ms
+    zeus::resolution::OnLoop();
+    Check(g_res.switches == switches + 1, "the loop calls the game's mode change (it faults)");
+    Check(LogContains("feature \"resolution switching (core/display/resolution_switch)\" switched off") &&
+              LogContains("back to the game's own 1024x768"),
+          "log: switching off, back to the game's own size");
+    Sleep(510);
+    zeus::resolution::OnLoop();
+    Check(g_res.switches == switches + 2, "the next loop: the game's own mode change again (to its own size)");
+    Res<Mode_fn>("screen_mode_size")(3);
+    Check(At<int>(aModeW) == 1024 && At<int>(aModeH) == 768, "mode 3 is the game's own 1024x768");
+    zeus::resolution::OnLoop();
+    Check(LogContains("the game runs at its own 1024x768"), "log: the game at its own size");
+    Check(!zeus::resolution::SettingsChanged(&c), "a new setting is refused");
+}
+
 void LayoutFault()
 {
     SetupResolution();
@@ -841,6 +931,165 @@ void RunFrame() // one game_frame through our detour (it may wait for the frame 
     while (g_calls.frames == f) {
         Timing<Frame_fn>("game_frame")();
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The framed front-end screens (games/zeus/fullscreen, core/display/framed_screens)
+
+constexpr DWORD aDrawBuffer = 0xf9c100, aPitch = 0xf2a698, aDdWidth = 0xf2a6a0, aDdHeight2 = 0xf2a69c,
+                aCityLeft = 0x7d3b94, aCityTop = 0x7d3b8c, aCityRight = 0x7d3b90, aCityBottom = 0x7d3b88;
+
+void SetupFramed()
+{
+    SetupResolution();
+    Check(zeus::fullscreen::Attach(), "installed (the resolution is)");
+}
+
+void FramedScreens()
+{
+    SetupFramed();
+    zeus::fullscreen::AfterPicture("data\\Poseidon_FE_MainMenu.jpg", 112, 84);
+    Check(g_framing.on && g_framing.picture.left == 0 && g_framing.picture.right == 1024 &&
+              g_framing.picture.bottom == 768 && g_framing.below == 0,
+          "the main menu: the whole 1024x768 frame framed, no status block");
+    Check(g_framing.scale > 0.99 && g_framing.scale < 1.01, "at the city's scale (1920x1080 at 100%: 1.0)");
+    const int framings = g_framings;
+    zeus::fullscreen::AfterPicture("data\\Poseidon_FE_MainMenu.jpg", 112, 84);
+    Check(g_framings == framings, "the same picture drawn again: nothing done");
+    zeus::fullscreen::AfterPicture("data\\zeus_load1.jpg", 112, 84);
+    Check(g_framing.on && g_framing.picture.left == 112 && g_framing.picture.top == 84 &&
+              g_framing.picture.right == 912 && g_framing.picture.bottom == 684,
+          "a loading picture: its 800x600 at (112, 84)");
+    Check(zeus::fullscreen::LoadingPicture("DATA\\Zeus_Load3.JPG") &&
+              zeus::fullscreen::LoadingPicture("data\\poseidon_load8.jpg") &&
+              !zeus::fullscreen::LoadingPicture("data\\Zeus_FE_MainMenu.jpg") &&
+              !zeus::fullscreen::LoadingPicture("data\\zeus_loader") && !zeus::fullscreen::LoadingPicture(nullptr),
+          "loading pictures by name: zeus_load*, poseidon_load* (.jpg)");
+    At<unsigned char>(aGameScreen) = 0x4a; // a video
+    zeus::fullscreen::OnLoop();
+    Check(!g_framing.on, "a video: not framed");
+    At<unsigned char>(aGameScreen) = 0x00;
+    zeus::fullscreen::OnLoop();
+    Check(g_framing.on, "back on the menu: framed");
+    ToCity();
+    zeus::fullscreen::OnLoop();
+    Check(!g_framing.on, "the city: not framed");
+    Check(LogContains("zeus: fullscreen: installed"), "log: installed");
+}
+
+// The resolution setting changed on a front-end screen (the panel, Shift+F7): no mode change (the frame stays
+// 1024x768), the framing follows the new scale at once (resolution_switch's listener), even without a redraw.
+void FramedSetting()
+{
+    SetupFramed();
+    zeus::fullscreen::AfterPicture("data\\Poseidon_FE_MainMenu.jpg", 112, 84);
+    const int switches = g_res.switches, framings = g_framings;
+    core_config c = *core_config_get();
+    c.resolution = CORE_RESOLUTION_SCALED;
+    c.scale_percent = 125;
+    Check(zeus::resolution::SettingsChanged(&c), "the panel's setting is taken");
+    Check(g_res.switches == switches, "front-end screen: no mode change");
+    Check(g_framings > framings && g_framing.on && g_framing.scale > 1.24 && g_framing.scale < 1.26,
+          "the framing follows at once: scale 1.25 (1920x1080 at 125%)");
+    BYTE keys[256];
+    GetKeyboardState(keys);
+    keys[VK_SHIFT] = 0x80;
+    SetKeyboardState(keys); // GetKeyState(VK_SHIFT) on this thread: down
+    const int before = g_framings;
+    Check(zeus::resolution::KeyFilter(WM_KEYDOWN, VK_F7, 0), "Shift+F7 is ours");
+    Check(g_res.switches == switches, "Shift+F7 on a front-end screen: no mode change");
+    Check(g_framings > before && g_framing.on, "... and the framing follows at once");
+    keys[VK_SHIFT] = 0;
+    SetKeyboardState(keys);
+}
+
+// A fault while the framing follows the setting (inside the resolution switching's own guard): the framing is off
+// (the game's own frame, scaled), the resolution switching stays on and the setting is applied.
+void FramedFault()
+{
+    SetupFramed();
+    zeus::fullscreen::AfterPicture("data\\Poseidon_FE_MainMenu.jpg", 112, 84);
+    Check(g_framing.on, "framed");
+    g_fault = "set_framing";
+    core_config c = *core_config_get();
+    c.resolution = CORE_RESOLUTION_SCALED;
+    c.scale_percent = 125;
+    Check(zeus::resolution::SettingsChanged(&c), "the setting is applied all the same");
+    Check(LogContains("feature \"framed full-screen pictures (core/display/framed_screens)\" switched off"),
+          "log: framing off");
+    Check(!LogContains("feature \"resolution switching"), "the resolution switching stays on");
+    Check(!g_framing.on, "the game's own look: not framed");
+    zeus::fullscreen::AfterPicture("data\\Zeus_FE_Registry.jpg", 112, 84);
+    zeus::fullscreen::OnLoop();
+    Check(!g_framing.on, "afterwards: never framed");
+    ToCity();
+    Check(At<int>(aModeW) == 1536 && At<int>(aModeH) == 864, "the city at the new setting (1920x1080 at 125%)");
+}
+
+// menu_screens = city: the screens before an episode and the editors show the panel pattern; the player's own picture
+// everywhere.
+void CityAroundScenario()
+{
+    using zeus::fullscreen::CityAround;
+    Check(CityAround(0x00, false) && CityAround(0x2f, false) && CityAround(0x30, false) && CityAround(0x1f, false) &&
+              CityAround(0x33, false) && CityAround(0x3a, false) && CityAround(0x22, false),
+          "the city around: main menu, leader and game choice, high scores, victory, adventure screens");
+    Check(!CityAround(0x3d, false) && !CityAround(0x35, false) && !CityAround(0x04, false),
+          "the panel pattern: before an episode");
+    Check(!CityAround(0x10, false) && !CityAround(0x58, false) && !CityAround(0x15, false) &&
+              !CityAround(0x2d, false) && !CityAround(0x57, false) && !CityAround(0x46, false),
+          "the panel pattern: the editors");
+    Check(CityAround(0x35, true) && CityAround(0x3d, true) && CityAround(0x10, true),
+          "the player's own picture on every screen");
+    using zeus::fullscreen::CityAroundShown;
+    At<int>(0x781894) = 0x57; // the drop-down menu 0x03 over the adventure editor (seen in testing)
+    Check(!CityAroundShown(0x03, false), "the drop-down menu over the editor: the panel pattern (the screen beneath)");
+    At<int>(0x781894) = 0x00;
+    Check(CityAroundShown(0x03, false) && !CityAroundShown(0x57, false) && CityAroundShown(0x00, false),
+          "... over the main menu: the city; other screens as they are");
+}
+
+// The city on screen is kept while playing and saved when a front-end screen comes up (and at the game's end).
+void KeepCity()
+{
+    SetupFramed();
+    static WORD screen[64 * 48];
+    for (int i = 0; i < 64 * 48; ++i) {
+        screen[i] = static_cast<WORD>(i);
+    }
+    ToCity();
+    At<int>(aDdWidth) = 64;
+    At<int>(aDdHeight2) = 48;
+    At<int>(aPitch) = 64 * 2;
+    At<DWORD>(aDrawBuffer) = reinterpret_cast<DWORD>(screen);
+    At<int>(aCityLeft) = 0;
+    At<int>(aCityTop) = 4;
+    At<int>(aCityRight) = 50;
+    At<int>(aCityBottom) = 60; // below the screen: cut at its height
+    const int frames = core::display::framed::CityFramesDrawn();
+    Timing<Render_fn>("city_render")(0, 0, 0); // through the real detour: a drawing that counts (no drawn-state copy)
+    Check(core::display::framed::CityFramesDrawn() == frames + 1, "city_render's detour hands the city on");
+    Check(g_cityPictures == 0, "kept, not saved while playing");
+    At<unsigned char>(aGameScreen) = 0x0d; // the file dialog over the city, then a picture outside it
+    zeus::resolution::OnBackground();
+    zeus::fullscreen::AfterPicture("data\\zeus_load2.jpg", 112, 84);
+    Check(g_cityPictures == 1, "a front-end screen: the city seen last saved");
+    zeus::fullscreen::OnGameEnd();
+    Check(g_cityPictures == 1, "the game's end: nothing new to save");
+    ToCity();
+    Timing<Render_fn>("city_render")(0, 0, 0); // within 3 s of the last one: not kept again
+    zeus::fullscreen::OnGameEnd();
+    Check(g_cityPictures == 1, "kept at most every 3 s");
+    At<unsigned char>(aGameScreen) = 0x58; // the map editor: its map in the 1024x768 frame
+    zeus::resolution::OnBackground();
+    const int before = core::display::framed::CityFramesDrawn();
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(core::display::framed::CityFramesDrawn() == before, "a front-end screen (the map editor): not kept");
+    ToCity(); // the adventure editor edits a city on the city screen 0x01 at our resolution (seen in testing)
+    At<int>(0x665e2c) = 1; // editor_mode
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(core::display::framed::CityFramesDrawn() == before, "the city screen in the editor (editor_mode 1): not kept");
+    At<int>(0x665e2c) = 0;
 }
 
 constexpr DWORD fMapDraw = 0x599da0, aDdHeight = 0xf2a69c;
@@ -889,7 +1138,7 @@ void DrawOnly()
     Sleep(20);
     g_fault = "game_frame";
     Timing<Frame_fn>("game_frame")();
-    Check(LogContains("feature \"draw-only frames while the panel asks (games/zeus/timing)\" switched off"),
+    Check(LogContains("feature \"draw-only frames while the panel asks (core/sim/panel_pause)\" switched off"),
           "a fault in the frame: draw-only frames off");
     Sleep(20);
     Timing<Frame_fn>("game_frame")();
@@ -1109,6 +1358,12 @@ const Scenario kScenarios[] = {
     {"draw_only", &DrawOnly},
     {"intro_skip", &IntroSkip},
     {"intro_fault", &IntroFault},
+    {"framed_screens", &FramedScreens},
+    {"framed_setting", &FramedSetting},
+    {"framed_fault", &FramedFault},
+    {"city_around", &CityAroundScenario},
+    {"keep_city", &KeepCity},
+    {"switch_fault", &SwitchFault},
     {"smoke_actions", &SmokeActions},
 };
 

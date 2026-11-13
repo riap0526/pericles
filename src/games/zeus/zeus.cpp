@@ -12,6 +12,7 @@
 #include "core/settings/settings.h"
 #include "games/zeus/debug_log.h"
 #include "games/zeus/diag.h"
+#include "games/zeus/fullscreen.h"
 #include "games/zeus/intro.h"
 #include "games/zeus/resolution.h"
 #include "games/zeus/site.h"
@@ -109,6 +110,7 @@ extern "C" void zeus_register_settings(void)
     zeus::diag::RegisterSettings();   // [debug] draw_census
     zeus::state_check::RegisterSettings(); // [debug] state_check
     zeus::intro::RegisterSettings();       // [ui] intro_movie
+    zeus::fullscreen::RegisterSettings();  // [video] loading_screen, menu_screens, background_blur, background_brightness
     // The settings file this version ships: an older file gets its descriptions.
     core::settings::SetTemplate(zeus::kIniTemplate);
 }
@@ -153,6 +155,12 @@ extern "C" void zeus_attach(void)
     else if (zeus::resolution::Attach(core_config_get())) { // the logical resolution
         core::settings::OnChange(core::settings::Find("video", "resolution"), &ApplyResolution);
         core::settings::OnChange(core::settings::Find("video", "scale"), &ApplyResolution);
+        if (zeus::diag::PicturesHooked()) {
+            zeus::fullscreen::Attach(); // the front-end screens framed
+        }
+        else {
+            core_log("zeus: fullscreen: not installed (jpeg_draw_background is not hooked): the game's own frame");
+        }
     }
     // Screenshot file names and the present mode log's lines carry game_screen 0xf2a6dd (one byte, reads only).
     // The tag is asked for when a screenshot is taken (game thread): the draw census sums up the next frame too.
