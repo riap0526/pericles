@@ -22,6 +22,7 @@
 #include "games/zeus/diag.h"
 #include "games/zeus/resolution.h"
 #include "games/zeus/site.h"
+#include "games/zeus/smoke.h"
 #include "games/zeus/state_check.h"
 
 #include <mmsystem.h>
@@ -782,7 +783,8 @@ void Attach()
     AttachDrawnState();
     // The smoke test's steps run in game_frame's detour: only with it (main menu 0x00, city 0x01).
     if (ok) {
-        core::diag::autorun::Start({&AutorunScreen, 0x00, 0x01, &AutorunTicks, &AutorunQuit});
+        core::diag::autorun::Start({&AutorunScreen, 0x00, 0x01, &AutorunTicks, &AutorunQuit, &smoke::Describe,
+                                    smoke::kActions, &smoke::Action, &smoke::DialogOffset});
     }
     core_log("zeus: frame and timing hooks %s (screen_present %s; keep_speed %s, full_speed %s, simulate while "
              "scrolling %s; figure animations on the game's time %s)",

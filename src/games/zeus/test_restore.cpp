@@ -38,6 +38,10 @@
 //                           caller's movie opens with its arguments; play: game_main's opens
 //   intro_fault         a fault while skipping: off, the movie opens as the game does it
 //
+// The smoke test's actions (games/zeus/smoke; only in a smoke test, no detour):
+//   smoke_actions       win calls cheat_run(0) (a __cdecl fake) only in the city, not governing on, with the
+//                           code and table as expected; lose writes the three values at their sizes; the dialog offset
+//
 // Each scenario runs in a child process of its own (a feature switched off stays off for the rest of a process):
 //   test_restore.exe            runs every scenario and prints one line each
 //   test_restore.exe <name>     one scenario (exit code 0 = passed)
@@ -49,6 +53,7 @@
 #include "games/zeus/intro.h"
 #include "games/zeus/resolution.h"
 #include "games/zeus/site.h"
+#include "games/zeus/smoke.h"
 #include "games/zeus/state_check.h"
 #include "games/zeus/timing.h"
 #include "games/zeus/world_map.h"
@@ -1018,6 +1023,70 @@ void IntroFault()
           "afterwards: the game's own way");
 }
 
+// --- The smoke test's actions (games/zeus/smoke). cheat_run is __cdecl (one argument [esp+4], returns al,
+// plain ret; the caller cleans): the fake is the same.
+int g_cheatArg = -1;
+char __cdecl FakeCheatRun(int n)
+{
+    g_cheatArg = n;
+    if (n == 0) { // Ambrosia
+        At<char>(0xf2a6db) = 1;
+        At<char>(0xf2a6da) = 1;
+    }
+    return 1;
+}
+
+void SetupCheats()
+{
+    const BYTE body[8] = {0x83, 0xf8, 0x64, 0x7d, 0x3d, 0x8b, 0x15, 0xf8};
+    const BYTE ambrosia[8] = {0xb0, 0x01, 0xa2, 0xdb, 0xa6, 0xf2, 0x00, 0xa2};
+    for (int i = 0; i < 8; ++i) {
+        At<BYTE>(0x42c5a8 + i) = body[i];
+        At<BYTE>(0x42c560 + i) = ambrosia[i];
+    }
+    Thunk(0x42c5a0, reinterpret_cast<const void *>(&FakeCheatRun)); // the first 5 bytes only
+    At<char>(0x661510) = 1;
+    At<DWORD>(0x5d8734) = 0x42c560;
+    At<int>(0xfeb160) = -1;
+    At<short>(0xfeb058) = 0x1234; // next to the two words lose writes
+}
+
+void SmokeActions()
+{
+    SetupCheats();
+    char why[200] = "";
+    At<unsigned char>(0xf2a6dd) = 0x00;
+    Check(!zeus::smoke::Action("win", why, sizeof(why)) && std::strstr(why, "not on the city") && g_cheatArg == -1,
+          "win off the city screen: refused, cheat_run not called");
+    At<unsigned char>(0xf2a6dd) = 0x01;
+    At<int>(0xfeaf28) = 1;
+    Check(!zeus::smoke::Action("win", why, sizeof(why)) && std::strstr(why, "governed on") && g_cheatArg == -1,
+          "win while governing on: refused");
+    At<int>(0xfeaf28) = 0;
+    Check(zeus::smoke::Action("win", why, sizeof(why)) && g_cheatArg == 0 && At<char>(0xf2a6db) == 1,
+          "win in the city: cheat_run(0) (__cdecl), cheat_win set");
+    At<char>(0xf2a6db) = 0;
+    g_cheatArg = -1;
+    At<BYTE>(0x42c5a8) = 0x90;
+    Check(!zeus::smoke::Action("win", why, sizeof(why)) && g_cheatArg == -1, "cheat_run not as expected: not called");
+    At<BYTE>(0x42c5a8) = 0x83;
+    At<DWORD>(0x5d8734) = 0x42c561;
+    Check(!zeus::smoke::Action("win", why, sizeof(why)) && g_cheatArg == -1,
+          "the table's entry 0 not Ambrosia: not called");
+
+    Check(zeus::smoke::Action("lose", why, sizeof(why)) && At<int>(0xfeb160) == 0xb91 &&
+              At<short>(0xfeb054) == 0xb91 && At<short>(0xfeb056) == 0xb90 && At<short>(0xfeb058) == 0x1234,
+          "lose: lose_reason 0xb91 (4 bytes), the two words 0xb91 / 0xb90, nothing after them");
+    Check(!zeus::smoke::Action("lose", why, sizeof(why)) && std::strstr(why, "already lost"), "lose twice: refused");
+    Check(!zeus::smoke::Action("jump", why, sizeof(why)), "an unknown action: refused");
+
+    At<int>(0xf2a6ac) = 192;
+    At<int>(0xf2a6a8) = 144;
+    int x = 0, y = 0;
+    zeus::smoke::DialogOffset(&x, &y);
+    Check(x == 192 && y == 144, "the dialog offset (dialog_offset_x / _y)");
+}
+
 struct Scenario {
     const char *name;
     void (*run)();
@@ -1040,6 +1109,7 @@ const Scenario kScenarios[] = {
     {"draw_only", &DrawOnly},
     {"intro_skip", &IntroSkip},
     {"intro_fault", &IntroFault},
+    {"smoke_actions", &SmokeActions},
 };
 
 } // namespace

@@ -9,6 +9,7 @@
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
 // (core::diag::autorun::Watch is called directly below, as core/output's thread would.)
 // core/output's side, which this test does not link (autorun.cpp calls these only through Start).
@@ -24,6 +25,19 @@ bool Threaded()
     return true;
 }
 } // namespace core::output
+
+// core/display's side (the real hooks of Start; the runs below use fakes through StartWith).
+namespace core::display {
+void HoldMouse(bool, POINT) {}
+bool SendMouse(UINT, WPARAM, POINT)
+{
+    return false;
+}
+SIZE ModeSize()
+{
+    return SIZE{0, 0};
+}
+} // namespace core::display
 
 namespace ar = core::diag::autorun;
 
@@ -90,11 +104,63 @@ bool CanShoot()
 
 const ar::Hooks kHooks{&Now, &Shot, &Report, &Saved, &CanShoot};
 
+// The mouse and the game layer's actions.
+struct MouseEvent {
+    unsigned message, keys;
+    long x, y;
+    unsigned long at;
+};
+std::vector<MouseEvent> g_mouse;
+bool g_held = false;
+long g_heldX = -1, g_heldY = -1;
+bool g_modeKnown = true;
+void Hold(bool on, long x, long y)
+{
+    g_held = on;
+    if (on) {
+        g_heldX = x, g_heldY = y;
+    }
+}
+bool Send(unsigned message, unsigned keys, long x, long y)
+{
+    if (!g_modeKnown) {
+        return false;
+    }
+    g_mouse.push_back({message, keys, x, y, g_now});
+    return true;
+}
+bool ModeSize(long *w, long *h)
+{
+    *w = 1024, *h = 768;
+    return g_modeKnown;
+}
+std::string g_actionsDone;
+bool g_actionOk = true;
+bool Action(const char *name, char *why, int size)
+{
+    if (!g_actionOk) {
+        std::snprintf(why, size, "not on the city screen");
+        return false;
+    }
+    g_actionsDone += std::string(name) + ";";
+    return true;
+}
+void DialogOffset(int *x, int *y)
+{
+    *x = 192, *y = 144;
+}
+const ar::Game kGameWithActions{&Screen, 0x00, 0x01, &Ticks, &Quit, nullptr, "win lose", &Action, &DialogOffset};
+const ar::Hooks kMouseHooks{&Now, &Shot, &Report, &Saved, &CanShoot, &Hold, &Send, &ModeSize};
+
 void Reset()
 {
     g_screen = 0x44, g_ticks = 1000, g_quits = 0, g_now = 0, g_shotRequests = 0, g_reportRequests = 0, g_saved = 0;
     g_saveAtOnce = true;
     g_canShoot = true;
+    g_mouse.clear();
+    g_held = false, g_heldX = g_heldY = -1, g_modeKnown = true;
+    g_actionsDone.clear();
+    g_actionOk = true;
 }
 
 void Frames(int n)
@@ -269,6 +335,69 @@ int main()
         g_now += 16000;
         Frames(1);
         Check(g_quits == 1 && std::string(ar::State()) == "error", "  and the step fails after its wait, the game ends");
+    }
+
+    // --- The game layer's actions and clicks, read
+    {
+        ar::Script s;
+        std::string e;
+        const bool ok = ar::Parse("game win\ngame lose\nclick 10 20\nclick dialog 217 496\nrclick\nquit\n", 0, 1, &s,
+                                  &e, "win lose");
+        Check(ok && s.steps.size() == 6, "game, click, click dialog, rclick are read");
+        Check(ok && s.steps[0].op == ar::Op::Action && s.steps[0].name == "win" && s.steps[1].name == "lose",
+              "game win / game lose");
+        Check(ok && s.steps[2].op == ar::Op::Click && s.steps[2].x == 10 && s.steps[2].y == 20 && !s.steps[2].dialog,
+              "click 10 20 (mode)");
+        Check(ok && s.steps[3].op == ar::Op::Click && s.steps[3].x == 217 && s.steps[3].y == 496 && s.steps[3].dialog,
+              "click dialog 217 496");
+        Check(ok && s.steps[4].op == ar::Op::RClick, "rclick");
+        Check(!ar::Parse("game jump\n", 0, 1, &s, &e, "win lose"), "an action the game layer does not have: refused");
+        Check(!ar::Parse("game win\n", 0, 1, &s, &e), "game win with no actions: refused");
+        Check(!ar::Parse("click 10\n", 0, 1, &s, &e, "win"), "click with one number: refused");
+    }
+
+    // --- A run with an action and two clicks; the mouse held meanwhile
+    {
+        Reset();
+        Check(ar::StartWith(kGameWithActions, "wait city\ngame win\nclick dialog 217 496\nrclick\nquit\n",
+                            kMouseHooks),
+              "a script with an action and clicks starts");
+        Frames(1);
+        Check(g_held && g_heldX == 512 && g_heldY == 384, "the first frame: the mouse held at the middle of the mode");
+        g_screen = 0x01;
+        Frames(12);
+        Check(g_actionsDone == "win;", "in the city: game win done once");
+        Frames(60);
+        const bool six = g_mouse.size() == 6;
+        Check(six, "six mouse messages (move, down, up; move, down, up)");
+        if (six) {
+            Check(g_mouse[0].message == WM_MOUSEMOVE && g_mouse[1].message == WM_LBUTTONDOWN &&
+                      g_mouse[1].keys == MK_LBUTTON && g_mouse[1].x == 409 && g_mouse[1].y == 640 &&
+                      g_mouse[2].message == WM_LBUTTONUP && g_mouse[2].x == 409,
+                  "click dialog 217 496 with the offset (192,144): pressed and released at mode (409,640)");
+            Check(g_mouse[2].at - g_mouse[1].at >= 100, "  released at least 100 ms after the press");
+            Check(g_mouse[4].message == WM_RBUTTONDOWN && g_mouse[4].keys == MK_RBUTTON && g_mouse[4].x == 409 &&
+                      g_mouse[5].message == WM_RBUTTONUP && g_mouse[4].at - g_mouse[2].at >= 100,
+                  "rclick where the mouse is, at least 100 ms after the click before");
+        }
+        Check(g_quits == 1 && std::string(ar::State()) == "done" && !g_held, "done: quit, the mouse let go");
+    }
+
+    // --- An action that cannot be done; a click with no display mode
+    {
+        Reset();
+        g_actionOk = false;
+        ar::StartWith(kGameWithActions, "game win\nwait ticks 10\nquit\n", kMouseHooks);
+        Frames(2);
+        Check(g_quits == 1 && std::string(ar::State()) == "error" && !g_held,
+              "an action refused: error at once, the game ended, the mouse let go");
+
+        Reset();
+        ar::StartWith(kGameWithActions, "click 10 20\nquit\n", kMouseHooks);
+        g_modeKnown = false;
+        Frames(2);
+        Check(g_quits == 1 && std::string(ar::State()) == "error" && g_mouse.empty(),
+              "a click with no display mode: error, nothing sent");
     }
 
     // --- a bad script, and no environment variable
