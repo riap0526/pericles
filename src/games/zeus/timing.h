@@ -31,6 +31,9 @@ void Attach();
 // The number of game_frame runs so far (game thread): changes once per frame, never reset.
 unsigned FrameNumber();
 
+// Whether city_render is hooked (Attach): the menus' city background is taken there (games/zeus/fullscreen).
+bool CityDrawingHooked();
+
 // Offline tests only (src/games/zeus/test_restore.cpp): the detours above by site name; the copy buffer of the
 // drawn-frame animations without the site checks of Attach; whether each feature is still on.
 const Detour *Detours(int *count);

@@ -13,6 +13,9 @@ namespace zeus::resolution {
 // Returns false (nothing installed) if anything does not match the known build.
 bool Attach(const core_config *cfg);
 
+// [ui] info_window: registered before the settings file is loaded (games/zeus/zeus.cpp).
+void RegisterSettings();
+
 // The video.resolution or video.scale setting changed (game thread): the next OnLoop switches to it. False when it
 // cannot be applied (resolution switching was switched off after an error).
 bool SettingsChanged(const core_config *cfg);

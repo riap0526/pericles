@@ -524,6 +524,7 @@ const Region kDrawnState[] = {
 const Site kRandomNext{"random_generate_next", 0x4488c0, {0xa1, 0x24, 0x36, 0xf1, 0x00, 0x8b, 0x0d, 0xd4}};
 constexpr DWORD kRandomState = 0xf13624, kRandomSize = 0xf137e8 - 0xf13624;
 bool g_randomPutBack = false; // AttachDrawnState: kRandomNext matches
+bool g_cityRenderHooked = false; // AttachDrawnState: city_render hooked (the menus' city background needs it)
 core::diag::Feature g_drawnFeature{"animations of drawn frames (games/zeus/timing)"};
 unsigned char *g_drawnCopy = nullptr; // one buffer for all regions
 DWORD g_drawnSize = 0;
@@ -722,6 +723,7 @@ void AttachDrawnState()
              static_cast<unsigned long>(kRandomState), static_cast<unsigned long>(kRandomSize),
              g_randomPutBack ? "is put back too" : "is not put back (random_generate_next does not match)");
     bool ok = Install(kCityRender, &CityRender_detour, o_CityRender);
+    g_cityRenderHooked = ok;
     ok = Install(kCityRender2, &CityRender2_detour, o_CityRender2) && ok;
     core_log("zeus: drawn-frame animations: one city drawing every %lu ms counts (%lu bytes put back after the "
              "others)%s", static_cast<unsigned long>(kRenderAnimMs), static_cast<unsigned long>(g_drawnSize),
@@ -818,6 +820,11 @@ const Detour *Detours(int *count)
 unsigned FrameNumber()
 {
     return g_frameNumber;
+}
+
+bool CityDrawingHooked()
+{
+    return g_cityRenderHooked;
 }
 
 bool PrepareForTest()

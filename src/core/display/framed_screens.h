@@ -123,6 +123,11 @@ void OnPresent();
 // every few seconds (left, top, right, bottom: the city's area on the back buffer, right and bottom exclusive).
 void KeepCity(const BYTE *back, int pitch, int left, int top, int right, int bottom);
 
+// The game layer did not hand a city drawing on (game thread), and why (e.g. an editor's map). If no city is kept in
+// the whole run, one log line at the next front-end picture or the game's end gives the count and the last reason.
+// KeepCity notes its own refusals (an area outside the buffer).
+void NoteCitySkipped(const char *why, int left, int top, int right, int bottom);
+
 // The game is ending (game thread): the city seen last is saved now if it was not yet, written before returning.
 void OnGameEnd();
 

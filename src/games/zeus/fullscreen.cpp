@@ -26,6 +26,7 @@
 #include "core/log.h"
 #include "core/settings/settings.h"
 #include "games/zeus/site.h"
+#include "games/zeus/timing.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -139,6 +140,12 @@ bool Attach()
     }
     g_installed = true;
     framed::Install();
+    if (!zeus::timing::CityDrawingHooked()) {
+        // As in Emperor's layer: the city is taken where the game draws it; without that hook the menus show the
+        // panel pattern (or the player's own menu_background picture) and this line says why.
+        core_log("zeus: fullscreen: no city behind the menus (city_render is not hooked): the panel pattern around them, "
+                 "or your own menu_background picture");
+    }
     return true;
 }
 
@@ -199,7 +206,12 @@ void CityDrawn()
     // Not in the editors: the menus' background is the city the player played last. The
     // adventure editor edits a city on the city screen 0x01 at our resolution (seen in testing), so the front-end
     // not enough; editor_mode tells.
-    if (!g_installed || *kEditorMode != 0 || core::display::resolution::FrontEnd()) {
+    if (!g_installed || core::display::resolution::FrontEnd()) {
+        return;
+    }
+    if (*kEditorMode != 0) {
+        // Noted: if editor_mode stays set after an editor on a path not seen yet, the summary line says so.
+        framed::NoteCitySkipped("editor_mode is not 0 (an editor)", *kCityLeft, *kCityTop, *kCityRight, *kCityBottom);
         return;
     }
     const int pitch = *kPitch, width = *kWidth, height = *kHeight;
@@ -207,6 +219,7 @@ void CityDrawn()
     right = right < width ? right : width;
     bottom = bottom < height ? bottom : height;
     if (pitch < width * 2) {
+        framed::NoteCitySkipped("the pitch is smaller than the width", *kCityLeft, *kCityTop, right, bottom);
         return;
     }
     framed::KeepCity(*kDrawBuffer, pitch, *kCityLeft, *kCityTop, right, bottom);

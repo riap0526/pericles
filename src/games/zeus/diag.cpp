@@ -429,6 +429,11 @@ bool GameMainMatches()
     return Matches(kGameMain);
 }
 
+bool ImageDrawHooked()
+{
+    return g_censusOn; // true only after Matches and the hook (Attach), false when either failed or census is off
+}
+
 bool PicturesHooked()
 {
     return g_picturesHooked;

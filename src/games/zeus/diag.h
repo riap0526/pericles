@@ -34,6 +34,10 @@ bool GameMainMatches();
 // Whether jpeg_draw_background is hooked (Attach): the framed front-end screens need it.
 bool PicturesHooked();
 
+// image_draw 0x5acf50 was compared with its Site and hooked for the draw census (its bytes are then ours, so
+// another module cannot compare them again; games/zeus/resolution uses this).
+bool ImageDrawHooked();
+
 // From timing.cpp's game_frame hook (game thread).
 void FrameBegin();
 void FrameEnd();

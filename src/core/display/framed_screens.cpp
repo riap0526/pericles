@@ -381,6 +381,26 @@ void RequestBackdrop(int w, int h)
 
 // A front-end screen comes up (game thread): the city seen last becomes the background, and is saved for the next run.
 // wait: written before returning (the game is ending).
+// Why no city was kept, for one summary line: written once, only when the city was
+// drawn but never kept in this run, so the skips of a normal start (the area still 0 before the first layout) do not
+// show.
+bool g_cityKeptEver = false;
+int g_citySkips = 0;
+char g_citySkipWhy[96] = "";
+int g_citySkipArea[4] = {0, 0, 0, 0};
+bool g_citySkipLogged = false;
+
+void SkipSummary()
+{
+    if (g_cityKeptEver || g_citySkips == 0 || g_citySkipLogged) {
+        return;
+    }
+    g_citySkipLogged = true;
+    core_log("%s: no city kept for the menus in this run: %d city drawings skipped (last: %s; area %d,%d-%d,%d)",
+             Prefix(), g_citySkips, g_citySkipWhy, g_citySkipArea[0], g_citySkipArea[1], g_citySkipArea[2],
+             g_citySkipArea[3]);
+}
+
 void CityLeft(bool wait = false)
 {
     if (!g_shot.unsaved || g_shot.px.empty()) {
@@ -706,8 +726,21 @@ bool Guarded(void (*fn)(void *), void *arg)
     return true;
 }
 
+void NoteCitySkipped(const char *why, int left, int top, int right, int bottom)
+{
+    ++g_citySkips;
+    std::snprintf(g_citySkipWhy, sizeof(g_citySkipWhy), "%s", why ? why : "?");
+    g_citySkipArea[0] = left;
+    g_citySkipArea[1] = top;
+    g_citySkipArea[2] = right;
+    g_citySkipArea[3] = bottom;
+}
+
 void PictureShown(const RECT *loading)
 {
+    if (core::display::resolution::FrontEnd()) {
+        SkipSummary(); // the menus would show the city now
+    }
     if (core::diag::Enabled(g_cityFeature) && core::display::resolution::FrontEnd()) {
         core::diag::Guarded(g_cityFeature, [](void *) { CityLeft(); }, nullptr);
     }
@@ -770,8 +803,11 @@ void KeepCity(const BYTE *back, int pitch, int left, int top, int right, int bot
 {
     ++g_cityFrames;
     const DWORD now = GetTickCount();
-    if (!g_installed || !core::diag::Enabled(g_cityFeature) || (g_shot.taken && now - g_shot.taken < kCityShotMs) ||
-        !back || left < 0 || top < 0 || right <= left || bottom <= top || right * 2 > pitch) {
+    if (!g_installed || !core::diag::Enabled(g_cityFeature) || (g_shot.taken && now - g_shot.taken < kCityShotMs)) {
+        return;
+    }
+    if (!back || left < 0 || top < 0 || right <= left || bottom <= top || right * 2 > pitch) {
+        NoteCitySkipped(back ? "the city's area is not usable" : "no draw buffer", left, top, right, bottom);
         return;
     }
     struct Args {
@@ -791,6 +827,7 @@ void KeepCity(const BYTE *back, int pitch, int left, int top, int right, int bot
             g_shot.w = w;
             g_shot.h = h;
             g_shot.unsaved = true;
+            g_cityKeptEver = true;
         },
         &a);
     g_shot.taken = now;
@@ -798,6 +835,9 @@ void KeepCity(const BYTE *back, int pitch, int left, int top, int right, int bot
 
 void OnGameEnd()
 {
+    if (g_installed) {
+        SkipSummary();
+    }
     if (g_installed && core::diag::Enabled(g_cityFeature)) {
         core::diag::Guarded(g_cityFeature, [](void *) { CityLeft(true); }, nullptr);
     }
@@ -836,6 +876,10 @@ void ResetForTest()
     g_presentScreen = -1;
     g_presentClient = SIZE{0, 0};
     g_presentScale = 0;
+    g_cityKeptEver = false;
+    g_citySkips = 0;
+    g_citySkipWhy[0] = '\0';
+    g_citySkipLogged = false;
 }
 
 } // namespace core::display::framed

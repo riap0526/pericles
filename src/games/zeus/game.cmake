@@ -49,7 +49,9 @@ macro(game_add_tests)
         src/games/zeus/timing.cpp src/games/zeus/anim_clock.cpp src/games/zeus/state_check.cpp
         src/games/zeus/resolution.cpp src/games/zeus/world_map.cpp src/games/zeus/intro.cpp
         src/games/zeus/fullscreen.cpp src/core/display/framed_screens.cpp src/core/display/framing.cpp
-        src/core/display/scaled_rect.cpp src/core/assets/sg3.cpp
+        src/core/display/scaled_rect.cpp src/core/assets/sg3.cpp src/core/display/city_layout.cpp
+        src/core/ddraw/surface_memory.cpp src/core/display/moved_rect.cpp src/core/display/window_move.cpp
+        src/core/ui/info_window.cpp
         src/games/zeus/smoke.cpp src/core/settings/intro_movie.cpp src/core/display/logical_size.cpp
         src/core/display/resolution_switch.cpp src/core/sim/panel_pause.cpp
         src/core/diag/guard.cpp src/core/diag/report.cpp src/core/diag/perf.cpp src/core/diag/environment.cpp

@@ -17,6 +17,8 @@
 #   test_scroll core/scroll: cruise speed, easing, stop (no DLL; ~4 s)
 #   test_logical core/display/logical_size: display scale rules (no DLL)
 #   test_moved_rect core/display/moved_rect: a rectangle shown elsewhere, every buffer between no-access pages
+#   test_city_layout core/display/city_layout: spare rows, the top bar's tiling, the sidebar filler's inset panel,
+#               mirrored tiles and moved rows (no DLL)
 #   test_scaled_rect core/display/scaled_rect: the China map's scaling, mouse mapping and backdrop
 #               (no DLL)
 #   test_common_sizes core/display/common_sizes: the panel's common sizes for a screen (no DLL)
@@ -94,6 +96,7 @@ Run 'test_city_zoom' 'emulated' @()
 Run 'test_city_picture' 'emulated' @()
 Run 'test_framing' 'emulated' @()
 Run 'test_moved_rect' 'emulated' @()
+Run 'test_city_layout' 'emulated' @()
 Run 'test_scaled_rect' 'emulated' @()
 Run 'test_surface_memory' 'emulated' @()
 Run 'test_perf' 'emulated' @()

@@ -110,6 +110,7 @@ extern "C" void zeus_register_settings(void)
     zeus::diag::RegisterSettings();   // [debug] draw_census
     zeus::state_check::RegisterSettings(); // [debug] state_check
     zeus::intro::RegisterSettings();       // [ui] intro_movie
+    zeus::resolution::RegisterSettings();  // [ui] info_window
     zeus::fullscreen::RegisterSettings();  // [video] loading_screen, menu_screens, background_blur, background_brightness
     // The settings file this version ships: an older file gets its descriptions.
     core::settings::SetTemplate(zeus::kIniTemplate);

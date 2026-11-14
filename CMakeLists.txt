@@ -82,6 +82,9 @@ set(CORE_SOURCES
     src/core/sim/panel_pause.cpp
     src/core/display/framed_screens.cpp
     src/core/display/framing.cpp
+    src/core/display/city_layout.cpp
+    src/core/display/window_move.cpp
+    src/core/ui/info_window.cpp
     src/core/display/moved_rect.cpp
     src/core/display/scaled_rect.cpp
     src/core/display/city_zoom.cpp
@@ -214,6 +217,12 @@ target_link_options(test_framing PRIVATE -static)
 add_executable(test_moved_rect proxy/ddraw/test_moved_rect.cpp src/core/display/moved_rect.cpp)
 target_include_directories(test_moved_rect PRIVATE src)
 target_link_options(test_moved_rect PRIVATE -static)
+
+# Offline test of core/display/city_layout (spare rows, tiling, the sidebar filler's pixels).
+add_executable(test_city_layout proxy/ddraw/test_city_layout.cpp src/core/display/city_layout.cpp
+    src/core/ddraw/surface_memory.cpp src/core/log.cpp)
+target_include_directories(test_city_layout PRIVATE src)
+target_link_options(test_city_layout PRIVATE -static)
 
 # Offline test of core/display/scaled_rect (the China map's scaling, mouse mapping and backdrop).
 # Offline test of core/display/city_zoom and the shrinking in core/display/scaled_rect:

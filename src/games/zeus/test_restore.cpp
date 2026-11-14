@@ -53,6 +53,26 @@
 //                           city (editor_mode)
 //   switch_fault        the game's mode change faults while switching (the core's resolution_switch, Emperor's
 //                           switch_fault): switching off, back to the game's own 1024x768, new settings refused
+//   city_skipped        no city kept in the whole run (editor_mode stays 1): one summary line with the count and
+//                           the last reason at the next front-end picture, not repeated
+//
+// The city screen's layout (games/zeus/resolution with the core's core/display/city_layout):
+//   spare_rows          one more half row at an uneven height (the clip past the screen's bottom), the spare rows
+//                           allowed and logged; none at 1080 and at the game's own 1024x768; the map's view range logged
+//   top_bar_tiled                the top bar tiled from the sidebar to the left edge above 1024 wide; a fault: off
+//   message_panel       the city message laid out on the screen's bottom, the clip back afterwards; the bottom
+//                           strip not blanked (only city_bottom_and_sidebar's call); a fault: clip back, off
+//   sidebar_filler              the sidebar's picture moved to the bottom, its left edge carried on, the inset panel's
+//                           tiles edge to edge; both sidebars; not on the world map; 768 and 790 high; without the
+//                           pack the strip inside a narrowed clip; a fault: the clip back, off
+//   pace_behind         the pace's cap when frames come slowly (Emperor's falling_behind): at most 2 ticks per
+//                           frame, logged when it starts and ends
+//   info_window                [ui] info_window: original (the game's 768 rule at any height, moved with the city
+//                           area), centered, cursor, the world map's window in the middle, 0x7d placed, the granary
+//                           kept at the game's place; the game's own size; a fault: the game's position, off
+//   fixed_window        the granary's window drawn into a copy and shown beside the cursor, the input's mouse
+//                           in the game's place, its buttons shifted (by return address); a fault: draw_buffer and
+//                           the mouse back, off, drawn where the game has it
 //
 // The smoke test's actions (games/zeus/smoke; only in a smoke test, no detour):
 //   smoke_actions       win calls cheat_run(0) (a __cdecl fake) only in the city, not governing on, with the
@@ -65,8 +85,10 @@
 #include "core/diag/guard.h"
 #include "core/log.h"
 #include "core/config.h"
+#include "core/ddraw/surface_memory.h"
 #include "core/display/framed_screens.h"
 #include "core/output/sdl_output.h"
+#include "core/ui/info_window.h"
 #include "games/zeus/anim_clock.h"
 #include "games/zeus/fullscreen.h"
 #include "games/zeus/intro.h"
@@ -81,6 +103,7 @@
 #include <windows.h>
 #include <mmsystem.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -177,6 +200,7 @@ void Describe(char *out, std::size_t size)
 }
 bool GameMainMatches() { return true; }
 bool PicturesHooked() { return true; }
+bool ImageDrawHooked() { return false; }
 } // namespace zeus::diag
 
 namespace {
@@ -735,7 +759,10 @@ void __cdecl FakeViewWide()
 void __cdecl FakeViewNarrow()
 {
     ++g_res.narrows;
+    *reinterpret_cast<volatile int *>(0x7d3b88 + g_imageShift) = 765; // the game's clip at 768 (50 half rows)
 }
+
+constexpr DWORD aClipBottom = 0x7d3b88;
 
 void __cdecl FakeViewportInit(int, int, int, int top, int cols, int rows, int tileW, int)
 {
@@ -747,6 +774,103 @@ void __cdecl FakeViewportInit(int, int, int, int top, int cols, int rows, int ti
     g_res.cols = cols;
     g_res.rows = rows;
     g_res.tileW = tileW;
+    At<int>(aClipBottom) = (rows - 1) * 15 + top; // as the game's
+}
+
+// The top bar, the bottom strip and the city message panel. The image functions are __thiscall: as __fastcall
+// fakes (ecx, edx unused, then the stack arguments) they pop the same bytes.
+constexpr DWORD fTopBar = 0x59ebe0, fImageGroup = 0x40fcf0, fImageDraw = 0x5acf50, fImageSize = 0x5aceb0,
+                fFillRect = 0x509b20, fMessagePanel = 0x4f2d80;
+struct CityLayoutCalls {
+    int topBars = 0, draws = 0, fills = 0, panels = 0, panelClip = 0, sidebars = 0, worldSidebars = 0;
+    int drawX[512] = {}, drawY[512] = {}, drawIds[512] = {}, drawId = 0;
+} g_cityLayout;
+// Each group's entry: +4 is its first image (+ 0x4000 = the id for image_draw).
+BYTE g_groupBar[8] = {0, 0, 0, 0, 0xcf, 0x04, 0, 0};   // 0x6b: 1231, the top bar (838x30)
+BYTE g_groupInset[8] = {0, 0, 0, 0, 0xe4, 0x01, 0, 0}; // 0x84: 484, the inset panel's 7 x 7 tiles (16x16)
+BYTE g_groupStrip[8] = {0, 0, 0, 0, 0xd2, 0x04, 0, 0}; // 0x62: 1234, the 800x600 strip (16x600)
+
+void __cdecl FakeTopBar(int, int)
+{
+    ++g_cityLayout.topBars;
+}
+
+BYTE *__fastcall FakeImageGroup(void *, int, int group)
+{
+    return group == 0x6b ? g_groupBar : group == 0x84 ? g_groupInset : group == 0x62 ? g_groupStrip : nullptr;
+}
+
+char __fastcall FakeImageSize(void *, int, int id, int *w, int *h)
+{
+    *w = *h = 0;
+    if (id == 0x4cf + 0x4000) {
+        *w = 838;
+        *h = 30;
+    }
+    else if (id >= 0x1e4 + 0x4000 && id < 0x1e4 + 0x4000 + 49) {
+        *w = *h = 16;
+    }
+    else if (id == 0x4d2 + 0x4000) {
+        *w = 16;
+        *h = 600;
+    }
+    return *w > 0;
+}
+
+void __fastcall FakeImageDraw(void *, int, int id, int x, int y, int, int, int)
+{
+    if (Fires("image_draw")) {
+        Fault();
+    }
+    if (g_cityLayout.draws < 512) {
+        g_cityLayout.drawX[g_cityLayout.draws] = x;
+        g_cityLayout.drawY[g_cityLayout.draws] = y;
+        g_cityLayout.drawIds[g_cityLayout.draws] = id;
+    }
+    g_cityLayout.drawId = id;
+    ++g_cityLayout.draws;
+}
+
+// The game's sidebar (both kinds): its backdrop's rows numbered (pixel = row) at sidebar_x, into draw_buffer.
+void PaintSidebar()
+{
+    ++g_cityLayout.sidebars;
+    WORD *buf = reinterpret_cast<WORD *>(At<BYTE *>(0xf9c100));
+    const int pitch = At<int>(0xf2a698) / 2, x0 = At<int>(0x10dff34);
+    for (int y = 0; y < 768; ++y) {
+        for (int x = x0; x < x0 + 186; ++x) {
+            buf[y * pitch + x] = static_cast<WORD>(y);
+        }
+    }
+}
+
+void __cdecl FakeSidebarDraw()
+{
+    PaintSidebar();
+}
+
+void __cdecl FakeSidebarUnits(int)
+{
+    PaintSidebar();
+}
+
+void __cdecl FakeWorldSidebar()
+{
+    ++g_cityLayout.worldSidebars;
+}
+
+void __cdecl FakeFillRect(int, int, int, int, int)
+{
+    ++g_cityLayout.fills;
+}
+
+void __cdecl FakeMessagePanel()
+{
+    ++g_cityLayout.panels;
+    g_cityLayout.panelClip = At<int>(aClipBottom);
+    if (Fires("city_message_layout")) {
+        Fault();
+    }
 }
 
 unsigned __cdecl FakeAnim(int, unsigned frame)
@@ -791,6 +915,15 @@ void SetupResolution()
     Thunk(fViewNarrow, reinterpret_cast<void *>(&FakeViewNarrow));
     Thunk(fViewportInit, reinterpret_cast<void *>(&FakeViewportInit));
     Thunk(fBmpShot, reinterpret_cast<void *>(&FakeBmpShot));
+    Thunk(fTopBar, reinterpret_cast<void *>(&FakeTopBar));
+    Thunk(fImageGroup, reinterpret_cast<void *>(&FakeImageGroup));
+    Thunk(fImageSize, reinterpret_cast<void *>(&FakeImageSize));
+    Thunk(fImageDraw, reinterpret_cast<void *>(&FakeImageDraw));
+    Thunk(fFillRect, reinterpret_cast<void *>(&FakeFillRect));
+    Thunk(fMessagePanel, reinterpret_cast<void *>(&FakeMessagePanel));
+    Thunk(0x517b10, reinterpret_cast<void *>(&FakeSidebarDraw));
+    Thunk(0x525280, reinterpret_cast<void *>(&FakeSidebarUnits));
+    Thunk(0x597e60, reinterpret_cast<void *>(&FakeWorldSidebar));
     At<int>(aScreenMode) = 3;
     FakeModeSize(3);
     At<unsigned char>(aGameScreen) = 0x00; // the main menu
@@ -876,6 +1009,114 @@ void ViewportLayout()
     using Shot_fn = int(__cdecl *)(const char *);
     Check(Res<Shot_fn>("bmp_screenshot")("shot1.bmp") == 0 && g_res.bmpShots == 0,
           "Alt+1 / Alt+2: the game's own BMP screenshot is not run (its buffer is for 1024x768)");
+}
+
+// The city reaches the screen's bottom (one more half row, into the spare rows), the map's view range in the
+// viewport's log.
+void SpareRows()
+{
+    SetupResolution();
+    ToCity();
+    At<int>(0xfa05b4) = 10; // a map whose view range is 40 columns x 60 half rows
+    At<int>(0xfa05b0) = 50;
+    At<int>(0xfa05ac) = 20;
+    At<int>(0xfa05a8) = 80;
+    At<int>(aModeH) = 1013; // a window of an uneven height
+    Res<Tick_fn>("ui_set_sidebar_position")();
+    Res<Tick_fn>("city_viewport_narrow")();
+    Check(g_res.cols == 28 && g_res.rows == 67 && At<int>(aClipBottom) == 1020,
+          "1920x1013: 67 half rows, the clip at 1020 (the old 66 stopped at 1005)");
+    Check(core::ddraw::CanaryAllowance() == 7 && LogContains("may draw 7 row(s) below the screen"),
+          "7 spare rows allowed below the screen, logged");
+    Check(LogContains("current map view range 40 x 60 -- VIEWPORT LARGER THAN THE MAP"),
+          "log: the map's view range, a viewport larger than it");
+    At<int>(aModeH) = 1080;
+    Res<Tick_fn>("city_viewport_narrow")();
+    Check(g_res.rows == 71 && At<int>(aClipBottom) == 1080 && core::ddraw::CanaryAllowance() == 0,
+          "1920x1080: 71 half rows to the bottom exactly, no spare rows");
+    At<int>(aModeW) = 1024;
+    At<int>(aModeH) = 768;
+    Res<Tick_fn>("city_viewport_narrow")();
+    Check(g_res.narrows == 1 && core::ddraw::CanaryAllowance() == 0, "1024x768: the game's own viewport, none");
+}
+
+// The top bar tiled from the sidebar to the left edge above 1024 wide; the game's own at 1024; a fault: off, the
+// game's own (which draws nothing at this width).
+void TopBarTiled()
+{
+    using Bar_fn = void(__cdecl *)(int, int);
+    SetupResolution();
+    ToCity();
+    Res<Tick_fn>("ui_set_sidebar_position")();
+    At<int>(0xf139bc) = 0; // the game's clip: the screen
+    At<int>(0xf139b8) = 1920;
+    Res<Bar_fn>("top_bar_draw")(0, 1920);
+    Check(g_cityLayout.topBars == 0 && g_cityLayout.draws == 5 && g_cityLayout.drawId == 0x4cf + 0x4000,
+          "1920 wide: the top bar (group 0x6b, image 1231) once whole and 4 times its even section, not the game's");
+    Check(g_cityLayout.drawX[0] == -120 - 158 && g_cityLayout.drawX[1] == 120 - 158 && g_cityLayout.drawX[2] == 360 - 158 &&
+              g_cityLayout.drawX[3] == 600 - 158 && g_cityLayout.drawX[4] == 1678 - 838 && g_cityLayout.drawY[0] == 0 && g_cityLayout.drawY[4] == 0,
+          "columns 158..397 from the left (-120, 120, 360, 600; only the left side clipped), the whole bar last (840)");
+    Check(At<int>(0xf139bc) == 0 && At<int>(0xf139b8) == 1920, "the game's clip back afterwards");
+    At<int>(aModeW) = 1024;
+    At<int>(aModeH) = 768;
+    Res<Bar_fn>("top_bar_draw")(0, 1024);
+    Check(g_cityLayout.topBars == 1 && g_cityLayout.draws == 5, "1024 wide: the game's own");
+    At<int>(aModeW) = 1920;
+    At<int>(aModeH) = 1080;
+    g_fault = "image_draw";
+    Res<Bar_fn>("top_bar_draw")(0, 1920);
+    Check(LogContains("feature \"top bar (games/zeus/resolution)\" switched off") &&
+              LogContains("the top bar is no longer drawn after an error"),
+          "a fault while drawing: the top bar off, logged");
+    Check(At<int>(0xf139bc) == 0 && At<int>(0xf139b8) == 1920, "the game's clip put back by the guard");
+    Res<Bar_fn>("top_bar_draw")(0, 1920);
+    Check(g_cityLayout.topBars == 2, "afterwards the game's own (nothing at this width)");
+}
+
+// The city message panel laid out with the screen's bottom as the clip's; the bottom strip not blanked while the
+// city reaches the bottom (only city_bottom_and_sidebar's call); a fault: the clip back, off, the game's own layout.
+void MessagePanel()
+{
+    using Fill_fn = void(__cdecl *)(int, int, int, int, int);
+    SetupResolution();
+    ToCity();
+    At<int>(aModeH) = 1013;
+    Res<Tick_fn>("ui_set_sidebar_position")();
+    Res<Tick_fn>("city_viewport_narrow")();
+    Res<Tick_fn>("city_message_layout")();
+    Check(g_cityLayout.panels == 1 && g_cityLayout.panelClip == 1013 && At<int>(aClipBottom) == 1020,
+          "the panel laid out on the screen's bottom (1013), the clip 1020 again afterwards");
+    // city_bottom_and_sidebar's call at 0x58e320 (returning to 0x58e325): a stub at 0x58e300 pushes
+    // (x 0, y 1007, w 1920, h 6, colour 0) and calls the detour there, as the game does.
+    BYTE *stub = reinterpret_cast<BYTE *>(0x58e300 + g_imageShift);
+    const DWORD args[5] = {0, 6, 1920, 1007, 0}; // pushed in this order: colour, h, w, y, x
+    for (int i = 0; i < 5; ++i) {
+        stub[i * 5] = 0x68;
+        *reinterpret_cast<DWORD *>(stub + i * 5 + 1) = args[i];
+    }
+    for (int i = 25; i < 0x20; ++i) {
+        stub[i] = 0x90;
+    }
+    BYTE *call = reinterpret_cast<BYTE *>(0x58e320 + g_imageShift);
+    call[0] = 0xe8;
+    *reinterpret_cast<DWORD *>(call + 1) =
+        reinterpret_cast<DWORD>(Res<Fill_fn>("fill_rect")) - reinterpret_cast<DWORD>(call + 5);
+    call[5] = 0x83; // add esp, 0x14
+    call[6] = 0xc4;
+    call[7] = 0x14;
+    call[8] = 0xc3;
+    reinterpret_cast<Tick_fn>(stub)();
+    Check(g_cityLayout.fills == 0, "the bottom strip: not blanked while the city reaches the bottom");
+    Res<Fill_fn>("fill_rect")(10, 10, 20, 20, 0);
+    Check(g_cityLayout.fills == 1, "fill_rect from anywhere else: as always");
+    g_fault = "city_message_layout";
+    Res<Tick_fn>("city_message_layout")();
+    Check(At<int>(aClipBottom) == 1020 &&
+              LogContains("feature \"city message panel and bottom strip (games/zeus/resolution)\" switched off"),
+          "a fault in the layout: the clip put back (1020), off");
+    Res<Tick_fn>("city_message_layout")();
+    reinterpret_cast<Tick_fn>(stub)();
+    Check(g_cityLayout.panelClip == 1020 && g_cityLayout.fills == 2, "afterwards the game's own layout and strip");
 }
 
 // The game's mode change faults while switching to a new setting (Emperor's switch_fault, now the core's
@@ -1089,6 +1330,43 @@ void KeepCity()
     At<int>(0x665e2c) = 1; // editor_mode
     Timing<Render_fn>("city_render")(0, 0, 0);
     Check(core::display::framed::CityFramesDrawn() == before, "the city screen in the editor (editor_mode 1): not kept");
+    At<int>(0x665e2c) = 0;
+    zeus::fullscreen::OnGameEnd();
+    Check(!LogContains("no city kept for the menus"), "a city was kept: no summary line");
+}
+
+// No city kept in the whole run although the city was drawn (here: editor_mode stays 1): one summary line with the
+// count and the last reason at the next front-end picture, not repeated at the game's end.
+void CitySkipped()
+{
+    SetupFramed();
+    ToCity();
+    At<int>(aCityLeft) = 0;
+    At<int>(aCityTop) = 30;
+    At<int>(aCityRight) = 1678;
+    At<int>(aCityBottom) = 1080;
+    At<int>(0x665e2c) = 1; // editor_mode not cleared
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(!LogContains("no city kept for the menus"), "while playing: nothing logged yet");
+    At<unsigned char>(aGameScreen) = 0x00;
+    zeus::resolution::OnBackground();
+    zeus::fullscreen::AfterPicture("data\\Poseidon_FE_MainMenu.jpg", 112, 84);
+    Check(LogContains("no city kept for the menus in this run: 2 city drawings skipped (last: editor_mode is not 0"),
+          "the menu comes up: one line with the count and the reason");
+    zeus::fullscreen::OnGameEnd();
+    FILE *f = std::fopen("test_restore.log", "rb");
+    static char buf[1 << 20];
+    const size_t n = f ? std::fread(buf, 1, sizeof(buf) - 1, f) : 0;
+    if (f) {
+        std::fclose(f);
+    }
+    buf[n] = 0;
+    int lines = 0;
+    for (const char *p = buf; (p = std::strstr(p, "no city kept for the menus")) != nullptr; ++p) {
+        ++lines;
+    }
+    Check(lines == 1, "the game's end: not written again");
     At<int>(0x665e2c) = 0;
 }
 
@@ -1340,6 +1618,357 @@ struct Scenario {
     const char *name;
     void (*run)();
 };
+// ---------------------------------------------------------------------------------------------
+// The sidebar's filler, without the player's interface pack (the
+// marble is not read: the 800x600 strip right of the sidebar, as when the pack cannot be read)
+
+WORD PixelAt(int x, int y)
+{
+    return reinterpret_cast<WORD *>(At<BYTE *>(aDrawBuffer))[y * (At<int>(aPitch) / 2) + x];
+}
+
+int DrawsOf(int id, int x, int y)
+{
+    int n = 0;
+    for (int i = 0; i < g_cityLayout.draws && i < 512; ++i) {
+        n += g_cityLayout.drawIds[i] == id && g_cityLayout.drawX[i] == x && g_cityLayout.drawY[i] == y;
+    }
+    return n;
+}
+
+void SidebarFiller()
+{
+    using Units_fn = void(__cdecl *)(int);
+    SetupResolution();
+    ToCity();
+    static std::vector<WORD> buf(1920 * (1080 + 64));
+    At<BYTE *>(aDrawBuffer) = reinterpret_cast<BYTE *>(buf.data());
+    At<int>(aPitch) = 1920 * 2;
+    At<int>(aDdWidth) = 1920;
+    At<int>(aDdHeight2) = 1080;
+    Res<Tick_fn>("ui_set_sidebar_position")(); // 1678
+    Res<Tick_fn>("sidebar_draw")();
+    const int x = 1678, pictureY = 1080 - 168;
+    Check(g_cityLayout.sidebars == 1 && PixelAt(x + 50, pictureY) == 600 && PixelAt(x + 185, 1079) == 767,
+          "1920x1080: the backdrop's rows 600..767 (frame, picture) moved to the bottom (912..1079)");
+    Check(PixelAt(x, 600) == 640 && PixelAt(x + 6, 659) == 699 && PixelAt(x + 3, 660) == 640 &&
+              PixelAt(x + 6, pictureY - 1) == 640 + (pictureY - 1 - 600) % 60,
+          "the left edge (7 columns) carried on from the picture's rows 640..699 down to it");
+    const int inset = 0x1e4 + 0x4000;
+    Check(DrawsOf(inset + 0, x + 7, 600) == 1 && DrawsOf(inset + 6, x + 186 - 16, 600) == 1 &&
+              DrawsOf(inset + 42, x + 7, pictureY - 16) == 1 && DrawsOf(inset + 48, x + 186 - 16, pictureY - 16) == 1,
+          "the inset panel edge to edge: its four corners at (1685, 600), (1848, 600), (1685, 896), (1848, 896)");
+    Check(DrawsOf(inset + 8, x + 7 + 16, 616) == 1 && DrawsOf(inset + 13, x + 186 - 16, 616) == 1,
+          "an inner tile and a right edge tile where the game's inner_panel_draw would put them");
+    const int strip = 0x4d2 + 0x4000;
+    Check(DrawsOf(strip, 1864, 0) == 1 && DrawsOf(strip, 1912, 600) == 1,
+          "without the pack: the 800x600 strip right of the sidebar (1864 .. 1920)");
+    g_cityLayout.draws = 0;
+    Res<Units_fn>("sidebar_draw_units")(0x48);
+    Check(g_cityLayout.sidebars == 2 && DrawsOf(inset + 0, x + 7, 600) == 1, "the army's sidebar: the same filler");
+    g_cityLayout.draws = 0;
+    At<unsigned char>(aGameScreen) = 0x14; // the world map
+    Res<Tick_fn>("sidebar_draw")();
+    Check(g_cityLayout.draws == 0, "the world map: not filled (games/zeus/world_map lays it out)");
+    At<unsigned char>(aGameScreen) = 0x01;
+    At<int>(aModeH) = 768; // 1920x768: the picture stays, only the right of the sidebar
+    At<int>(aDdHeight2) = 768;
+    Res<Tick_fn>("sidebar_draw")();
+    Check(PixelAt(x + 50, 600) == 600 && DrawsOf(inset + 0, x + 7, 600) == 0 && DrawsOf(strip, 1864, 0) == 1,
+          "768 high: the picture where the game drew it, no inset panel; the strip on the right");
+    At<int>(aModeH) = 790; // 22 rows below 768: no room for the panel's two edges, plain beside the edge
+    At<int>(aDdHeight2) = 790;
+    At<int>(0xf139b0) = 790; // the game's clip: the screen
+    At<int>(0xf139b8) = 1920;
+    g_cityLayout.draws = 0;
+    Res<Tick_fn>("sidebar_draw")();
+    Check(PixelAt(x + 50, 790 - 168) == 600 && DrawsOf(inset + 0, x + 7, 600) == 1 &&
+              DrawsOf(inset + 48, x + 186 - 16, 622 - 16) == 1 && DrawsOf(strip, x + 7, 600) == 0,
+          "790 high: the picture at the bottom, the inset panel squeezed into the 22 rows (its top and bottom edges)");
+    Check(At<int>(0xf139b0) == 790 && At<int>(0xf139b8) == 1920 && At<int>(0xf139b4) == 0 && At<int>(0xf139bc) == 0,
+          "the strip and the squeezed panel drawn inside narrowed clips, the game's clip back afterwards");
+    At<unsigned char>(aGameScreen) = 0x14; // the world map's sidebar: the city's filler cleared below and right of it
+    const int fills = g_cityLayout.fills;
+    Res<Tick_fn>("world_map_sidebar_draw")();
+    Check(g_cityLayout.fills == fills + 2 && g_cityLayout.worldSidebars == 1,
+          "the world map's sidebar: the game's, then right of it and below 768 cleared (2 fill_rect)");
+    At<unsigned char>(aGameScreen) = 0x01;
+    At<int>(aModeH) = 1080;
+    At<int>(aDdHeight2) = 1080;
+    g_cityLayout.draws = 0;
+    g_fault = "image_draw";
+    Res<Tick_fn>("sidebar_draw")();
+    Check(LogContains("feature \"sidebar filler (games/zeus/resolution)\" switched off") &&
+              LogContains("no longer filled after an error"),
+          "a fault while filling: the filler off, logged");
+    Check(At<int>(0xf139b0) == 790 && At<int>(0xf139b8) == 1920 && At<int>(0xf139bc) == 0,
+          "the game's clip put back by the guard (the fault was inside the narrowed clip)");
+    g_cityLayout.draws = 0;
+    Res<Tick_fn>("sidebar_draw")();
+    Check(g_cityLayout.draws == 0, "afterwards the game's sidebar only");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The pace's cap when the computer cannot keep up (core/sim/pace, Emperor's
+// falling_behind): the frames slow down, at most 2 ticks are run per frame and the rest dropped; logged both ways.
+
+void PaceBehind()
+{
+    At<DWORD>(aSimLastTick) = timeGetTime();
+    for (int i = 0; i < 20; ++i) { // a frame every 10 ms
+        CallDue();
+        Sleep(10);
+    }
+    Check(!LogContains("falling behind"), "a frame every 10 ms: not behind");
+    for (int i = 0; i < 25; ++i) { // a frame every 80 ms: 3 ticks owed per frame
+        CallDue();
+        Sleep(80);
+    }
+    Check(LogContains("zeus: falling behind (a frame every") && LogContains("at most 2 ticks per frame"),
+          "a frame every 80 ms: falling behind, at most 2 ticks per frame (logged)");
+    for (int i = 0; i < 40; ++i) { // fast again
+        CallDue();
+        Sleep(10);
+    }
+    Check(LogContains("zeus: no longer behind (a frame every") && !LogContains("ticks are made up again; 0 dropped"),
+          "fast again: no longer behind, the ticks dropped meanwhile logged");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The building information window ([ui] info_window; core/ui/info_window, core/display/window_move)
+
+constexpr DWORD aInfoX = 0xffa17c, aInfoY = 0xffa178, aInfoCols = 0xffa174, aInfoRows = 0xffa170,
+                aInfoKind = 0xffa13c, aInfoBuilding = 0xffa158, aInfoPrev = 0xffa180, aMouseX = 0xf2a738,
+                aMouseY = 0xf2a734;
+
+struct InfoCalls {
+    int places = 0, draws = 0, fores = 0, inputs = 0, buttons = 0;
+    int inputMouseX = 0, inputMouseY = 0, buttonX = 0, buttonY = 0;
+    BYTE *drawnInto = nullptr;
+} g_info;
+
+void SetBuilding(int id, int type)
+{
+    At<int>(aInfoKind) = 2;
+    At<int>(aInfoBuilding) = id;
+    At<short>(0x92e668 + id * 0x118) = static_cast<short>(type);
+}
+
+void __cdecl FakeInfoPlace() // the game's rule at heights other than 480 / 600 / 768, and its fixed places
+{
+    ++g_info.places;
+    At<int>(aInfoX) = 8;
+    At<int>(aInfoY) = 0x20;
+    At<int>(aInfoCols) = 0x1d;
+    At<int>(aInfoRows) = 0x14;
+    if (At<int>(aInfoKind) == 2) {
+        const int type = At<short>(0x92e668 + At<int>(aInfoBuilding) * 0x118);
+        if (type == 0x39 || type == 0x3a || type == 0x3d || type == 0x3e) {
+            At<int>(aInfoX) = 0;
+            At<int>(aInfoY) = 0x20;
+            At<int>(aInfoCols) = 0x1e;
+        }
+        else if (type == 0x7d) {
+            At<int>(aInfoX) = 0;
+            At<int>(aInfoY) = 0x2d;
+        }
+    }
+}
+
+// The fixed-place window's drawing: its rectangle filled with 0x1234 where the game has it, into draw_buffer.
+void __cdecl FakeFixedDraw()
+{
+    ++g_info.draws;
+    if (Fires("info_fixed_window_draw")) {
+        Fault();
+    }
+    g_info.drawnInto = At<BYTE *>(aDrawBuffer);
+    WORD *buf = reinterpret_cast<WORD *>(g_info.drawnInto);
+    const int pitch = At<int>(aPitch) / 2;
+    for (int y = At<int>(aInfoY); y < At<int>(aInfoY) + At<int>(aInfoRows) * 16; ++y) {
+        for (int x = At<int>(aInfoX); x < At<int>(aInfoX) + At<int>(aInfoCols) * 16; ++x) {
+            buf[y * pitch + x] = 0x1234;
+        }
+    }
+}
+
+void __cdecl FakeFixedFore()
+{
+    ++g_info.fores;
+}
+
+void __cdecl FakeInfoInput()
+{
+    ++g_info.inputs;
+    g_info.inputMouseX = At<int>(aMouseX);
+    g_info.inputMouseY = At<int>(aMouseY);
+}
+
+void __cdecl FakeButtonsDraw(int x, int y, void *, int)
+{
+    ++g_info.buttons;
+    g_info.buttonX = x;
+    g_info.buttonY = y;
+}
+
+void SetupInfo()
+{
+    SetupResolution();
+    Thunk(0x5715a0, reinterpret_cast<void *>(&FakeInfoPlace));
+    Thunk(0x5b2880, reinterpret_cast<void *>(&FakeFixedDraw));
+    Thunk(0x5b38c0, reinterpret_cast<void *>(&FakeFixedFore));
+    Thunk(0x5726e0, reinterpret_cast<void *>(&FakeInfoInput));
+    Thunk(0x4316f0, reinterpret_cast<void *>(&FakeButtonsDraw));
+    ToCity();
+    Res<Tick_fn>("ui_set_sidebar_position")(); // 1678 at 1920x1080
+    At<int>(aInfoKind) = 1;
+    At<unsigned char>(aInfoPrev) = 0x01;
+}
+
+void InfoWindow()
+{
+    using core::ui::info_window::Mode;
+    SetupInfo();
+    static Tick_fn raw = Res<Tick_fn>("info_window_place");
+    auto place = [] { // a window opened anew: a loop passed since the last one closed
+        zeus::resolution::OnLoop();
+        raw();
+    };
+    At<int>(aMouseX) = 300;
+    At<int>(aMouseY) = 200;
+    core::ui::info_window::Set(Mode::Original);
+    place();
+    const int shift = (1678 - 838) / 2;
+    Check(At<int>(aInfoX) == 0xbc + shift && At<int>(aInfoY) == 1080 - 8 - 0x14 * 16,
+          "original: the game's 768 rule at 1080, moved with the city area's centre (608, 752)");
+    At<int>(aMouseY) = 700;
+    place();
+    Check(At<int>(aInfoY) == 0x20, "original, the cursor in the lower half: at the top (0x20)");
+    core::ui::info_window::Set(Mode::Centered);
+    place();
+    Check(At<int>(aInfoX) == (1678 - 464) / 2 && At<int>(aInfoY) == 30 + (1080 - 30 - 320) / 2,
+          "centered: in the middle of the city area (607, 395)");
+    core::ui::info_window::Set(Mode::Cursor);
+    At<int>(aMouseY) = 200;
+    place();
+    Check(At<int>(aInfoX) == 324 && At<int>(aInfoY) == 40, "cursor: right of the cursor, centred on it (324, 40)");
+    At<int>(aMouseX) = 1500; // the trading post's arrow to the next one: placed again while the window is open
+    At<int>(aMouseY) = 900;
+    raw();
+    Check(At<int>(aInfoX) == 324 && At<int>(aInfoY) == 40, "placed again while open (the next trading post): the same place");
+    At<unsigned char>(aGameScreen) = 0x01; // the window closed: the next one is placed by the cursor again
+    zeus::resolution::OnLoop();
+    At<int>(aMouseX) = 300;
+    At<int>(aMouseY) = 200;
+    At<unsigned char>(aInfoPrev) = 0x14;
+    place();
+    Check(At<int>(aInfoX) == (1678 - 464) / 2, "opened on the world map: in the middle whatever the setting");
+    At<unsigned char>(aInfoPrev) = 0x01;
+    SetBuilding(7, 0x7d);
+    place();
+    Check(At<int>(aInfoX) == 324 && At<int>(aInfoY) == 40, "0x7d (the game's (0, 0x2d)): simply placed");
+    SetBuilding(7, 0x39);
+    place();
+    Check(At<int>(aInfoX) == 0 && At<int>(aInfoY) == 0x20, "the granary: the game keeps (0, 0x20) (moved on screen)");
+    At<int>(aModeW) = 1024; // the game's own size: the game's rule
+    At<int>(aModeH) = 768;
+    At<int>(aInfoKind) = 1;
+    core::ui::info_window::Set(Mode::Original);
+    place();
+    Check(At<int>(aInfoX) == 8 && At<int>(aInfoY) == 0x20, "original at 1024x768: the game's own (the fake's 8, 0x20)");
+    At<int>(aModeW) = 1920;
+    At<int>(aModeH) = 1080;
+    core::ui::info_window::Set(Mode::Cursor);
+    DWORD old; // a fault inside our part (after the position was saved): the sidebar's page made unreadable
+    VirtualProtect(reinterpret_cast<void *>(0x10df000 + g_imageShift), 0x1000, PAGE_NOACCESS, &old);
+    place();
+    VirtualProtect(reinterpret_cast<void *>(0x10df000 + g_imageShift), 0x1000, PAGE_EXECUTE_READWRITE, &old);
+    Check(At<int>(aInfoX) == 8 && At<int>(aInfoY) == 0x20, "fault: the game's own position put back (8, 32)");
+    place();
+    Check(At<int>(aInfoX) == 8 && LogContains("feature \"info window position (games/zeus/resolution)\" switched off") &&
+              LogContains("keeps the game's own position after an error"),
+          "afterwards the game's own position, logged");
+}
+
+// The granary's window (the game keeps (0, 0x20)) shown beside the cursor: drawn into a copy of the screen and
+// composed there; the mouse in the game's place for the input; the help / close buttons drawn shifted; a fault: the
+// game's own place.
+void FixedWindow()
+{
+    using core::ui::info_window::Mode;
+    SetupInfo();
+    static std::vector<WORD> buf(1920 * (1080 + 64));
+    At<BYTE *>(aDrawBuffer) = reinterpret_cast<BYTE *>(buf.data());
+    At<int>(aPitch) = 1920 * 2;
+    At<int>(aDdWidth) = 1920;
+    At<int>(aDdHeight2) = 1080;
+    core::ui::info_window::Set(Mode::Cursor);
+    SetBuilding(7, 0x39);
+    At<int>(aMouseX) = 600;
+    At<int>(aMouseY) = 500;
+    Res<Tick_fn>("info_window_place")();
+    At<unsigned char>(aGameScreen) = 0x09;
+    const int w = 0x1e * 16, h = 0x14 * 16, x = 600 + 24, y = 500 - h / 2; // 480 x 320 at (624, 340)
+    Res<Tick_fn>("info_fixed_window_draw")();
+    Check(g_info.draws == 1 && g_info.drawnInto != reinterpret_cast<BYTE *>(buf.data()) &&
+              At<BYTE *>(aDrawBuffer) == reinterpret_cast<BYTE *>(buf.data()),
+          "drawn into a copy of the screen; draw_buffer back afterwards");
+    Check(buf[y * 1920 + x] == 0x1234 && buf[(y + h - 1) * 1920 + x + w - 1] == 0x1234 && buf[0x20 * 1920 + 0] != 0x1234,
+          "shown beside the cursor (624, 340); nothing at the game's own place (0, 0x20)");
+    Check(At<int>(aMouseX) == 600 && At<int>(aMouseY) == 500, "the mouse back afterwards");
+    Res<Tick_fn>("info_fixed_window_foreground")();
+    Check(g_info.fores == 1, "the foreground through the same move");
+    Res<Tick_fn>("info_window_input")();
+    Check(g_info.inputMouseX == 600 - x && g_info.inputMouseY == 500 - (y - 0x20) && At<int>(aMouseX) == 600,
+          "the input sees the mouse in the game's own place of the window");
+    // screen_draw's buttons call returning to 0x514214: a stub at 0x5141f0 pushes (x 0, y 0x20 + h - 0x28, table, 2).
+    BYTE *stub = reinterpret_cast<BYTE *>(0x5141f0 + g_imageShift);
+    const DWORD args[4] = {2, 0x5ef708, static_cast<DWORD>(0x20 + h - 0x28), 0}; // pushed: count, table, y, x
+    for (int i = 0; i < 4; ++i) {
+        stub[i * 5] = 0x68;
+        *reinterpret_cast<DWORD *>(stub + i * 5 + 1) = args[i];
+    }
+    for (int i = 20; i < 0x1f; ++i) {
+        stub[i] = 0x90;
+    }
+    using Buttons_fn = void(__cdecl *)(int, int, void *, int);
+    BYTE *call = reinterpret_cast<BYTE *>(0x51420f + g_imageShift);
+    call[0] = 0xe8;
+    *reinterpret_cast<DWORD *>(call + 1) =
+        reinterpret_cast<DWORD>(Res<Buttons_fn>("buttons_draw")) - reinterpret_cast<DWORD>(call + 5);
+    call[5] = 0x83; // add esp, 0x10
+    call[6] = 0xc4;
+    call[7] = 0x10;
+    call[8] = 0xc3;
+    reinterpret_cast<Tick_fn>(stub)();
+    Check(g_info.buttonX == x && g_info.buttonY == y + h - 0x28, "the window's buttons drawn with it");
+    Res<Buttons_fn>("buttons_draw")(10, 20, nullptr, 2);
+    Check(g_info.buttonX == 10 && g_info.buttonY == 20, "buttons_draw from anywhere else: as the game draws them");
+    core::ui::info_window::Set(Mode::Original); // Emperor's fixed_original: original keeps the game's place
+    At<unsigned char>(aGameScreen) = 0x01;
+    zeus::resolution::OnLoop();
+    Res<Tick_fn>("info_window_place")();
+    At<unsigned char>(aGameScreen) = 0x09;
+    std::fill(buf.begin(), buf.end(), 0);
+    Res<Tick_fn>("info_fixed_window_draw")();
+    Check(g_info.drawnInto == reinterpret_cast<BYTE *>(buf.data()) && buf[0x20 * 1920] == 0x1234 &&
+              buf[y * 1920 + x] != 0x1234,
+          "original: drawn where the game has it (0, 0x20), not moved");
+    core::ui::info_window::Set(Mode::Cursor);
+    At<unsigned char>(aGameScreen) = 0x01;
+    zeus::resolution::OnLoop();
+    Res<Tick_fn>("info_window_place")();
+    At<unsigned char>(aGameScreen) = 0x09;
+    g_fault = "info_fixed_window_draw";
+    Res<Tick_fn>("info_fixed_window_draw")();
+    Check(At<BYTE *>(aDrawBuffer) == reinterpret_cast<BYTE *>(buf.data()) && At<int>(aMouseX) == 600 &&
+              At<int>(aMouseY) == 500 && LogContains("feature \"info window position (games/zeus/resolution)\" switched off"),
+          "a fault while drawing: draw_buffer and the mouse put back, off");
+    Res<Tick_fn>("info_fixed_window_draw")();
+    Check(g_info.drawnInto == reinterpret_cast<BYTE *>(buf.data()) && buf[0x20 * 1920] == 0x1234,
+          "afterwards drawn where the game has it");
+}
+
 const Scenario kScenarios[] = {
     {"pace_ok", &PaceOk},
     {"pace_fault", &PaceFault},
@@ -1364,6 +1993,14 @@ const Scenario kScenarios[] = {
     {"city_around", &CityAroundScenario},
     {"keep_city", &KeepCity},
     {"switch_fault", &SwitchFault},
+    {"city_skipped", &CitySkipped},
+    {"spare_rows", &SpareRows},
+    {"top_bar_tiled", &TopBarTiled},
+    {"message_panel", &MessagePanel},
+    {"sidebar_filler", &SidebarFiller},
+    {"pace_behind", &PaceBehind},
+    {"info_window", &InfoWindow},
+    {"fixed_window", &FixedWindow},
     {"smoke_actions", &SmokeActions},
 };
 

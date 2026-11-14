@@ -21,6 +21,21 @@
 //   city_viewport_set_640 0x51cba0 and 0x51cc00 (no arguments; ret; screen_after_mode_change picks one by 0x10dff60):
 //                       the city viewport (viewport_init 0x449e50) for any size, with formulas that give the game's
 //                       own columns and half rows at 640, 800 and 1024; the game uses 8 x 31 for any other width.
+//                       Ours: half rows down to the screen's bottom (the clip up to 14 rows past it, into the spare
+//                       rows), the map's view range in the log;
+// The city's layout, each part with its own guard:
+//   frame_top_panel 0x58eb20's `cmp width, 0x400; jne` at 0x58ef80 becomes jl: the money, people and date at their
+//                       1024 places at any width of 1024 or more (the game left them at the last mode's);
+//   top_bar_draw 0x59ebe0: wider than 1024 the top bar is tiled from the sidebar to the left edge;
+//   fill_rect 0x509b20 (only city_bottom_and_sidebar's call): the bottom strip is not blanked while the city reaches
+//                       the screen's bottom;
+//   city_message_layout 0x4f2d80: the city message is put on the screen's bottom, not the clip's;
+//   sidebar_draw 0x517b10, sidebar_draw_units 0x525280: below the sidebar (above 768 high) its picture moved to
+//                       the screen's bottom and the game's inset panel between, right of it the marble (layout G,
+//                       (see the filler's section below);
+//   info_window_place 0x5715a0, info_fixed_window_draw 0x5b2880, info_fixed_window_foreground 0x5b38c0,
+//   info_window_input 0x5726e0, buttons_draw 0x4316f0: the building information window where [ui] info_window
+//                       says; the four kinds the game keeps at (0, 0x20) moved on screen (see its section below).
 // Front-end screens (menus, adventure screens, scores, loading pictures) are laid out for the game's own 1024x768: from
 // a full-screen picture (jpeg_draw_background, games/zeus/diag) until the next city screen the game runs at 1024x768
 // and the output frames it (the core's OnLoop calls the game's own screen_switch_mode 0x5c4a30, __cdecl mode, as its
@@ -35,16 +50,27 @@
 //
 // Failure (each part's guard): switching (mode size, changing it, Shift+F7; the core's guard) -> the game's own
 // 1024x768 from the next loop; city layout (sidebar, viewport) -> the 1024 layout's values at once, then the game's
-// own 1024x768.
+// own 1024x768; top bar -> not drawn above 1024 wide; message panel and bottom strip -> the game's own (the panel on
+// the clip's bottom, the strip blanked); sidebar filler -> not drawn (the game's own sidebar); info window -> the
+// game's own position (a window being moved: draw_buffer and the mouse put back, drawn where the game has it).
 #include "games/zeus/resolution.h"
 
+#include "core/assets/sg3.h"
 #include "core/diag/guard.h"
+#include "core/display/city_layout.h"
 #include "core/display/logical_size.h"
+#include "core/display/moved_rect.h"
+#include "core/display/window_move.h"
 #include "core/display/resolution_switch.h"
 #include "core/hook/hook.h"
 #include "core/log.h"
+#include "core/settings/settings.h"
+#include "core/ui/info_window.h"
+#include "games/zeus/diag.h"
 
 #include <cstring>
+#include <cwchar>
+#include <vector>
 
 namespace zeus::resolution {
 
@@ -63,6 +89,27 @@ const Site kViewportWide{"city_viewport_set_640", 0x51cba0, {0xa1, 0xb4, 0xa6, 0
 const Site kViewportNarrow{"city_viewport_narrow", 0x51cc00, {0xa1, 0xb4, 0xa6, 0xf2, 0x00, 0x3d, 0x80, 0x02}};
 const Site kViewportInit{"viewport_init", 0x449e50, {0x8b, 0x4c, 0x24, 0x18, 0x8b, 0x44, 0x24, 0x08}};
 const Site kBmpShot{"bmp_screenshot", 0x50b030, {0x83, 0xec, 0x38, 0x53, 0x33, 0xdb, 0x68, 0x60}};
+// The city layout: the top bar, the bottom strip and the city message panel.
+// top_bar_draw: __cdecl, the caller passes 2 arguments (0, mode_width) the function does not read; ret.
+const Site kTopBarDraw{"top_bar_draw", 0x59ebe0, {0xa1, 0xb4, 0xa6, 0xf2, 0x00, 0x83, 0xec, 0x08}};
+// image_group_get: __thiscall on the image groups 0x12bc82c, 1 argument (group), ret 4; returns the group's entry,
+// whose +4 is the first image (+ 0x4000 = its id for image_draw), as top_bar_draw and sidebar_draw_units use it.
+const Site kImageGroup{"image_group_get", 0x40fcf0, {0x8b, 0x44, 0x24, 0x04, 0x8b, 0x91, 0x38, 0xcc}};
+// image_draw: __thiscall on the image manager 0x12aebe8, 6 arguments (id, x, y, 0, 0, 0), ret 0x18 (games/zeus/diag
+// counts it for the draw census). image_get_size: __thiscall on the same, (id, int *w, int *h), ret 0xc, al = found.
+const Site kImageDraw{"image_draw", 0x5acf50, {0x81, 0xec, 0x14, 0x01, 0x00, 0x00, 0x8b, 0x84}};
+const Site kImageSize{"image_get_size", 0x5aceb0, {0x53, 0x56, 0x8b, 0x74, 0x24, 0x0c, 0x8b, 0x5c}};
+// fill_rect: __cdecl (x, y, w, h, colour), ret. city_bottom_and_sidebar 0x58e2e0 blanks the screen's bottom rows with
+// it (the call at 0x58e320, returning to 0x58e325).
+const Site kFillRect{"fill_rect", 0x509b20, {0x8b, 0x54, 0x24, 0x0c, 0x53, 0x56, 0x57, 0x85}};
+constexpr DWORD kBottomStripCall = 0x58e325;
+// city_message_layout: no arguments, ret (entered by a jmp from 0x4f2830): screen 0x05's layout; a city message is
+// put on the city clip's bottom 0x7d3b88.
+const Site kMessagePanel{"city_message_layout", 0x4f2d80, {0x81, 0xec, 0x9c, 0x05, 0x00, 0x00, 0xa1, 0x4c}};
+// frame_top_panel 0x58eb20: the x of the money, people and date (0x10dfd94/90/8c) are written only at widths 800
+// and 1024 (`cmp eax, 0x400; jne`); the jne becomes jl so that any width of 1024 or more takes the 1024 places.
+constexpr DWORD kTopValuesCompare = 0x58ef7b; // 3d 00 04 00 00 75 23
+const BYTE kTopValuesBytes[] = {0x3d, 0x00, 0x04, 0x00, 0x00, 0x75, 0x23};
 
 const Var<int> kModeWidth{0xf2a6b4};
 const Var<int> kModeHeight{0xf2a6b0};
@@ -71,6 +118,13 @@ const Var<unsigned char> kGameScreen{0xf2a6dd};
 const Var<char> kRedraw{0xf2a6ce};
 const Var<int> kSidebarX{0x10dff34};
 const Var<int> kSidebarX2{0x10dff30};
+const Var<int> kCityClipBottom{0x7d3b88}; // viewport_init: (half rows - 1) x 15 + 30
+const Var<int> kMapColMin{0xfa05b4}; // view_clamp 0x51cd60's limits (as Emperor's order)
+const Var<int> kMapColMax{0xfa05b0};
+const Var<int> kMapRowMin{0xfa05ac};
+const Var<int> kMapRowMax{0xfa05a8};
+const DWORD kImageGroups = 0x12bc82c, kImages = 0x12aebe8; // the image groups and the image manager (this)
+constexpr int kGroupTopBar = 0x6b; // Zeus_Interface entry 1231, 838x30: its right end meets the sidebar
 
 constexpr int kMinW = 1024;               // the game's largest size
 constexpr int kSidebarWidth = 186;        // the sidebar (1024 - 838)
@@ -81,6 +135,8 @@ constexpr int kViewCols = 231, kViewRows = 457; // the view grid 0x7d3bec (0x449
 
 // Guard (core/diag) of the city layout; switching has the core's.
 core::diag::Feature g_layout{"city layout at this resolution (games/zeus/resolution)"};
+core::diag::Feature g_bars{"top bar (games/zeus/resolution)"};
+core::diag::Feature g_message{"city message panel and bottom strip (games/zeus/resolution)"};
 
 // The screens the game draws the city for; overlays on them keep the city's size.
 bool CityScreen(unsigned char s)
@@ -188,11 +244,16 @@ void SetViewport(int cols, int rows)
     if (cols > maxCols) cols = maxCols;
     if (rows > maxRows) rows = maxRows;
     Function<ViewportInit_fn>(kViewportInit)(0xe4, 0xe4, 0, kTopBar, cols, rows, kTileW, kTileH);
-    static int logged[4] = {-1, -1, -1, -1};
-    const int key[4] = {cols, rows, *kModeWidth, *kModeHeight};
+    // The map's view range (view_clamp's limits, set when a map is loaded): a viewport larger than it shows the
+    // outside of the map, logged as Emperor's layer does.
+    const int mapCols = *kMapColMax - *kMapColMin, mapRows = *kMapRowMax - *kMapRowMin;
+    static int logged[6] = {-1, -1, -1, -1, -1, -1};
+    const int key[6] = {cols, rows, *kModeWidth, *kModeHeight, mapCols, mapRows};
     if (std::memcmp(key, logged, sizeof(key)) != 0) {
         std::memcpy(logged, key, sizeof(key));
-        core_log("zeus: resolution: city viewport %d x %d for %dx%d", cols, rows, *kModeWidth, *kModeHeight);
+        core_log("zeus: resolution: city viewport %d x %d for %dx%d (clip bottom %d); current map view range %d x %d%s",
+                 cols, rows, *kModeWidth, *kModeHeight, *kCityClipBottom, mapCols, mapRows,
+                 mapCols > 0 && (cols > mapCols || rows > mapRows) ? " -- VIEWPORT LARGER THAN THE MAP" : "");
     }
 }
 
@@ -212,9 +273,28 @@ void Viewport(ViewportCall c, ViewportCall at1024)
     LayoutFallBack("the city viewport could not be set");
 }
 
-int Rows(int h) // 480, 600, 768 -> 31, 39, 50
+// As many half rows as reach the screen's bottom (the clip, (rows - 1) x 15 + 30, is >= the height): the city
+// is drawn down to the bottom and up to 14 rows into the spare rows below the screen (core/ddraw/surface_memory),
+// as Emperor's small tiles do (its ViewportSmall_detour). The old (h - 30) / 15 + 1 left 0..14 rows black. The game's
+// own sizes keep the game's own rows (480, 600, 768 -> 31, 39, 50; StandardSize).
+int Rows(int h)
 {
-    return (h - kTopBar) / 15 + 1;
+    return (h - kTopBar + 14) / 15 + 1;
+}
+
+// After a viewport (ours or the game's): the spare rows the city may draw into (the canary's allowance): the clip's
+// overshoot. The city is shown only to its clip (shown bottom 0: no smooth scrolling drawing past it).
+void SpareRows()
+{
+    core::display::ApplySpareRows("zeus: resolution: ", *kCityClipBottom, 0, 15, *kModeHeight);
+}
+
+// Our layout, with the city's clip reaching the screen's bottom (or past it): the bottom strip is not blanked and the
+// city message panel is put on the screen's bottom.
+bool CityToBottom()
+{
+    const int w = *kModeWidth, h = *kModeHeight;
+    return !(StandardSize(w, h) || w < 1024) && core::diag::Enabled(g_layout) && *kCityClipBottom >= h;
 }
 
 // 640, 800, 1024 -> 10, 13, 17 columns (the city under the whole width).
@@ -223,9 +303,11 @@ void __cdecl ViewportWide_detour()
     const int w = *kModeWidth, h = *kModeHeight;
     if (StandardSize(w, h) || w < 1024) {
         Original(o_ViewportWide, kViewportWide)();
-        return;
     }
-    Viewport({w / 60, Rows(h)}, {17, 50});
+    else {
+        Viewport({w / 60, Rows(h)}, {17, 50});
+    }
+    SpareRows();
 }
 
 // 640, 800, 1024 -> 8, 10, 14 columns (left of the sidebar; the game's own below 1024).
@@ -234,9 +316,547 @@ void __cdecl ViewportNarrow_detour()
     const int w = *kModeWidth, h = *kModeHeight;
     if (StandardSize(w, h) || w < 1024) {
         Original(o_ViewportNarrow, kViewportNarrow)();
+    }
+    else {
+        Viewport({NarrowColumns(w), Rows(h)}, {14, 50});
+    }
+    SpareRows();
+}
+
+// ---------------------------------------------------------------------------------------------
+// The top bar, the bottom strip and the city message panel
+
+using ImageGroup_fn = BYTE *(__thiscall *)(void *, int);
+using ImageDraw_fn = void(__thiscall *)(void *, int, int, int, int, int, int);
+using ImageSize_fn = char(__thiscall *)(void *, int, int *, int *);
+using TopBar_fn = void(__cdecl *)(int, int);
+using FillRect_fn = void(__cdecl *)(int, int, int, int, int);
+TopBar_fn o_TopBarDraw;
+FillRect_fn o_FillRect;
+Void_fn o_MessagePanel;
+
+// The first image of a group, as the game's own drawing gets it (top_bar_draw, sidebar_draw_units).
+int GroupImage(int group)
+{
+    BYTE *entry = Function<ImageGroup_fn>(kImageGroup)(reinterpret_cast<void *>(kImageGroups + g_imageShift), group);
+    return entry ? *reinterpret_cast<int *>(entry + 4) + 0x4000 : -1;
+}
+
+void ImageSize(int id, int *w, int *h)
+{
+    *w = *h = 0;
+    Function<ImageSize_fn>(kImageSize)(reinterpret_cast<void *>(kImages + g_imageShift), id, w, h);
+}
+
+void DrawImage(int id, int x, int y)
+{
+    Function<ImageDraw_fn>(kImageDraw)(reinterpret_cast<void *>(kImages + g_imageShift), id, x, y, 0, 0, 0);
+}
+
+// The game's drawing clip (screen_set_mode sets it to the screen; city_render and a few panels narrow it for a
+// while; bottom and right exclusive): image_draw draws only inside it.
+const Var<int> kClipBottom{0xf139b0}, kClipTop{0xf139b4}, kClipRight{0xf139b8}, kClipLeft{0xf139bc};
+
+// The top bar's even section (columns 158..397 of its 838: lighter at the left end, darker towards the sidebar;
+// seen in a mockup), repeated left of the whole bar so that no dark end meets a light one.
+constexpr int kBarSectionX = 158, kBarSectionW = 240;
+
+// top_bar_draw 0x59ebe0: the top bar (838 px, its right end at the sidebar) at x 0 at 1024, cropped at 800, at
+// x -360 at 640; nothing at any other width. Wider than 1024: tiled from the sidebar to the left edge (Emperor's
+// FrameBars_detour). frame_top_panel draws it only when a value changed, so this is not every frame; the world map
+// draws it too (frame_top_panel is also called by world_map_draw 0x599da0).
+void __cdecl TopBarDraw_detour(int a, int b)
+{
+    if (*kModeWidth <= 1024 || !core::diag::Enabled(g_bars)) {
+        Original(o_TopBarDraw, kTopBarDraw)(a, b);
         return;
     }
-    Viewport({NarrowColumns(w), Rows(h)}, {14, 50});
+    core::diag::Restore r; // the clip, after an error
+    if (!core::diag::Guarded(
+            g_bars,
+            [](void *p) {
+                auto &r = *static_cast<core::diag::Restore *>(p);
+                const int id = GroupImage(kGroupTopBar);
+                int w, h;
+                ImageSize(id, &w, &h);
+                if (w < kBarSectionX + kBarSectionW) {
+                    return;
+                }
+                // image_clip_x 0x509c20 clips one side only (its modes: left, right, or not shown), so each section
+                // is drawn with only its left side clipped, from the leftmost one on: the rest of the image right of
+                // the section is covered by the next section, the last one's by the whole bar, drawn last (its right
+                // end at the sidebar, as at 1024; seen in testing).
+                const int whole = *kSidebarX - w;
+                int first = whole; // the leftmost section: at x in (-240, 0]
+                while (first > 0) {
+                    first -= kBarSectionW;
+                }
+                r.Save(kClipLeft.ptr());
+                const int left = *kClipLeft;
+                for (int x = first; x < whole; x += kBarSectionW) {
+                    *kClipLeft = x > left ? x : left; // the section's columns start at x
+                    DrawImage(id, x - kBarSectionX, 0);
+                }
+                r.Undo();
+                DrawImage(id, whole, 0);
+            },
+            &r, &r)) {
+        core_log("zeus: resolution: the top bar is no longer drawn after an error");
+    }
+}
+
+// The bottom strip city_bottom_and_sidebar blanks (1024 x 9 rows at 1024 wide, the full width x 6 rows otherwise):
+// not blanked while the city reaches the screen's bottom (it covers the strip in the city screen anyway; in screen
+// 0x05 the city is drawn before it, so the strip would stay black under the message). Emperor's FillRect_detour.
+void __cdecl FillRect_detour(int x, int y, int w, int h, int colour)
+{
+    if (GameAddress(__builtin_return_address(0)) == kBottomStripCall && core::diag::Enabled(g_message) &&
+        CityToBottom()) {
+        return;
+    }
+    Original(o_FillRect, kFillRect)(x, y, w, h, colour);
+}
+
+// The city message panel on the screen's bottom: the layout puts it on the city clip's bottom, up to 14 rows below
+// the screen with our half rows. While it runs the clip's bottom is the screen's (the city it draws meanwhile is then
+// clipped at the screen's bottom). Emperor's MessagePanel_detour, the bottom only: the sidebar is at the clip's right
+// edge here.
+struct PanelCall {
+    core::diag::Restore r;
+};
+
+void __cdecl MessagePanel_detour()
+{
+    if (!CityToBottom() || *kCityClipBottom <= *kModeHeight || !core::diag::Enabled(g_message)) {
+        Original(o_MessagePanel, kMessagePanel)();
+        return;
+    }
+    PanelCall c;
+    if (core::diag::Guarded(
+            g_message,
+            [](void *p) {
+                auto &c = *static_cast<PanelCall *>(p);
+                c.r.Set(kCityClipBottom.ptr(), *kModeHeight);
+                Original(o_MessagePanel, kMessagePanel)();
+                c.r.Undo();
+            },
+            &c, &c.r)) {
+        return;
+    }
+    Original(o_MessagePanel, kMessagePanel)(); // put back by the guard: the game's own layout from now on
+}
+
+// ---------------------------------------------------------------------------------------------
+// The sidebar's filler
+//
+// sidebar_draw 0x517b10 draws the sidebar's backdrop (186x768: Zeus_Interface entry 1232, or the Poseidon pack's when
+// 0x4200f0(1)) at sidebar_x and its buttons and boxes over it; sidebar_draw_units 0x525280 (screens 0x48, 0x20) the
+// same backdrop with the army panel (186x476) over it. Above 768 high, after the game's drawing:
+//   - the backdrop's rows 600..767 (the frame and the picture) are moved to the screen's bottom, as the game drew
+//     them (whichever pack);
+//   - rows 600 .. bottom - 168: the backdrop's left edge (columns 0..6, its rows 640..699 repeated) and, right of it,
+//     an inset panel of the game's own tiles (group 0x84: inner_panel_draw 0x59f2a0's 7 x 7 set of 16 px tiles) edge
+//     to edge, for later information and the minimap; less than 32 rows: the plain marble;
+// and wider than the 1024 layout, right of the sidebar (up to 59 px; gone when the sidebar is against the right edge
+// later): the backdrop's plain marble (entry 1232, x 50..185, y 30..419), mirrored tiles. The marble is read from the
+// player's own DATA\Zeus_Interface.sg3 in memory only (core/assets/sg3); when it cannot be read, the 800x600 strip
+// (entry 1234, 16x600) is drawn whole with image_draw instead.
+// Not on the world map.
+constexpr int kBackdropH = 768, kPictureTop = 600, kPictureH = 768 - 600, kEdgeW = 7;
+constexpr int kGroupInset = 0x84, kGroupStrip = 0x62; // the 800x600 strip: sidebar_draw's 800 branch (entry 1234)
+constexpr int kMarbleEntry = 1232, kMarbleX = 50, kMarbleY = 30, kMarbleW = 136, kMarbleH = 390;
+constexpr wchar_t kInterfacePack[] = L"DATA\\Zeus_Interface.sg3"; // next to Zeus.exe
+const Site kSidebarDraw{"sidebar_draw", 0x517b10, {0xa1, 0x60, 0xff, 0x0d, 0x01, 0x85, 0xc0, 0x75}};
+const Site kSidebarUnits{"sidebar_draw_units", 0x525280, {0x56, 0x57, 0x8b, 0x3d, 0x38, 0x7b, 0xdb, 0x00}};
+const Var<unsigned char *> kDrawBuffer{0xf9c100};
+const Var<int> kPitch{0xf2a698};
+const Var<int> kDdWidth{0xf2a6a0}, kDdHeight{0xf2a69c};
+constexpr unsigned char kScreenWorldMap = 0x14;
+core::diag::Feature g_filler{"sidebar filler (games/zeus/resolution)"};
+Void_fn o_SidebarDraw;
+using Units_fn = void(__cdecl *)(int);
+Units_fn o_SidebarUnits;
+
+struct Marble {
+    bool tried = false, ok = false;
+    std::vector<WORD> px; // kMarbleW x kMarbleH, RGB565
+};
+Marble g_marble;
+
+bool LoadMarble()
+{
+    if (g_marble.tried) {
+        return g_marble.ok;
+    }
+    g_marble.tried = true;
+    wchar_t path[MAX_PATH];
+    DWORD len = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    while (len > 0 && path[len - 1] != L'\\') {
+        --len;
+    }
+    path[len] = L'\0';
+    if (len + sizeof(kInterfacePack) / sizeof(wchar_t) >= MAX_PATH) {
+        return false;
+    }
+    std::wcscat(path, kInterfacePack);
+    core::assets::Sg3Pack pack;
+    std::vector<WORD> whole;
+    int w = 0, h = 0;
+    if (!pack.Open(path) || !pack.Size(kMarbleEntry, &w, &h) || w != kSidebarWidth || h != kBackdropH ||
+        !pack.Decode565(kMarbleEntry, 0, &whole)) {
+        core_log("zeus: resolution: sidebar marble (Zeus_Interface entry %d, %dx%d) not read: the 800x600 strip is "
+                 "drawn instead right of the sidebar",
+                 kMarbleEntry, w, h);
+        return false;
+    }
+    g_marble.px.resize(static_cast<size_t>(kMarbleW) * kMarbleH);
+    for (int y = 0; y < kMarbleH; ++y) {
+        std::memcpy(&g_marble.px[static_cast<size_t>(y) * kMarbleW],
+                    &whole[static_cast<size_t>(kMarbleY + y) * kSidebarWidth + kMarbleX], kMarbleW * 2);
+    }
+    g_marble.ok = true;
+    core_log("zeus: resolution: sidebar marble read (Zeus_Interface entry %d, in memory only): right of the sidebar "
+             "and where the inset panel has no room",
+             kMarbleEntry);
+    return true;
+}
+
+core::display::Surface16 Screen()
+{
+    const int pitch = *kPitch, w = *kDdWidth, h = *kDdHeight;
+    return core::display::Surface16{*kDrawBuffer, pitch, w, h,
+                                    pitch > 0 && h > 0 ? static_cast<size_t>(pitch) * static_cast<size_t>(h) : 0};
+}
+
+void DrawInsetTile(int k, int x, int y, void *base)
+{
+    DrawImage(*static_cast<int *>(base) + k, x, y);
+}
+
+// Marble (or, without the pack, the 800x600 strip with the game's clip narrowed to `area`) over `area`. The clip is
+// put back here, or by the filler's guard (r) after an error.
+void Plain(const core::display::Surface16 &s, const RECT &area, core::diag::Restore &r)
+{
+    if (area.left >= area.right || area.top >= area.bottom) {
+        return;
+    }
+    if (LoadMarble()) {
+        core::display::MirrorTile(s, g_marble.px.data(), kMarbleW, kMarbleH, area);
+        return;
+    }
+    const int strip = GroupImage(kGroupStrip);
+    int w, h;
+    ImageSize(strip, &w, &h);
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    r.Set(kClipLeft.ptr(), static_cast<int>(area.left));
+    r.Set(kClipTop.ptr(), static_cast<int>(area.top));
+    r.Set(kClipRight.ptr(), static_cast<int>(area.right));
+    r.Set(kClipBottom.ptr(), static_cast<int>(area.bottom));
+    for (int y = area.top; y < area.bottom; y += h) {
+        for (int x = area.left; x < area.right; x += w) {
+            DrawImage(strip, x, y);
+        }
+    }
+    r.Undo();
+}
+
+void DrawFiller(core::diag::Restore &r)
+{
+    const core::display::Surface16 s = Screen();
+    const int w = *kModeWidth, h = *kModeHeight, x = *kSidebarX;
+    if (s.w < w || s.h < h || x <= 0 || x + kSidebarWidth > w) {
+        return;
+    }
+    Plain(s, RECT{x + kSidebarWidth, 0, w, h}, r); // right of the sidebar
+    if (h <= kBackdropH) {
+        return;
+    }
+    const int pictureY = h - kPictureH;
+    core::display::CopyRect(s, RECT{x, kPictureTop, x + kSidebarWidth, kBackdropH}, x, pictureY);
+    // The left edge, from the picture's rows 640..699 now at the bottom.
+    const int band = pictureY + (640 - kPictureTop);
+    core::display::RepeatRows(s, RECT{x, band, x + kEdgeW, band + 60}, kPictureTop, pictureY);
+    const RECT inset{x + kEdgeW, kPictureTop, x + kSidebarWidth, pictureY};
+    int base = GroupImage(kGroupInset);
+    if (base < 0) {
+        Plain(s, inset, r);
+    }
+    else if (!core::display::InsetPanel(inset, &DrawInsetTile, &base)) {
+        // Lower than its two edges (32 rows): the panel squeezed, its top edge's first half and its
+        // bottom edge's last half, each drawn inside a clip of its half.
+        const int mid = kPictureTop + (pictureY - kPictureTop) / 2;
+        r.Save(kClipTop.ptr());
+        r.Save(kClipBottom.ptr());
+        *kClipTop = kPictureTop;
+        *kClipBottom = mid;
+        core::display::InsetPanel(RECT{inset.left, kPictureTop, inset.right, kPictureTop + 32}, &DrawInsetTile, &base);
+        *kClipTop = mid;
+        *kClipBottom = pictureY;
+        core::display::InsetPanel(RECT{inset.left, pictureY - 32, inset.right, pictureY}, &DrawInsetTile, &base);
+        r.Undo();
+    }
+}
+
+// The world map's sidebar (world_map_sidebar_draw 0x597e60, no arguments, ret; world_map_sidebars 0x597e50 calls it
+// and then 0x5980c0): it draws down to 768 and nothing right of the sidebar, where the city screen's filler would
+// stay; cleared there (black, as before the filler) until the world map's own layout.
+const Site kWorldSidebar{"world_map_sidebar_draw", 0x597e60, {0xa1, 0x20, 0x31, 0x90, 0x00, 0x83, 0xec, 0x08}};
+Void_fn o_WorldSidebar;
+
+void ClearWorldMapFiller()
+{
+    const int w = *kModeWidth, h = *kModeHeight, x = *kSidebarX;
+    if (x <= 0 || x + kSidebarWidth > w) {
+        return;
+    }
+    using Fill_fn = void(__cdecl *)(int, int, int, int, int);
+    if (w > x + kSidebarWidth) {
+        Function<Fill_fn>(kFillRect)(x + kSidebarWidth, 0, w - x - kSidebarWidth, h, 0);
+    }
+    if (h > kBackdropH) {
+        Function<Fill_fn>(kFillRect)(x, kBackdropH, kSidebarWidth, h - kBackdropH, 0);
+    }
+}
+
+void __cdecl WorldSidebar_detour()
+{
+    Original(o_WorldSidebar, kWorldSidebar)();
+    const int w = *kModeWidth, h = *kModeHeight;
+    if (StandardSize(w, h) || w < 1024 || !core::diag::Enabled(g_filler)) {
+        return;
+    }
+    if (!core::diag::Guarded(g_filler, [](void *) { ClearWorldMapFiller(); }, nullptr)) {
+        core_log("zeus: resolution: the space below and right of the sidebar is no longer filled after an error");
+    }
+}
+
+bool FillerWanted()
+{
+    const int w = *kModeWidth, h = *kModeHeight;
+    return !(StandardSize(w, h) || w < 1024) && (w > kMinW || h > kBackdropH) && core::diag::Enabled(g_filler) &&
+           *kGameScreen != kScreenWorldMap;
+}
+
+void Filler()
+{
+    core::diag::Restore r;
+    if (!core::diag::Guarded(g_filler, [](void *p) { DrawFiller(*static_cast<core::diag::Restore *>(p)); }, &r, &r)) {
+        core_log("zeus: resolution: the space below and right of the sidebar is no longer filled after an error");
+    }
+}
+
+void __cdecl SidebarDraw_detour()
+{
+    Original(o_SidebarDraw, kSidebarDraw)();
+    if (FillerWanted()) {
+        Filler();
+    }
+}
+
+void __cdecl SidebarUnits_detour(int screen)
+{
+    Original(o_SidebarUnits, kSidebarUnits)(screen);
+    if (FillerWanted()) {
+        Filler();
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The building information window ([ui] info_window)
+//
+// info_window_place 0x5715a0 (no arguments, ret): the window at (8, 0x20) and its size, then the game's own place at
+// heights 480, 600 and 768 only (768: x 0xbc; y 0x2f8 - rows x 16 while the cursor is above y 0x18d, else 0x20); any
+// other height keeps the top left corner. Kinds 0x39 (granary), 0x3a, 0x3d, 0x3e (storehouses) at (0, 0x20), 0x7d at
+// (0, 0x2d). Ours: original = the game's rule at any height, moved with the centre of the city area; centered /
+// cursor = core::ui::info_window::Position in the city area (0, 30) .. (sidebar_x, height); a window opened on the
+// world map (the screen under it 0x14) in the middle, whatever the setting (as Emperor's China map).
+// The four kinds the game keeps at (0, 0x20) draw parts at fixed y (the employee
+// panel, the granary's and storehouse's list and its buttons), so for them the game keeps its place and the window is
+// moved only on screen (core/display/window_move, as Emperor's storage windows): info_fixed_window_draw 0x5b2880
+// and info_fixed_window_foreground 0x5b38c0 (no arguments, ret) draw into a copy of the screen, info_window_input
+// 0x5726e0 (no arguments, ret) sees the mouse in the game's place, and the window's help / close buttons
+// (buttons_draw 0x4316f0, __cdecl x, y, table, count; screen_draw's call returning to 0x514214) are drawn shifted.
+// 0x7d's drawing, foreground and input follow the window's place: it is simply placed.
+const Site kInfoPlace{"info_window_place", 0x5715a0, {0x56, 0x57, 0xbf, 0x20, 0x00, 0x00, 0x00, 0xbe}};
+const Site kFixedDraw{"info_fixed_window_draw", 0x5b2880, {0x51, 0x8b, 0x0d, 0x58, 0xa1, 0xff, 0x00, 0x55}};
+const Site kFixedFore{"info_fixed_window_foreground", 0x5b38c0, {0x81, 0xec, 0x40, 0x02, 0x00, 0x00, 0x8b, 0x0d}};
+const Site kInfoInput{"info_window_input", 0x5726e0, {0xa0, 0xfc, 0xa6, 0xf2, 0x00, 0x83, 0xec, 0x08}};
+const Site kButtonsDraw{"buttons_draw", 0x4316f0, {0x8b, 0x44, 0x24, 0x10, 0x85, 0xc0, 0x0f, 0x8e}};
+constexpr DWORD kInfoButtonsCall = 0x514214;
+const Var<int> kInfoX{0xffa17c}, kInfoY{0xffa178}, kInfoCols{0xffa174}, kInfoRows{0xffa170};
+const Var<int> kInfoKind{0xffa13c};     // 2: a building's window
+const Var<int> kInfoBuilding{0xffa158}; // the building
+const Var<unsigned char> kInfoPrevScreen{0xffa180};
+const Var<int> kMouseX{0xf2a738}, kMouseY{0xf2a734};
+constexpr DWORD kBuildingTypes = 0x92e668; // short, every 0x118 bytes
+constexpr int kBuildingStride = 0x118;
+constexpr unsigned char kScreenInfo = 0x09;
+constexpr int kFixedX = 0, kFixedY = 0x20;
+core::diag::Feature g_info{"info window position (games/zeus/resolution)"};
+Void_fn o_InfoPlace, o_FixedDraw, o_FixedFore, o_InfoInput;
+using ButtonsDraw_fn = void(__cdecl *)(int, int, void *, int);
+ButtonsDraw_fn o_ButtonsDraw;
+
+using InfoMode = core::ui::info_window::Mode;
+
+struct Shift {
+    bool on = false;
+    int dx = 0, dy = 0;
+};
+Shift g_shift;
+core::display::WindowMove g_move("zeus: resolution: ");
+// The window placed last (on screen) and whether it is still open: a window placed again while open (the trading
+// post's and harbour's arrow to the next one, found in testing) keeps its place in cursor mode instead of
+// jumping to the cursor, which is on the arrow by then. OnLoop clears it when screen 0x09 is gone.
+bool g_infoOpen = false;
+POINT g_infoLast{};
+
+bool Shifted()
+{
+    return g_shift.on && (g_shift.dx || g_shift.dy) && *kGameScreen == kScreenInfo && core::diag::Enabled(g_info);
+}
+
+int BuildingType()
+{
+    return *reinterpret_cast<volatile short *>(kBuildingTypes + g_imageShift + *kInfoBuilding * kBuildingStride);
+}
+
+void PlaceInfo(core::diag::Restore &r)
+{
+    r.Save(kInfoX.ptr()); // the game's own position comes back if this is abandoned
+    r.Save(kInfoY.ptr());
+    g_shift = Shift{};
+    const int w = *kModeWidth, h = *kModeHeight;
+    const int type = *kInfoKind == 2 ? BuildingType() : -1;
+    const bool fixed = (type == 0x39 || type == 0x3a || type == 0x3d || type == 0x3e) && *kInfoX == kFixedX &&
+                       *kInfoY == kFixedY;
+    const InfoMode mode = core::ui::info_window::Current();
+    if (mode != InfoMode::Original) {
+        const bool map = *kInfoPrevScreen == kScreenWorldMap;
+        const core::ui::info_window::Area a{0, kTopBar, *kSidebarX, h}; // the city reaches the bottom
+        POINT p = core::ui::info_window::Position(map ? InfoMode::Centered : mode, a, *kInfoCols * 16,
+                                                  *kInfoRows * 16, *kMouseX, *kMouseY);
+        if (mode == InfoMode::Cursor && !map && g_infoOpen) { // the same place, kept inside the area for the new size
+            const int ww = *kInfoCols * 16, wh = *kInfoRows * 16;
+            p = g_infoLast;
+            p.x = p.x + ww > a.right ? a.right - ww : p.x;
+            p.y = p.y + wh > a.bottom ? a.bottom - wh : p.y;
+            p.x = p.x < a.left ? a.left : p.x;
+            p.y = p.y < a.top ? a.top : p.y;
+        }
+        g_infoLast = p;
+        g_infoOpen = true;
+        if (fixed) {
+            g_shift = Shift{true, static_cast<int>(p.x) - kFixedX, static_cast<int>(p.y) - kFixedY};
+        }
+        else {
+            *kInfoX = p.x;
+            *kInfoY = p.y;
+        }
+    }
+    else if (!(w <= 1024 && (h == 480 || h == 600 || h == 768))) { // the game's own sizes keep the game's rule
+        constexpr int x768 = 0xbc;                                    // the middle of the city area at 1024
+        const int shift = (*kSidebarX - (1024 - kSidebarWidth)) / 2;
+        if (h == 768 && *kInfoX == x768) { // the game's 768 rule ran: only the centre of the city area moved
+            *kInfoX = x768 + shift;
+        }
+        else if (*kInfoX == 8 && *kInfoY == 0x20) { // not one of the game's special cases
+            const int bottom = h - 8;              // as the game's 768 rule (0x2f8 - rows x 16)
+            *kInfoY = *kMouseY < (h - 768) / 2 + 0x18d ? bottom - *kInfoRows * 16 : 0x20;
+            *kInfoX = x768 + shift;
+        }
+    }
+    r.Forget(); // the position is the result
+}
+
+void __cdecl InfoPlace_detour()
+{
+    Original(o_InfoPlace, kInfoPlace)();
+    if (!core::diag::Enabled(g_info)) {
+        return;
+    }
+    core::diag::Restore r;
+    if (!core::diag::Guarded(g_info, [](void *p) { PlaceInfo(*static_cast<core::diag::Restore *>(p)); }, &r, &r)) {
+        g_shift = Shift{};
+        core_log("zeus: resolution: the info window keeps the game's own position after an error");
+    }
+}
+
+// A fixed-place window's drawing (0x5b2880, 0x5b38c0): into a copy of the screen, shown where it is placed.
+void MovedDraw(Void_fn original)
+{
+    if (!Shifted()) {
+        original();
+        return;
+    }
+    if (core::diag::Guarded(
+            g_info,
+            [](void *p) {
+                const Void_fn original = reinterpret_cast<Void_fn>(p);
+                if (!g_move.Begin(kDrawBuffer.ptr(), *kPitch, *kDdWidth, *kDdHeight, *kInfoX, *kInfoY,
+                                  *kInfoCols * 16, *kInfoRows * 16, g_shift.dx, g_shift.dy, kMouseX.ptr(),
+                                  kMouseY.ptr())) {
+                    g_shift = Shift{}; // cannot be shown elsewhere: where the game has it (buttons and input too)
+                    original();
+                    return;
+                }
+                original();
+                g_move.End();
+            },
+            reinterpret_cast<void *>(original), &g_move.Changes())) {
+        return;
+    }
+    g_move.Abandon(); // put back by the guard; the window is drawn where the game has it from now on
+    g_shift = Shift{};
+    original();
+}
+
+void __cdecl FixedDraw_detour()
+{
+    MovedDraw(Original(o_FixedDraw, kFixedDraw));
+}
+
+void __cdecl FixedFore_detour()
+{
+    MovedDraw(Original(o_FixedFore, kFixedFore));
+}
+
+// info_window_input 0x5726e0: the mouse in the game's own place of the window. A point outside the shown window lands
+// outside the game's window, so nothing hidden can be clicked.
+void __cdecl InfoInput_detour()
+{
+    if (!Shifted()) {
+        Original(o_InfoInput, kInfoInput)();
+        return;
+    }
+    core::diag::Restore r;
+    if (core::diag::Guarded(
+            g_info,
+            [](void *p) {
+                auto &r = *static_cast<core::diag::Restore *>(p);
+                r.Set(kMouseX.ptr(), *kMouseX - g_shift.dx);
+                r.Set(kMouseY.ptr(), *kMouseY - g_shift.dy);
+                Original(o_InfoInput, kInfoInput)();
+                r.Undo();
+            },
+            &r, &r)) {
+        return;
+    }
+    g_shift = Shift{};
+    Original(o_InfoInput, kInfoInput)();
+}
+
+// buttons_draw 0x4316f0, for screen_draw's help / close buttons of the window only (by return address): shown with
+// the window. Their hover was worked out by the input in the game's own place.
+void __cdecl ButtonsDraw_detour(int x, int y, void *buttons, int count)
+{
+    if (GameAddress(__builtin_return_address(0)) == kInfoButtonsCall && Shifted()) {
+        x += g_shift.dx;
+        y += g_shift.dy;
+    }
+    Original(o_ButtonsDraw, kButtonsDraw)(x, y, buttons, count);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -256,7 +876,83 @@ int __cdecl BmpShot_detour(const char *file)
     return 0; // the game's "could not" (its callers do not look)
 }
 
+// The layout's parts, each with its own guard: a part whose sites do not match is left as the game has it (the
+// city layout works without them, as with the logical resolution alone).
+void AttachCityLayout()
+{
+    const BYTE *cmp = reinterpret_cast<const BYTE *>(kTopValuesCompare + g_imageShift);
+    if (std::memcmp(cmp, kTopValuesBytes, sizeof(kTopValuesBytes)) == 0) {
+        const BYTE jl = 0x7c; // jne rel8 -> jl rel8
+        if (core::site::PatchCode(kTopValuesCompare + 5 + g_imageShift, &jl, 1)) {
+            core_log("zeus: resolution: the top bar values (money, people, date) take the 1024 places at any width of "
+                     "1024 or more (0x58ef80 jne -> jl)");
+        }
+        else {
+            core_log("zeus: resolution: the top bar values' compare could not be changed");
+        }
+    }
+    else {
+        core_log("zeus: resolution: the top bar values' compare at 0x%lx does not match; left as the game has it",
+                 static_cast<unsigned long>(kTopValuesCompare));
+    }
+    // image_draw: compared here, or (draw census on) already compared and hooked by games/zeus/diag, which attaches
+    // first and so has changed its bytes.
+    const bool draw = Matches(kImageDraw) || zeus::diag::ImageDrawHooked();
+    if (!(draw && Matches(kTopBarDraw) && Matches(kImageGroup) && Matches(kImageSize) &&
+          Install(kTopBarDraw, &TopBarDraw_detour, o_TopBarDraw))) {
+        core::diag::Disable(g_bars, "its sites do not match or the hook could not be installed");
+    }
+    const bool fill = Matches(kFillRect) && Install(kFillRect, &FillRect_detour, o_FillRect);
+    const bool panel = Matches(kMessagePanel) && Install(kMessagePanel, &MessagePanel_detour, o_MessagePanel);
+    if (!fill || !panel) {
+        core::diag::Disable(g_message, "its sites do not match or a hook could not be installed");
+    }
+    // The filler draws the inset panel's tiles with image_draw (image_group_get, image_get_size).
+    const bool images = draw && Matches(kImageGroup) && Matches(kImageSize);
+    const bool side = images && Matches(kSidebarDraw) && Install(kSidebarDraw, &SidebarDraw_detour, o_SidebarDraw);
+    const bool units =
+        images && Matches(kSidebarUnits) && Install(kSidebarUnits, &SidebarUnits_detour, o_SidebarUnits);
+    // fill_rect is not compared again here (it is hooked above, its bytes are ours now): the world map's clearing
+    // calls it only when that compare and hook succeeded.
+    const bool world = fill && Matches(kWorldSidebar) && Install(kWorldSidebar, &WorldSidebar_detour, o_WorldSidebar);
+    if (!side || !units || !world) {
+        core::diag::Disable(g_filler, "its sites do not match or a hook could not be installed");
+    }
+    // The info window: its place, and the four fixed-place kinds moved on screen (all or none of these).
+    const Site *info[] = {&kInfoPlace, &kFixedDraw, &kFixedFore, &kInfoInput, &kButtonsDraw};
+    bool infoOk = true;
+    for (const Site *s : info) {
+        infoOk = infoOk && Matches(*s);
+    }
+    if (infoOk) {
+        infoOk = Install(kFixedDraw, &FixedDraw_detour, o_FixedDraw) &&
+                 Install(kFixedFore, &FixedFore_detour, o_FixedFore) &&
+                 Install(kInfoInput, &InfoInput_detour, o_InfoInput) &&
+                 Install(kButtonsDraw, &ButtonsDraw_detour, o_ButtonsDraw) &&
+                 Install(kInfoPlace, &InfoPlace_detour, o_InfoPlace); // last: nothing is shifted without the rest
+    }
+    if (!infoOk) {
+        core::diag::Disable(g_info, "its sites do not match or a hook could not be installed");
+    }
+}
+
 } // namespace
+
+void RegisterSettings()
+{
+    using core::settings::Effect;
+    using core::settings::Item;
+    using core::settings::Type;
+    namespace iw = core::ui::info_window;
+    const int i = core::settings::Register(Item{
+        "ui", "info_window", "Building info window",
+        "Where the window opens when you right-click a building. original: as the game does it (above or below, "
+        "moved with the center of the city area); centered: in the middle of the city area; cursor: beside the "
+        "cursor, never past the edges. Applies to the next window you open.",
+        Type::Choice, "cursor", Effect::Live, true, true, 0, 0, 0, nullptr, iw::kChoices, iw::kChoiceLabels,
+        iw::kChoiceCount});
+    iw::Watch(i, "zeus: resolution: "); // the choices and the mode are the core's (shared with Yongle)
+}
 
 void OnBackground()
 {
@@ -266,6 +962,9 @@ void OnBackground()
 void OnLoop()
 {
     switching::OnLoop();
+    if (*kGameScreen != kScreenInfo) {
+        g_infoOpen = false; // the next window is placed anew
+    }
 }
 
 bool KeyFilter(UINT message, WPARAM key, LPARAM l)
@@ -287,6 +986,17 @@ const Detour *Detours(int *count)
         {&kViewportWide, reinterpret_cast<void *>(&ViewportWide_detour)},
         {&kViewportNarrow, reinterpret_cast<void *>(&ViewportNarrow_detour)},
         {&kBmpShot, reinterpret_cast<void *>(&BmpShot_detour)},
+        {&kTopBarDraw, reinterpret_cast<void *>(&TopBarDraw_detour)},
+        {&kFillRect, reinterpret_cast<void *>(&FillRect_detour)},
+        {&kMessagePanel, reinterpret_cast<void *>(&MessagePanel_detour)},
+        {&kSidebarDraw, reinterpret_cast<void *>(&SidebarDraw_detour)},
+        {&kSidebarUnits, reinterpret_cast<void *>(&SidebarUnits_detour)},
+        {&kInfoPlace, reinterpret_cast<void *>(&InfoPlace_detour)},
+        {&kFixedDraw, reinterpret_cast<void *>(&FixedDraw_detour)},
+        {&kFixedFore, reinterpret_cast<void *>(&FixedFore_detour)},
+        {&kInfoInput, reinterpret_cast<void *>(&InfoInput_detour)},
+        {&kButtonsDraw, reinterpret_cast<void *>(&ButtonsDraw_detour)},
+        {&kWorldSidebar, reinterpret_cast<void *>(&WorldSidebar_detour)},
     };
     *count = static_cast<int>(sizeof(kDetours) / sizeof(kDetours[0]));
     return kDetours;
@@ -334,6 +1044,7 @@ bool Attach(const core_config *cfg)
                  kConfigLoad.name);
     }
     switching::Install(Game(), cfg);
+    AttachCityLayout();
     char what[48];
     core::display::DescribeSetting(cfg->resolution, cfg->resolution_w, cfg->resolution_h, cfg->scale_percent, what,
                                    sizeof(what));
