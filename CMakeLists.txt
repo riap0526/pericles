@@ -115,6 +115,7 @@ set(CORE_SOURCES
     src/core/ddraw/ddraw_emu.cpp
     src/core/ddraw/surface_memory.cpp
     src/core/scroll/smooth_scroll.cpp
+    src/core/scroll/camera.cpp
     src/core/ui/panel.cpp
     src/core/ui/hotkey.cpp
     src/core/options/window.cpp
@@ -201,6 +202,13 @@ add_executable(test_scroll proxy/ddraw/test_scroll.cpp src/core/scroll/smooth_sc
 target_include_directories(test_scroll PRIVATE src)
 target_link_options(test_scroll PRIVATE -static)
 target_link_libraries(test_scroll PRIVATE augustus_core winmm)
+
+# Offline test of core/scroll/camera: smooth scrolling's camera on a fake game (shared by both games).
+add_executable(test_camera proxy/ddraw/test_camera.cpp src/core/scroll/camera.cpp src/core/scroll/smooth_scroll.cpp
+    src/core/diag/guard.cpp src/core/log.cpp)
+target_include_directories(test_camera PRIVATE src)
+target_link_options(test_camera PRIVATE -static)
+target_link_libraries(test_camera PRIVATE augustus_core winmm)
 
 # Offline test of core/display/logical_size (the display scale rules).
 add_executable(test_logical proxy/ddraw/test_logical.cpp src/core/display/logical_size.cpp)

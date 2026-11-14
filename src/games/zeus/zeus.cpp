@@ -16,6 +16,7 @@
 #include "games/zeus/intro.h"
 #include "games/zeus/notice.h"
 #include "games/zeus/resolution.h"
+#include "games/zeus/scroll.h"
 #include "games/zeus/site.h"
 #include "games/zeus/state_check.h"
 #include "games/zeus/timing.h"
@@ -98,6 +99,11 @@ bool KeyFilter(UINT message, WPARAM key, LPARAM l)
     return message == WM_KEYDOWN && key == VK_F5; // with Shift or Ctrl: still not the game's
 }
 
+bool ApplySmooth(int, const char *v, bool initial)
+{
+    return initial || zeus::scroll::SetSmooth(std::strcmp(v, "on") == 0);
+}
+
 bool ApplyResolution(int, const char *, bool initial)
 {
     return initial || zeus::resolution::SettingsChanged(core_config_get());
@@ -169,6 +175,10 @@ extern "C" void zeus_attach(void)
         zeus::world_map::AttachLayout();
     }
     zeus::notice::Attach(); // our messages in the game's notice boxes
+    // Smooth scrolling's camera (the city still drawn on whole tiles); gameplay.smooth_scroll from the panel.
+    if (zeus::scroll::Attach(core_config_get()->smooth_scroll != 0)) {
+        core::settings::OnChange(core::settings::Find("gameplay", "smooth_scroll"), &ApplySmooth);
+    }
     // Screenshot file names and the present mode log's lines carry game_screen 0xf2a6dd (one byte, reads only).
     // The tag is asked for when a screenshot is taken (game thread): the draw census sums up the next frame too.
     core::capture::SetTagProvider([](char *out, size_t size) {

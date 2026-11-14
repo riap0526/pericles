@@ -104,6 +104,13 @@
 //                           game's own Sound Frags (also id 1000); the smoke test's notice action; a fault in
 //                           city_warning_show: city_warning_text and warnings_on put back, notices off, the caption line
 //
+// Smooth scrolling's camera (games/zeus/scroll with the core's core/scroll/camera):
+//   scroll_ok            at a city call of scroll_get_direction with the cursor on the right edge: 8 every frame,
+//                           the camera moved right by time, edge_scrolling set, sound_view_decay called, the rate log's
+//                           part; another caller and smooth off: the game's own direction
+//   direction_fault      view_clamp faults in a smooth frame: the camera, edge_scrolling and the key flag put back,
+//                           remainder 0, off, the game's own direction; cannot be switched on again
+//
 // Each scenario runs in a child process of its own (a feature switched off stays off for the rest of a process):
 //   test_restore.exe            runs every scenario and prints one line each
 //   test_restore.exe <name>     one scenario (exit code 0 = passed)
@@ -123,6 +130,7 @@
 #include "games/zeus/intro.h"
 #include "games/zeus/notice.h"
 #include "games/zeus/resolution.h"
+#include "games/zeus/scroll.h"
 #include "games/zeus/site.h"
 #include "games/zeus/smoke.h"
 #include "games/zeus/state_check.h"
@@ -1925,6 +1933,157 @@ void NoticeBoxes()
           "afterwards: our caption line, the game not called");
 }
 
+// ---------------------------------------------------------------------------------------------
+// Smooth scrolling's camera (games/zeus/scroll with the core's core/scroll/camera)
+
+constexpr DWORD fGetDirection = 0x50b7b0, fViewClamp = 0x51cd60, fSoundDecay = 0x42e560;
+constexpr DWORD cCityScroll = 0x5149ae;  // a city call of scroll_get_direction (returns to 0x5149b3)
+constexpr DWORD cOtherScroll = 0x516213; // another caller's (returns to 0x516218): the game's own
+constexpr DWORD aViewX = 0xda2f64, aViewY = 0xda2f68, aTileW = 0x7d3bb0, aTileHalfH = 0x7d3ba4,
+                aCursorX = 0xf2a6c8, aCursorY = 0xf2a6c4, aDesktopW = 0xf2a6bc, aDesktopH = 0xf2a6b8,
+                aKeyUp = 0xf9c120, aScrollSpeed = 0xf2a778, aFrameCount = 0xf2aac0;
+
+struct ScrollCalls {
+    int directions = 0, clamps = 0, sounds = 0;
+} g_scroll;
+
+int __cdecl FakeGetDirection() // the game's own: "right" (3), clears nothing here
+{
+    ++g_scroll.directions;
+    return 3;
+}
+
+void __cdecl FakeViewClamp() // the map's range 0..200 x 0..400, view_y even
+{
+    ++g_scroll.clamps;
+    if (Fires("view_clamp")) {
+        Fault();
+    }
+    volatile int &x = At<int>(aViewX), &y = At<int>(aViewY);
+    x = x < 0 ? 0 : x > 200 ? 200 : x;
+    y = y < 0 ? 0 : y > 400 ? 400 : y;
+    y = y & ~1;
+}
+
+void __cdecl FakeSoundDecay()
+{
+    ++g_scroll.sounds;
+}
+
+using Dir_fn = int(__cdecl *)();
+
+int ScrollCall(DWORD site) // a game frame's call of scroll_get_direction at site
+{
+    return reinterpret_cast<Dir_fn>(site + g_imageShift)();
+}
+
+void SetupScroll()
+{
+    int n = 0;
+    const zeus::Detour *d = zeus::scroll::Detours(&n);
+    void *direction = nullptr;
+    for (int i = 0; i < n; ++i) {
+        if (std::strcmp(d[i].site->name, "scroll_get_direction") == 0) {
+            direction = d[i].detour;
+        }
+    }
+    if (!direction) {
+        std::printf("no detour scroll_get_direction\n");
+        ExitProcess(3);
+    }
+    Thunk(fGetDirection, reinterpret_cast<void *>(&FakeGetDirection));
+    Thunk(fViewClamp, reinterpret_cast<void *>(&FakeViewClamp));
+    Thunk(fSoundDecay, reinterpret_cast<void *>(&FakeSoundDecay));
+    CallSite(cCityScroll, direction);
+    CallSite(cOtherScroll, direction);
+    At<int>(aViewX) = 50;
+    At<int>(aViewY) = 100;
+    At<int>(aTileW) = 58; // a column is 60 px
+    At<int>(aTileHalfH) = 15;
+    At<int>(aDesktopW) = 1920;
+    At<int>(aDesktopH) = 1080;
+    At<int>(aCursorX) = 960;
+    At<int>(aCursorY) = 540;
+    At<int>(aScrollSpeed) = 50;
+    zeus::scroll::StartForTest(true);
+}
+
+// Frames of about 4 ms at the city's call for ms milliseconds; true when every one returned 8 (no direction).
+bool ScrollFrames(int ms)
+{
+    bool all8 = true;
+    const DWORD end = GetTickCount() + ms;
+    while (static_cast<LONG>(end - GetTickCount()) > 0) {
+        At<int>(aFrameCount) = At<int>(aFrameCount) + 1;
+        all8 = ScrollCall(cCityScroll) == 8 && all8;
+        Sleep(4);
+    }
+    return all8;
+}
+
+void ScrollOk()
+{
+    SetupScroll();
+    At<int>(aCursorX) = 1919; // the right edge
+    const bool all8 = ScrollFrames(400);
+    int px = 0, py = 0;
+    zeus::scroll::Remainder(&px, &py);
+    Check(all8 && g_scroll.directions == 0, "city call, smooth: 8 every frame (the game's own step does nothing)");
+    Check(At<int>(aViewX) > 52 && At<int>(aViewY) == 100 && px >= 0 && px < 60 && py == 0,
+          "the camera moved right by time (whole columns into view_x, a remainder)");
+    Check(At<int>(aEdgeScrolling) == 1, "edge_scrolling set at the edge (no simulation tick meanwhile, as the game)");
+    Check(g_scroll.sounds > 0, "sound_view_decay called while scrolling");
+    zeus::scroll::OnFrame(1000);
+    char stats[256];
+    zeus::scroll::TakeStats(stats, sizeof(stats));
+    Check(std::strstr(stats, "at scroll speed 50%") != nullptr &&
+              std::strstr(stats, "(expected 720 px/s per axis)") != nullptr,
+          "rate log: the scrolling part, expected 720 px/s at 50% (Augustus's table)");
+    Check(ScrollCall(cOtherScroll) == 3 && g_scroll.directions == 1, "another caller: the game's own direction");
+    Check(zeus::scroll::SetSmooth(false), "switched off");
+    At<int>(aFrameCount) = At<int>(aFrameCount) + 1;
+    Check(ScrollCall(cCityScroll) == 3 && g_scroll.directions == 2, "off: the game's own direction at the city call");
+    zeus::scroll::Remainder(&px, &py);
+    Check(px == 0 && py == 0, "off: the view on its whole tile");
+    Check(zeus::scroll::Working() && !LogContains("switched off after"), "no feature switched off");
+}
+
+void DirectionFault()
+{
+    SetupScroll();
+    At<int>(aCursorX) = 1919;
+    ScrollFrames(100); // under way
+    At<int>(aCursorX) = 0;       // now the left edge
+    At<int>(aKeyUp) = 1;         // and the up arrow's flag (the game's window procedure)
+    At<int>(aEdgeScrolling) = 7; // a sentinel
+    const int x = At<int>(aViewX), y = At<int>(aViewY);
+    g_fault = "view_clamp";
+    int r = 8, frames = 0;
+    while (std::strcmp(g_fault, "view_clamp") == 0 && frames < 200) {
+        At<int>(aFrameCount) = At<int>(aFrameCount) + 1;
+        r = ScrollCall(cCityScroll);
+        ++frames;
+        if (std::strcmp(g_fault, "view_clamp") == 0) {
+            At<int>(aEdgeScrolling) = 7;
+            At<int>(aKeyUp) = 1;
+            Sleep(4);
+        }
+    }
+    int px = 0, py = 0;
+    zeus::scroll::Remainder(&px, &py);
+    Check(!zeus::scroll::Working(), "fault in view_clamp during a smooth frame: smooth scrolling off");
+    Check(At<int>(aViewX) == x && At<int>(aViewY) == y && At<int>(aEdgeScrolling) == 7 && At<int>(aKeyUp) == 1,
+          "the camera, edge_scrolling and the key flag put back to the frame's start");
+    Check(px == 0 && py == 0, "remainder 0 (whole tiles)");
+    Check(r == 3, "that call returns the game's own direction");
+    At<int>(aFrameCount) = At<int>(aFrameCount) + 1;
+    Check(ScrollCall(cCityScroll) == 3, "afterwards the game's own scrolling");
+    Check(!zeus::scroll::SetSmooth(true), "cannot be switched on again from the panel");
+    Check(LogContains("feature \"smooth scrolling (games/zeus/scroll)\" switched off") &&
+              LogContains("scroll: smooth scrolling is off after an error"),
+          "log: the feature off, the fallback");
+}
+
 struct Scenario {
     const char *name;
     void (*run)();
@@ -2795,6 +2954,8 @@ const Scenario kScenarios[] = {
     {"display_scale_sizes", &DisplayScaleSizesScenario},
     {"smoke_actions", &SmokeActions},
     {"notice_boxes", &NoticeBoxes},
+    {"scroll_ok", &ScrollOk},
+    {"direction_fault", &DirectionFault},
 };
 
 } // namespace

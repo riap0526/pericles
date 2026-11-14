@@ -213,9 +213,9 @@ void RegisterCoreItems()
                        "machine (otherwise 15.6 ms unless another program raised it).",
                        Type::Bool, "on", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0});
     g_smooth = Add(Item{"gameplay", "smooth_scroll", "Smooth scrolling",
-                        "Pixel scrolling of the city at the game's own average speed, with easing. Off: the game's "
-                        "whole-tile steps. Either way the simulation pauses while the view scrolls, as in the "
-                        "original.",
+                        "Pixel scrolling of the city with easing, at a steady speed for each scroll speed setting, the "
+                        "same on every computer. Off: the game's whole-tile steps. Either way the simulation pauses "
+                        "while the view scrolls, as in the original.",
                         Type::Bool, "on", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0});
     g_panelScale = Add(Item{"ui", "panel_scale", "Panel size",
                             "Size of this panel in percent. Auto: the output height divided by 1080 (1440p: 133%).",

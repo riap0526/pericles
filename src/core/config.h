@@ -19,7 +19,7 @@
 //   window_lock_cursor = off ; on: windowed, the cursor stays inside the window while it is the active one
 //
 //   [gameplay]
-//   smooth_scroll = on     ; on: pixel scrolling with the game's own average speed | off: the game's tile steps
+//   smooth_scroll = on     ; on: pixel scrolling at a steady speed per setting | off: the game's tile steps
 //
 //   [ui]
 //   panel_key = Insert     ; opens and closes our settings panel; syntax in core/ui/hotkey.h (e.g. Ctrl+F12)

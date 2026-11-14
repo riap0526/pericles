@@ -23,6 +23,7 @@
 #include "games/zeus/diag.h"
 #include "games/zeus/fullscreen.h"
 #include "games/zeus/resolution.h"
+#include "games/zeus/scroll.h"
 #include "games/zeus/site.h"
 #include "games/zeus/smoke.h"
 #include "games/zeus/state_check.h"
@@ -129,6 +130,7 @@ int g_lastSpeed = -1;
 // present = display / cap60 (the output thread knows the refresh rate).
 bool g_frameCapOn = false; // Attach: present = display / cap60
 double g_nextFrameMs = 0;
+double g_lastFrameMs = 0; // when the last game_frame that ran started (the time spent scrolling)
 
 double NowMs()
 {
@@ -194,6 +196,8 @@ void LogRates(const char *why)
     }
     long presented = 0, shown = 0;
     core::output::TakeCounts(&presented, &shown);
+    char scroll[256];
+    zeus::scroll::TakeStats(scroll, sizeof(scroll)); // as Yongle's rate line, before the pace's note
     char paceNote[160];
     core::sim::TakeNote(kPace, paceNote, sizeof(paceNote));
     static const char *const kPresent[] = {"original", "display", "cap60"};
@@ -208,12 +212,12 @@ void LogRates(const char *why)
     core_log("rates%s: frames %.0f/s (at most %d/s), sim ticks %.1f/s (%ld with game-time animation), city drawings "
              "%.1f/s counting + %.1f/s put back (%.0f MB/s, buildings 0..%lu), game presents %.1f/s, frames shown "
              "%.1f/s over %lu ms (present=%s, display %d Hz, game speed %d%%, screen %d, mode %dx%d, timer %u us); "
-             "frame check: %ld game frames with 2+ presents, %ld torn%s",
+             "frame check: %ld game frames with 2+ presents, %ld torn%s%s",
              why, g_frames / s, FrameCap(), g_ticks / s, g_animTicks, counted / s, reverted / s,
              copied / s / (1024.0 * 1024.0), static_cast<unsigned long>(buildings), presented / s, shown / s, ms,
              kPresent[core_config_get()->present], core::output::RefreshHz(), *kGameSpeed,
              static_cast<int>(*kGameScreen), *kModeWidth, *kModeHeight, core_timer_resolution_us(), multi, torn,
-             paceNote);
+             scroll, paceNote);
     core::diag::LogRateTail(why); // time, time max, intervals, cpu (the same lines in every game)
     g_frames = g_ticks = g_animTicks = 0;
     g_since = now;
@@ -254,6 +258,8 @@ void Resumed()
     core_log("zeus: panel closed: game resumed");
     ResetWindow();
     g_nextFrameMs = 0;
+    g_lastFrameMs = 0;      // the pause is not a frame's time
+    zeus::scroll::Resume(); // the scroll speed from rest
 }
 
 int DrawOnlyFrame()
@@ -282,6 +288,11 @@ void __cdecl GameFrame_detour()
     }
     ++g_frames;
     ++g_frameNumber;
+    const double frameStart = NowMs();
+    if (g_lastFrameMs != 0) {
+        zeus::scroll::OnFrame(frameStart - g_lastFrameMs); // the time spent scrolling (the rate log)
+    }
+    g_lastFrameMs = frameStart;
     zeus::resolution::OnLoop(); // the 1024x768 frame of the front-end screens, the configured resolution
     zeus::fullscreen::OnLoop(); // the front-end screens framed (the menus pass here too)
     DecideCountingFrame();

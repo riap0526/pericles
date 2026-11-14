@@ -30,6 +30,7 @@ set(GAME_SOURCES
     src/games/zeus/intro.cpp
     src/games/zeus/smoke.cpp
     src/games/zeus/notice.cpp
+    src/games/zeus/scroll.cpp
 )
 
 # The offline tests of this game layer (run by src/games/zeus/tests.ps1 through proxy/ddraw/run_tests.ps1).
@@ -55,6 +56,8 @@ macro(game_add_tests)
         src/core/ddraw/surface_memory.cpp src/core/display/moved_rect.cpp src/core/display/window_move.cpp
         src/core/ui/info_window.cpp
         src/games/zeus/smoke.cpp src/games/zeus/notice.cpp src/core/ui/notice.cpp src/core/ui/notice_text.cpp
+        src/games/zeus/scroll.cpp src/core/scroll/camera.cpp
+        src/core/scroll/smooth_scroll.cpp
         src/core/settings/intro_movie.cpp src/core/display/logical_size.cpp
         src/core/display/resolution_switch.cpp src/core/sim/panel_pause.cpp
         src/core/diag/guard.cpp src/core/diag/report.cpp src/core/diag/perf.cpp src/core/diag/environment.cpp
@@ -65,5 +68,5 @@ macro(game_add_tests)
     target_include_directories(test_restore PRIVATE src ${CMAKE_CURRENT_BINARY_DIR}/generated)
     target_compile_options(test_restore PRIVATE -fno-exceptions)
     target_link_options(test_restore PRIVATE -static)
-    target_link_libraries(test_restore PRIVATE minhook winmm)
+    target_link_libraries(test_restore PRIVATE minhook augustus_core winmm)
 endmacro()

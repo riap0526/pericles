@@ -15,6 +15,8 @@
 #   test_settings the settings model: load, requests, callbacks, saving (no DLL; rewrites the ini next to it,
 #               which is put back to the default at the end)
 #   test_scroll core/scroll: cruise speed, easing, stop (no DLL; ~4 s)
+#   test_camera core/scroll/camera: smooth scrolling's camera on a fake game (carries, edges, speed, keys, a fault)
+#               (no DLL; writes test_camera.log; ~2 s)
 #   test_logical core/display/logical_size: display scale rules (no DLL)
 #   test_moved_rect core/display/moved_rect: a rectangle shown elsewhere, every buffer between no-access pages
 #   test_city_layout core/display/city_layout: spare rows, the top bar's tiling, the sidebar filler's inset panel,
@@ -91,6 +93,7 @@ Run 'test_options' 'emulated' @()
 Run 'test_ini' 'emulated' @()
 Run 'test_settings' 'emulated' @()
 Run 'test_scroll' 'emulated' @()
+Run 'test_camera' 'emulated' @()
 Run 'test_logical' 'emulated' @()
 Run 'test_common_sizes' 'emulated' @()
 Run 'test_city_zoom' 'emulated' @()
