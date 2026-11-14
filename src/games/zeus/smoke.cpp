@@ -1,6 +1,7 @@
 #include "games/zeus/smoke.h"
 
 #include "core/log.h"
+#include "core/ui/notice.h"
 #include "games/zeus/site.h"
 
 #include <cstdio>
@@ -90,17 +91,43 @@ bool Lose(char *why, int size)
     *kLoseReason = 0xb91;
     *kLoseMessage = 0xb91;
     *kLoseMessage2 = 0xb90;
-    core_log("zeus: smoke: lose: lose_reason = 0xb91 (time for the objectives over), as objectives_check writes it; "
+    core_log("zeus: smoke: lose: lose_reason = 0xb91 (in debt too long), as objectives_check writes it; "
              "mission_check takes it on its next two monthly checks");
     return true;
 }
 
 } // namespace
 
-const char kActions[] = "win lose";
+const char kActions[] = "win lose notice notice_long notice_bracket notice_red zoom_50 zoom_75 zoom_125";
 
 bool Action(const char *name, char *why, int size)
 {
+    // The notice tests: texts for the smoke test only, never shown otherwise.
+    static const struct {
+        const char *name, *text;
+        bool red;
+    } kNotices[] = {
+        {"notice", "Pericles test notice.", false},
+        {"notice_long", "Minimap screenshot saved in the shots folder.", false},
+        {"notice_bracket", "Bracket test: [city] and [unclosed", false},
+        {"notice_red", "Red test: Zeus shows it in the plain font.", true},
+    };
+    for (const auto &n : kNotices) {
+        if (std::strcmp(name, n.name) == 0) {
+            core::ui::notice::Post(n.text, n.red);
+            return true;
+        }
+    }
+    static const struct {
+        const char *name;
+        int percent;
+    } kZooms[] = {{"zoom_50", 50}, {"zoom_75", 75}, {"zoom_125", 125}};
+    for (const auto &z : kZooms) {
+        if (std::strcmp(name, z.name) == 0) {
+            core::ui::notice::Zoom(z.percent);
+            return true;
+        }
+    }
     if (std::strcmp(name, "win") == 0) {
         return Win(why, size);
     }

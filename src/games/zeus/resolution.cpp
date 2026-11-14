@@ -1130,6 +1130,9 @@ bool Attach(const core_config *cfg)
             return false;
         }
     }
+    // Before the hooks, as Yongle's: their fallbacks go back to the game's size through it (switching::ToGameSize
+    // does nothing more than switch itself off before it is installed).
+    switching::Install(Game(), cfg);
     bool ok = Install(kModeSize, &ModeSize_detour, o_ModeSize);
     ok = Install(kSidebarPos, &SidebarPos_detour, o_SidebarPos) && ok;
     ok = Install(kViewportWide, &ViewportWide_detour, o_ViewportWide) && ok;
@@ -1146,7 +1149,6 @@ bool Attach(const core_config *cfg)
                  "only)",
                  kConfigLoad.name);
     }
-    switching::Install(Game(), cfg);
     AttachCityLayout();
     char what[48];
     core::display::DescribeSetting(cfg->resolution, cfg->resolution_w, cfg->resolution_h, cfg->scale_percent, what,

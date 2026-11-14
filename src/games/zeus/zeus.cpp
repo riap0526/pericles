@@ -14,6 +14,7 @@
 #include "games/zeus/diag.h"
 #include "games/zeus/fullscreen.h"
 #include "games/zeus/intro.h"
+#include "games/zeus/notice.h"
 #include "games/zeus/resolution.h"
 #include "games/zeus/site.h"
 #include "games/zeus/state_check.h"
@@ -167,6 +168,7 @@ extern "C" void zeus_attach(void)
         // them the map has no border).
         zeus::world_map::AttachLayout();
     }
+    zeus::notice::Attach(); // our messages in the game's notice boxes
     // Screenshot file names and the present mode log's lines carry game_screen 0xf2a6dd (one byte, reads only).
     // The tag is asked for when a screenshot is taken (game thread): the draw census sums up the next frame too.
     core::capture::SetTagProvider([](char *out, size_t size) {

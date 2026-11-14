@@ -23,10 +23,13 @@
 // The logical resolution (games/zeus/resolution, games/zeus/world_map):
 //   mode_size           Zeus.inf's mode 2 becomes 3; mode 3 is 1024x768 on front-end screens, ours in the city;
 //                           a full-screen picture outside the city starts the frame, one on the city screen does not
-//   mode_size_fault         a fault after mode 3's size was written: 1024x768 back, switching off, settings refused
+//   mode_size_fault     a fault after mode 3's size was written: 1024x768 back (logged: 2 values put back),
+//                           switching off, settings refused
 //   viewport_layout              the sidebar (where the open-sidebar columns end) and both city viewports at 1920x1080 and
 //                           1024x900; the game's own at 1024x768
-//   layout_fault            viewport_init faults: the 1024 layout at once, the game's own size on the next loop
+//   layout_fault        viewport_init faults: the 1024 layout at once, the sidebar at the game's 838, the game's
+//                           own size on the next loop
+//   narrow_fault        the same with the sidebar open (city_viewport_narrow): the 1024 layout's 14 x 50
 //   map_flags               the flags step once per 50 ms (anim_due[0] 0 for the call otherwise, put back after it);
 //                           a fault: put back, off, the game's own step
 //   map_height          the world map drawn with the game's own 768 on a higher screen, the height back after it
@@ -94,6 +97,13 @@
 //   smoke_actions       win calls cheat_run(0) (a __cdecl fake) only in the city, not governing on, with the
 //                           code and table as expected; lose writes the three values at their sizes; the dialog offset
 //
+// Our messages in the game's notice boxes (games/zeus/notice with the core's core/ui/notice):
+//   notice_boxes               a text shown through city_warning_show(1000) (a __cdecl fake): '[' replaced, warnings_on 1
+//                           for the call only, the 200 bytes of city_warning_text put back, the font, our box widths;
+//                           five boxes full: none; the zoom box rewritten in place, a new one when its slot holds the
+//                           game's own Sound Frags (also id 1000); the smoke test's notice action; a fault in
+//                           city_warning_show: city_warning_text and warnings_on put back, notices off, the caption line
+//
 // Each scenario runs in a child process of its own (a feature switched off stays off for the rest of a process):
 //   test_restore.exe            runs every scenario and prints one line each
 //   test_restore.exe <name>     one scenario (exit code 0 = passed)
@@ -109,7 +119,9 @@
 #include "core/ui/info_window.h"
 #include "games/zeus/anim_clock.h"
 #include "games/zeus/fullscreen.h"
+#include "core/ui/notice.h"
 #include "games/zeus/intro.h"
+#include "games/zeus/notice.h"
 #include "games/zeus/resolution.h"
 #include "games/zeus/site.h"
 #include "games/zeus/smoke.h"
@@ -125,6 +137,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 // ---------------------------------------------------------------------------------------------
 // Stubs for the parts of the DLL these files call that are not under test
@@ -146,6 +159,8 @@ void MeasureFromNow() {}
 void TakeIntervals(char *out, std::size_t) { out[0] = 0; }
 void SetBackground(int, int, int, int, double, const void *, int, const void *, int) { ++g_backgrounds; }
 void SetCaption(const char *, int) {}
+int g_captionNotices = 0; // notice_boxes: texts on our caption line (core/ui/notice's fallback)
+void SetNotice(const char *, unsigned) { ++g_captionNotices; }
 } // namespace core::output
 
 namespace core::assets { // no player's picture
@@ -276,8 +291,9 @@ bool LogContainsSince(long from, const char *text)
     return std::strstr(buf, text) != nullptr;
 }
 
-// The game's memory: our copy of 0x400000 .. 0x1100000 (code, the tables and every variable used below).
-constexpr DWORD kImageBase = 0x400000, kImageSize = 0xd00000;
+// The game's memory: our copy of 0x400000 .. 0x1611000, the whole image (scrolling: the image packs' table 0x12afbec is
+// above the 0x1100000 used before).
+constexpr DWORD kImageBase = 0x400000, kImageSize = 0x1211000;
 
 template <typename T> volatile T &At(DWORD address)
 {
@@ -1041,6 +1057,7 @@ void ModeSizeFault()
     Res<Mode_fn>("screen_mode_size")(3);
     Check(At<int>(aModeW) == 1024 && At<int>(aModeH) == 768, "a fault after the size was written: 1024x768 back");
     Check(LogContains("feature \"resolution switching (core/display/resolution_switch)\" switched off"), "log: switching off");
+    Check(LogContains("2 changed value(s) put back"), "log: the two values written (mode_width, mode_height) put back");
     Res<Mode_fn>("screen_mode_size")(3);
     Check(At<int>(aModeW) == 1024, "afterwards mode 3 is the game's own 1024x768");
     Check(!zeus::resolution::SettingsChanged(&c), "a new setting is refused (the game runs at its own size)");
@@ -1222,11 +1239,30 @@ void LayoutFault()
     Check(LogContains("feature \"city layout at this resolution (games/zeus/resolution)\" switched off"),
           "log: layout off");
     Check(LogContains("back to the game's own 1024x768"), "log: back to the game's own size");
+    At<int>(aSidebarX) = 0;
+    At<int>(aSidebarX2) = 0;
+    Res<Tick_fn>("ui_set_sidebar_position")();
+    Check(At<int>(aSidebarX) == 838 && At<int>(aSidebarX2) == 838 + 0x78,
+          "the layout off: the sidebar at the game's 1024 place (838) until the size is back");
     At<unsigned char>(aGameScreen) = 0x01;
     const int switches = g_res.switches;
     Sleep(510); // the mode change is tried at most every 500 ms
     zeus::resolution::OnLoop();
     Check(g_res.switches == switches + 1, "the next loop: the game's own mode change");
+}
+
+// The same with the sidebar open (city_viewport_narrow 0x51cc00): the 1024 layout's 14 x 50 at once.
+void NarrowFault()
+{
+    SetupResolution();
+    ToCity();
+    g_fault = "viewport_init";
+    Res<Tick_fn>("city_viewport_narrow")();
+    Check(g_res.inits == 2 && g_res.cols == 14 && g_res.rows == 50 && g_res.narrows == 0,
+          "a fault: the 1024 layout's 14 x 50 at once (our call, not the game's function)");
+    Check(LogContains("feature \"city layout at this resolution (games/zeus/resolution)\" switched off") &&
+              LogContains("back to the game's own 1024x768"),
+          "log: layout off, back to the game's own size");
 }
 
 void RunFrame() // one game_frame through our detour (it may wait for the frame cap)
@@ -1694,6 +1730,199 @@ void SmokeActions()
     int x = 0, y = 0;
     zeus::smoke::DialogOffset(&x, &y);
     Check(x == 192 && y == 144, "the dialog offset (dialog_offset_x / _y)");
+}
+
+// --- The notice boxes (games/zeus/notice). city_warning_show(id, arg, 0) is __cdecl (3 arguments, ret, the caller
+// cleans), as are text_get_width (2), text_length (1) and text_copy (3): the fakes are the same.
+constexpr DWORD aSlots = 0xfd3438, aWarningText = 0x916af8, aWarningsOn = 0xf2a7c9, aFrameTime = 0xf9c0f4;
+constexpr DWORD aGroupTable = 0x12afbec, aGroupCount = 0x12bc820;
+constexpr DWORD aFontGroups = 0x1600000; // two fake groups of 8 bytes near the image's end (not used by the tests)
+struct ShowCall {
+    int calls = 0, id = 0, warningsOn = -1;
+    char text[200] = {};
+};
+ShowCall g_show;
+int g_widthFont = 0;
+
+int __cdecl FakeTextWidth(const char *text, int font)
+{
+    g_widthFont = font;
+    return static_cast<int>(std::strlen(text)) * 7;
+}
+short __cdecl FakeTextLength(const char *text)
+{
+    return static_cast<short>(std::strlen(text));
+}
+void __cdecl FakeTextCopy(const char *text, char *to, int count)
+{
+    std::memcpy(to, text, count);
+}
+
+// As the game's: warnings off or screen 0 -> nothing; the first slot not in use; id 1000 takes city_warning_text.
+void __cdecl FakeShow(int id, int, int)
+{
+    ++g_show.calls;
+    g_show.id = id;
+    g_show.warningsOn = At<BYTE>(aWarningsOn);
+    std::memcpy(g_show.text, reinterpret_cast<const void *>(aWarningText + g_imageShift), sizeof(g_show.text));
+    if (Fires("city_warning_show")) {
+        Fault();
+    }
+    if (At<BYTE>(aWarningsOn) == 0 || At<unsigned char>(0xf2a6dd) == 0) {
+        return;
+    }
+    for (int k = 0; k < 5; ++k) {
+        const DWORD slot = aSlots + k * 0x78;
+        if (At<short>(slot + 6) != 0) {
+            continue;
+        }
+        At<short>(slot + 6) = 1;
+        At<short>(slot) = static_cast<short>(id);
+        const char *text = reinterpret_cast<const char *>(aWarningText + g_imageShift);
+        const int n = static_cast<int>(std::strlen(text));
+        const int w = n * 7;
+        At<short>(slot + 0xa) = static_cast<short>(w < 0x65 ? 200 : w < 0xc9 ? 300 : w > 300 ? 460 : 400);
+        At<short>(slot + 8) = static_cast<short>(n);
+        At<int>(slot + 0xc) = At<int>(aFrameTime);
+        char *to = reinterpret_cast<char *>(slot + 0x12 + g_imageShift);
+        std::memset(to, 0, 100);
+        std::memcpy(to, text, n);
+        return;
+    }
+}
+
+const char *SlotText(int k)
+{
+    return reinterpret_cast<const char *>(aSlots + k * 0x78 + 0x12 + g_imageShift);
+}
+
+short SlotShort(int k, int offset)
+{
+    return At<short>(aSlots + k * 0x78 + offset);
+}
+
+void FillGameText()
+{
+    char *game = reinterpret_cast<char *>(aWarningText + g_imageShift);
+    for (int i = 0; i < 200; ++i) {
+        game[i] = static_cast<char>('a' + i % 26); // the game's own text there (a city message, a save's block)
+    }
+}
+
+bool GameTextKept()
+{
+    const char *game = reinterpret_cast<const char *>(aWarningText + g_imageShift);
+    for (int i = 0; i < 200; ++i) {
+        if (game[i] != static_cast<char>('a' + i % 26)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void SetupNotice()
+{
+    Thunk(0x5231e0, reinterpret_cast<const void *>(&FakeShow));
+    Thunk(0x507da0, reinterpret_cast<const void *>(&FakeTextWidth));
+    Thunk(0x507f00, reinterpret_cast<const void *>(&FakeTextLength));
+    Thunk(0x507d10, reinterpret_cast<const void *>(&FakeTextCopy));
+    At<DWORD>(aGroupTable) = aFontGroups + g_imageShift; // the game keeps a pointer there
+    At<int>(aFontGroups + 4) = 0x1111;                    // group 0's first image
+    At<int>(aFontGroups + 8 + 4) = 0x2222;                // group 1's
+    At<int>(aGroupCount) = 0;
+    At<unsigned char>(0xf2a6dd) = 0x01;
+    At<BYTE>(aWarningsOn) = 0; // the player's warnings off: ours are shown all the same
+    At<int>(aFrameTime) = 5000;
+    FillGameText();
+    zeus::notice::InstallForTest();
+}
+
+void NoticeBoxes()
+{
+    SetupNotice();
+    core::ui::notice::Post("Game [city] text [x");
+    core::ui::notice::OnFrame();
+    Check(g_show.calls == 1 && g_show.id == 1000 && std::strcmp(g_show.text, "Game (city] text (x") == 0,
+          "city_warning_show(1000) with our text in city_warning_text, '[' replaced");
+    Check(g_show.warningsOn == 1 && At<BYTE>(aWarningsOn) == 0, "warnings_on 1 for the call only");
+    Check(GameTextKept(), "city_warning_text's 200 bytes put back");
+    Check(SlotShort(0, 6) == 1 && std::strcmp(SlotText(0), "Game (city] text (x") == 0 && SlotShort(0, 0xa) == 300 &&
+              g_widthFont == 0x1111,
+          "the box: slot 0, 133 px -> 300 (the game's rule), measured with group 0's first image");
+    At<int>(aGroupCount) = 3;
+    core::ui::notice::Post("Minimap screenshot saved in the shots"); // 37 x 7 = 259 px
+    core::ui::notice::OnFrame();
+    Check(SlotShort(1, 0xa) == 400 && g_widthFont == 0x2222,
+          "259 px -> 400; group 1's first image when the entry count is above 0");
+    const std::string mid(45, 'm'); // 315 px: the game says 460, ours 400 up to 320
+    core::ui::notice::Post(mid.c_str());
+    core::ui::notice::OnFrame();
+    Check(SlotShort(2, 0xa) == 400, "315 px: our 400 box (the game would take 460)");
+    const std::string wide(47, 'w'); // 329 px
+    core::ui::notice::Post(wide.c_str());
+    core::ui::notice::OnFrame();
+    Check(SlotShort(3, 0xa) == 460, "329 px: 460");
+    At<short>(aSlots + 3 * 0x78 + 6) = 0; // its time is up
+
+    // The zoom box: made, then rewritten in place.
+    At<int>(aFrameTime) = 6000;
+    core::ui::notice::Zoom(50);
+    core::ui::notice::OnFrame();
+    Check(SlotShort(3, 6) == 1 && std::strcmp(SlotText(3), "Zoom: 50%") == 0, "zoom 50: a box in slot 3");
+    const int calls = g_show.calls;
+    At<int>(aFrameTime) = 7000;
+    core::ui::notice::Zoom(125);
+    core::ui::notice::OnFrame();
+    Check(g_show.calls == calls && std::strcmp(SlotText(3), "Zoom: 125%") == 0 &&
+              At<int>(aSlots + 3 * 0x78 + 0xc) == 7000 && SlotShort(3, 8) == 10 && SlotShort(4, 6) == 0,
+          "zoom 125: slot 3 rewritten in place (text, length, time), no new box");
+
+    // Five boxes full: ours not passed to the game.
+    core::ui::notice::Post("fifth");
+    core::ui::notice::OnFrame();
+    const int callsFull = g_show.calls;
+    core::ui::notice::Post("sixth");
+    core::ui::notice::OnFrame();
+    Check(SlotShort(4, 6) == 1 && g_show.calls == callsFull, "five boxes shown: the sixth not passed to the game");
+
+    // The zoom box gone and its slot taken by the game's own Sound Frags (also id 1000): a new zoom box elsewhere.
+    for (int k = 0; k < 5; ++k) {
+        At<short>(aSlots + k * 0x78 + 6) = 0;
+    }
+    At<short>(aSlots + 3 * 0x78 + 6) = 1;
+    At<short>(aSlots + 3 * 0x78) = 1000;
+    std::strcpy(const_cast<char *>(SlotText(3)), "Sound Frags 3");
+    core::ui::notice::Zoom(75);
+    core::ui::notice::OnFrame();
+    Check(std::strcmp(SlotText(3), "Sound Frags 3") == 0 && std::strcmp(SlotText(0), "Zoom: 75%") == 0,
+          "the game's Sound Frags box (id 1000) left alone; a new zoom box in the first free slot");
+    Check(GameTextKept(), "city_warning_text still the game's after all of them");
+
+    // The smoke test's notice action posts to the same queue; red is shown as the others.
+    char why[200] = "";
+    const int before = g_show.calls;
+    Check(zeus::smoke::Action("notice_red", why, sizeof(why)), "smoke: notice_red");
+    core::ui::notice::OnFrame();
+    Check(g_show.calls == before + 1 && std::strcmp(g_show.text, "Red test: Zeus shows it in the plain font.") == 0 &&
+              SlotShort(1, 0) == 1000,
+          "smoke: the red text shown through id 1000 as the others");
+    Check(LogContains("zeus: notice (red): Red test"), "log: the red text");
+
+    // A fault inside city_warning_show: city_warning_text and warnings_on put back, notices off, the caption line.
+    g_fault = "city_warning_show";
+    core::ui::notice::Post("faults");
+    core::ui::notice::Post("not reached");
+    const int callsFault = g_show.calls;
+    core::ui::notice::OnFrame();
+    Check(g_show.calls == callsFault + 1 && std::strcmp(g_show.text, "faults") == 0,
+          "the fault: in the call with our text (the second text not tried)");
+    Check(GameTextKept() && At<BYTE>(aWarningsOn) == 0, "after the fault: city_warning_text and warnings_on back");
+    Check(LogContains("feature \"notices in the game's boxes (core/ui/notice)\" switched off"), "log: notices off");
+    const int caption = core::output::g_captionNotices;
+    core::ui::notice::Post("after");
+    core::ui::notice::OnFrame();
+    Check(core::output::g_captionNotices == caption + 1 && g_show.calls == callsFault + 1,
+          "afterwards: our caption line, the game not called");
 }
 
 struct Scenario {
@@ -2268,6 +2497,16 @@ void WorldMap()
     At<int>(aMouseYw) = ty + static_cast<int>((369 + 0.5) * s);
     hit(nullptr, nullptr);
     Check(g_wm.mouseX == 419 && g_wm.mouseY == 369 + 30, "scaled (fit): the middle of the screen's map is the map's");
+    // The scaling fails -- logged, the game's drawing as it drew it, the real mouse.
+    ms::FailScalingForTest(true);
+    WorldScreen(2560, 1440);
+    draw();
+    ms::FailScalingForTest(false);
+    Check(LogContains("could not be scaled to") && LogContains("drawn the game's way"),
+          "the scaling fails: logged, drawn the game's way");
+    hit(nullptr, nullptr);
+    Check(g_wm.mouseX == At<int>(aMouseXw) && g_wm.mouseY == At<int>(aMouseYw),
+          "the scaling failed: the real mouse (nothing of ours shown)");
     // 200% at 3840x2160 (fit 288%): each map pixel a 2 x 2 block.
     ms::SetModeForTest(0, 200);
     WorldScreen(3840, 2160); // sidebar 3598: area 3598 x 2130
@@ -2531,6 +2770,7 @@ const Scenario kScenarios[] = {
     {"mode_size_fault", &ModeSizeFault},
     {"viewport_layout", &ViewportLayout},
     {"layout_fault", &LayoutFault},
+    {"narrow_fault", &NarrowFault},
     {"map_flags", &MapFlags},
     {"map_height", &MapHeight},
     {"draw_only", &DrawOnly},
@@ -2554,6 +2794,7 @@ const Scenario kScenarios[] = {
     {"world_map", &WorldMap},
     {"display_scale_sizes", &DisplayScaleSizesScenario},
     {"smoke_actions", &SmokeActions},
+    {"notice_boxes", &NoticeBoxes},
 };
 
 } // namespace

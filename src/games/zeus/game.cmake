@@ -29,6 +29,7 @@ set(GAME_SOURCES
     src/games/zeus/world_map.cpp
     src/games/zeus/intro.cpp
     src/games/zeus/smoke.cpp
+    src/games/zeus/notice.cpp
 )
 
 # The offline tests of this game layer (run by src/games/zeus/tests.ps1 through proxy/ddraw/run_tests.ps1).
@@ -53,7 +54,8 @@ macro(game_add_tests)
         src/core/display/map_screen.cpp
         src/core/ddraw/surface_memory.cpp src/core/display/moved_rect.cpp src/core/display/window_move.cpp
         src/core/ui/info_window.cpp
-        src/games/zeus/smoke.cpp src/core/settings/intro_movie.cpp src/core/display/logical_size.cpp
+        src/games/zeus/smoke.cpp src/games/zeus/notice.cpp src/core/ui/notice.cpp src/core/ui/notice_text.cpp
+        src/core/settings/intro_movie.cpp src/core/display/logical_size.cpp
         src/core/display/resolution_switch.cpp src/core/sim/panel_pause.cpp
         src/core/diag/guard.cpp src/core/diag/report.cpp src/core/diag/perf.cpp src/core/diag/environment.cpp
         src/core/diag/rate_log.cpp src/core/sim/pace.cpp

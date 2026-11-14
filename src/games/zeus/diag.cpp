@@ -6,6 +6,7 @@
 #include "core/config.h"
 #include "core/ddraw/surface_memory.h"
 #include "core/diag/guard.h"
+#include "core/diag/state_line.h"
 #include "core/display/virtual_display.h"
 #include "core/log.h"
 #include "core/settings/settings.h"
@@ -47,6 +48,8 @@ const Var<int> kDialogX{0xf2a6ac}, kDialogY{0xf2a6a8};           // dialog_offse
 const Var<int> kGameSpeed{0xf2a774};
 // The city viewport city_render clips to, and the view it was given (its three arguments, kept by it).
 const Var<int> kCityLeft{0x7d3b94}, kCityTop{0x7d3b8c}, kCityRight{0x7d3b90}, kCityBottom{0x7d3b88};
+// The city view (viewport_init's 5th and 6th arguments, columns and half rows) and its tile (58 x 15 in the city).
+const Var<int> kViewCols{0x7d3bbc}, kViewRows{0x7d3bb8}, kTileW{0x7d3bb0}, kTileHalfH{0x7d3ba4};
 constexpr DWORD kImagePaks = 0x12afbe8; // image_paks: 0xcc44 per pak, +0 entries (0x48 each), +0xcc34 entry count
 constexpr DWORD kPakSize = 0xcc44, kPakCount = 0xcc34, kEntrySize = 0x48;
 
@@ -55,24 +58,33 @@ constexpr DWORD kPakSize = 0xcc44, kPakCount = 0xcc34, kEntrySize = 0x48;
 
 int g_viewA = 0, g_viewB = 0, g_viewC = 0;
 
+// The same fields as Yongle's (core/diag/state_line.h); Zeus's own at the end: the mode number and city_render's
+// three arguments as last seen.
 void DescribeState(char *out, size_t size)
 {
-    std::snprintf(out, size,
-                  "screen 0x%02x, mode %d = %dx%d, dialog offset (%d,%d), city viewport (%d,%d)-(%d,%d), view %d,%d,%d, "
-                  "game speed %d%%",
-                  static_cast<unsigned>(*kGameScreen), *kScreenMode, *kWidth, *kHeight, *kDialogX, *kDialogY,
-                  *kCityLeft, *kCityTop, *kCityRight, *kCityBottom, g_viewA, g_viewB, g_viewC, *kGameSpeed);
+    char extra[64];
+    std::snprintf(extra, sizeof(extra), "mode number %d, city_render %d,%d,%d", *kScreenMode, g_viewA, g_viewB,
+                  g_viewC);
+    core::diag::Format(core::diag::StateLine(*kGameScreen, *kWidth, *kHeight, *kCityLeft, *kCityTop, *kCityRight,
+                                             *kCityBottom, *kViewCols, *kViewRows, *kTileW, *kTileHalfH * 2,
+                                             *kDialogX, *kDialogY, *kGameSpeed, extra),
+                       out, size);
 }
 
 // ---------------------------------------------------------------------------------------------
 // Panel (drawn on the output thread; reads only)
 
+// The same lines as Yongle's (games/emperor/emperor.cpp InfoSection): the logical resolution (core's mode size; the
+// game's own 1024 x 768 on the front-end screens), the screen named city (0x01) or front end.
 void InfoSection()
 {
+    static const char *const kScreens[] = {"front end", "city"};
+    const SIZE mode = core::display::ModeSize();
+    const int screen = *kGameScreen;
     ImGui::Text("Zeus: Master of Olympus + Poseidon 2.1.4.0");
-    ImGui::Text("Game resolution: %d x %d (mode %d)", *kWidth, *kHeight, *kScreenMode);
+    ImGui::Text("Logical resolution: %ld x %ld", mode.cx, mode.cy);
     ImGui::Text("Game speed: %d%%", *kGameSpeed);
-    ImGui::Text("Screen: 0x%02x", static_cast<unsigned>(*kGameScreen));
+    ImGui::Text("Screen: %s (%d, 0x%02x)", screen == 1 ? kScreens[1] : kScreens[0], screen, screen);
     char off[512];
     core::diag::SwitchedOff(off, sizeof(off));
     if (off[0]) {

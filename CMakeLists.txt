@@ -86,6 +86,8 @@ set(CORE_SOURCES
     src/core/display/city_layout.cpp
     src/core/display/window_move.cpp
     src/core/ui/info_window.cpp
+    src/core/ui/notice.cpp
+    src/core/ui/notice_text.cpp
     src/core/display/moved_rect.cpp
     src/core/display/scaled_rect.cpp
     src/core/display/city_zoom.cpp
@@ -96,6 +98,7 @@ set(CORE_SOURCES
     src/core/capture/png_stream.cpp
     src/core/diag/guard.cpp
     src/core/diag/report.cpp
+    src/core/diag/state_line.cpp
     src/core/diag/perf.cpp
     src/core/diag/environment.cpp
     src/core/diag/stall.cpp
@@ -325,6 +328,13 @@ add_custom_command(TARGET test_guard POST_BUILD
     COMMAND ${PYTHON_EXE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tools/build/make_syms.py ${LLVM_BIN}/llvm-objdump.exe
             $<TARGET_FILE:test_guard> ${CMAKE_CURRENT_BINARY_DIR}/test_guard.syms
     VERBATIM)
+
+# Offline test of core/ui/notice: the queue of our messages for the game's notice boxes on a fake game layer
+# (shared by both games).
+add_executable(test_notice proxy/ddraw/test_notice.cpp src/core/ui/notice.cpp src/core/ui/notice_text.cpp
+    src/core/diag/guard.cpp src/core/log.cpp)
+target_include_directories(test_notice PRIVATE src)
+target_link_options(test_notice PRIVATE -static)
 
 # The chosen game's own offline tests (game_add_tests in its game.cmake).
 game_add_tests()
