@@ -7,6 +7,7 @@
 #include "core/display/scaled_rect.h"
 #include "core/log.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -48,6 +49,7 @@ size_t g_layerSize = 0;
 std::vector<WORD> g_canvas; // border + map, (map + 2 border) pixels square
 int g_canvasW = 0, g_canvasH = 0, g_border = 0;
 std::vector<WORD> g_backdrop; // the map area's background
+std::vector<WORD> g_shrunk;   // border + map shrunk (a map taller than the area)
 int g_backdropKey[5] = {};
 std::vector<WORD> g_cityBackdrop; // the map area of the draw buffer when the map opened
 int g_cityW = 0, g_cityH = 0;
@@ -64,6 +66,7 @@ struct ShownMap {
 } g_shown{};
 
 bool g_deferTop = false; // inside our map drawing call: the top bar piece waits
+bool g_tallLogged = false; // the map taller than the area: logged once
 bool g_topPending = false;
 int g_topArg = 0;
 long g_logs = 0;
@@ -89,10 +92,32 @@ struct Layout {
     int ddW, ddH, pitch, sidebarX, mapW, mapH;
 };
 
+// The whole map must fit the area's width; a map only taller than the area is drawn whole all the same (DrawHeight)
+// and shown smaller (Scale).
 bool Fits(const Layout &l)
 {
-    const int top = Game().topBarH;
-    return l.mapW > 0 && l.mapH > 0 && l.mapW <= l.sidebarX && l.mapH <= l.ddH - top;
+    return l.mapW > 0 && l.mapH > 0 && l.mapW <= l.sidebarX;
+}
+
+// The game's height while it draws the map (and reads the mouse on it): the screen's, or the map's when it is taller
+// than the area (the game then draws all of it, with no scroll, as on a screen high enough).
+int DrawHeight(int ddH, int mapH)
+{
+    const int whole = Game().topBarH + mapH;
+    return mapH > 0 && whole > ddH ? whole : ddH;
+}
+
+// The game's map drawing with its height (and its clip's bottom) raised to h for the call, through r.
+void DrawAt(core::diag::Restore &r, int h)
+{
+    const MapGame &g = Game();
+    if (h > *g.ddHeight) {
+        r.Set(g.ddHeight.ptr(), h);
+        if (*g.clipBottom < h) {
+            r.Set(g.clipBottom.ptr(), h);
+        }
+    }
+    g.drawMap(r);
 }
 
 bool CurrentLayout(Layout *l)
@@ -163,8 +188,14 @@ void Backdrop(const Layout &l, int areaW, int areaH)
     Log("backdrop for map %d (%dx%d) over the %dx%d map area", key[0], l.mapW, l.mapH, areaW, areaH);
 }
 
-double Scale(int areaW, int areaH)
+double Scale(int areaW, int areaH, int mapW, int mapH)
 {
+    // A map taller (or wider) than the area: as large as the map itself fits, in either mode (its border cut).
+    const double mapFit = std::fmin(static_cast<double>(areaW) / mapW, static_cast<double>(areaH) / mapH);
+    if (mapFit < 1.0) {
+        g_fitPercent = static_cast<int>(std::floor(mapFit * 100 + 1e-9));
+        return mapFit;
+    }
     if (g_mode == kNative) {
         g_fitPercent = static_cast<int>(std::floor(
             std::fmin(static_cast<double>(areaW) / g_canvasW, static_cast<double>(areaH) / g_canvasH) * 100 + 1e-9));
@@ -184,7 +215,7 @@ void Compose(const Layout &l, BYTE *target, bool backdrop)
     const int top = Game().topBarH;
     const int areaW = l.sidebarX, areaH = l.ddH - top;
     Canvas(l);
-    const double s = Scale(areaW, areaH);
+    const double s = Scale(areaW, areaH, l.mapW, l.mapH);
     const int tw = static_cast<int>(std::lround(g_canvasW * s)), th = static_cast<int>(std::lround(g_canvasH * s));
     const int tx = (areaW - tw) / 2, ty = top + (areaH - th) / 2;
     const core::display::Target16 dst{reinterpret_cast<WORD *>(target), l.pitch / 2, l.ddW, l.ddH};
@@ -204,9 +235,23 @@ void Compose(const Layout &l, BYTE *target, bool backdrop)
                         static_cast<size_t>(areaW) * 2);
         }
     }
-    const bool whole = std::fabs(s - std::round(s)) < 1e-9;
-    core::display::ScaleRgb565(core::display::Pixels16{g_canvas.data(), g_canvasW, g_canvasW, g_canvasH}, s, !whole,
-                               dst, tx, ty, area);
+    const core::display::Pixels16 canvas{g_canvas.data(), g_canvasW, g_canvasW, g_canvasH};
+    if (s < 1.0) {
+        // Smaller than its own size (a map taller than the area): each pixel the average of the canvas area it
+        // covers (ScaleRgb565 only enlarges), then put in place inside the area.
+        g_shrunk.assign(static_cast<size_t>(tw) * th, 0);
+        core::display::ShrinkRgb565(canvas, tw, th, true, core::display::Target16{g_shrunk.data(), tw, tw, th});
+        const int left = std::max(static_cast<int>(area.left), tx), right = std::min(static_cast<int>(area.right), tx + tw);
+        const int top0 = std::max(static_cast<int>(area.top), ty), bottom = std::min(static_cast<int>(area.bottom), ty + th);
+        for (int y = top0; y < bottom && left < right; ++y) {
+            std::memcpy(dst.px + static_cast<size_t>(y) * dst.stride + left,
+                        &g_shrunk[static_cast<size_t>(y - ty) * tw + (left - tx)], static_cast<size_t>(right - left) * 2);
+        }
+    }
+    else {
+        const bool whole = std::fabs(s - std::round(s)) < 1e-9;
+        core::display::ScaleRgb565(canvas, s, !whole, dst, tx, ty, area);
+    }
     g_shown = ShownMap{true, l.ddW, l.ddH, l.sidebarX, tx, ty, s, g_border, g_canvasW, g_canvasH, l.mapW, l.mapH};
 }
 
@@ -257,13 +302,13 @@ void DrawLayer(void *p)
 {
     const MapGame &g = Game();
     Call &c = *static_cast<Call *>(p);
-    const size_t size = static_cast<size_t>(c.l.pitch) * c.l.ddH;
-    if (!LayerBuffer(size)) {
+    const int top = g.topBarH;
+    int drawH = DrawHeight(c.l.ddH, c.l.mapH);
+    if (!LayerBuffer(static_cast<size_t>(c.l.pitch) * drawH)) {
         g.drawMap(c.r);
         c.r.Undo();
         return;
     }
-    const int top = g.topBarH;
     const int cityFrames = core::display::framed::CityFramesDrawn();
     if (cityFrames != g_cityFrames && g.cityBackground()) {
         // The first map frame after the city: its map area still shows the city.
@@ -281,7 +326,7 @@ void DrawLayer(void *p)
     c.r.Set(g.drawBuffer.ptr(), g_layer);
     c.r.Set(&g_deferTop, true);
     g_topPending = false;
-    g.drawMap(c.r);
+    DrawAt(c.r, drawH);
     c.r.Undo();
     if (c.l.mapW == 0 && c.l.mapH == 0) { // the first map: loaded by the drawing
         c.l.mapW = *g.mapW;
@@ -293,6 +338,26 @@ void DrawLayer(void *p)
             g_shown.valid = false;
             c.l.mapW = -1; // composed: no
         }
+        else if (DrawHeight(c.l.ddH, c.l.mapH) > drawH) {
+            // Taller than the area: drawn again, whole (the first drawing stopped at the screen's bottom).
+            drawH = DrawHeight(c.l.ddH, c.l.mapH);
+            if (!LayerBuffer(static_cast<size_t>(c.l.pitch) * drawH)) {
+                c.r.Set(g.drawBuffer.ptr(), c.target); // our layer is gone: the game's own drawing on the screen
+                g.drawMap(c.r);
+                c.r.Undo();
+                g_shown.valid = false;
+                return;
+            }
+            c.r.Set(g.drawBuffer.ptr(), g_layer);
+            c.r.Set(&g_deferTop, true);
+            DrawAt(c.r, drawH);
+            c.r.Undo();
+        }
+    }
+    if (c.l.mapW > 0 && drawH > c.l.ddH && !g_tallLogged) {
+        g_tallLogged = true;
+        Log("map %dx%d taller than the %dx%d map area: drawn whole (%d rows) and shown smaller", c.l.mapW, c.l.mapH,
+            c.l.sidebarX, c.l.ddH - top, drawH);
     }
     if (c.l.mapW < 0) {
         // shown as drawn above
@@ -412,6 +477,12 @@ void WithMapMouse(void (*fn)(void *), void *ctx)
                 Ctx &c = *static_cast<Ctx *>(p);
                 c.r.Set(Game().mouseX.ptr(), c.gx);
                 c.r.Set(Game().mouseY.ptr(), c.gy);
+                // A map taller than the area: the game's height as when it was drawn (its input checks the mouse
+                // against the height: the map's lower rows would not answer otherwise).
+                const int h = DrawHeight(*Game().ddHeight, g_shown.mapH);
+                if (h > *Game().ddHeight) {
+                    c.r.Set(Game().ddHeight.ptr(), h);
+                }
                 c.fn(c.ctx);
                 c.r.Undo();
             },

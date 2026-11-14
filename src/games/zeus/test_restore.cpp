@@ -81,6 +81,12 @@
 //                           scaled fit and 200%; the game's own at 1024x768 and in the editors; the campaign map (the
 //                           blurred map whatever the setting, the top bar tiled, markers and clicks in map
 //                           coordinates, the sidebar's filler); a fault: the game's own drawing, the real mouse, off
+
+//
+// The display scale:
+//   display_scale_sizes               every logical size the common screens give at each scale (the core's ChooseLogicalSize),
+//                           windows and fixed sizes: the sidebar, both viewports, the filler, the information window
+//                           (three settings, four corners), the world map native and fitted with its middle clicked
 //
 // The smoke test's actions (games/zeus/smoke; only in a smoke test, no detour):
 //   smoke_actions       win calls cheat_run(0) (a __cdecl fake) only in the city, not governing on, with the
@@ -95,6 +101,7 @@
 #include "core/config.h"
 #include "core/ddraw/surface_memory.h"
 #include "core/display/framed_screens.h"
+#include "core/display/logical_size.h"
 #include "core/display/map_screen.h"
 #include "core/output/sdl_output.h"
 #include "core/ui/info_window.h"
@@ -233,6 +240,33 @@ bool LogContains(const char *text)
         return false;
     }
     static char buf[1 << 20];
+    size_t n = std::fread(buf, 1, sizeof(buf) - 1, f);
+    std::fclose(f);
+    buf[n] = 0;
+    return std::strstr(buf, text) != nullptr;
+}
+
+// The log's size now, and whether text was logged after that point (the log is shared by the scenarios of a run).
+long LogSize()
+{
+    FILE *f = std::fopen("test_restore.log", "rb");
+    if (!f) {
+        return 0;
+    }
+    std::fseek(f, 0, SEEK_END);
+    const long n = std::ftell(f);
+    std::fclose(f);
+    return n;
+}
+
+bool LogContainsSince(long from, const char *text)
+{
+    FILE *f = std::fopen("test_restore.log", "rb");
+    if (!f) {
+        return false;
+    }
+    static char buf[1 << 20];
+    std::fseek(f, from, SEEK_SET);
     size_t n = std::fread(buf, 1, sizeof(buf) - 1, f);
     std::fclose(f);
     buf[n] = 0;
@@ -790,9 +824,10 @@ void __cdecl FakeViewportInit(int, int, int, int top, int cols, int rows, int ti
 // fakes (ecx, edx unused, then the stack arguments) they pop the same bytes.
 constexpr DWORD fTopBar = 0x59ebe0, fImageGroup = 0x40fcf0, fImageDraw = 0x5acf50, fImageSize = 0x5aceb0,
                 fFillRect = 0x509b20, fMessagePanel = 0x4f2d80;
+constexpr int kMaxDraws = 4096; // image_draw calls recorded (the filler at 3840x2160: about 900)
 struct CityLayoutCalls {
     int topBars = 0, draws = 0, fills = 0, panels = 0, panelClip = 0, sidebars = 0, worldSidebars = 0;
-    int drawX[512] = {}, drawY[512] = {}, drawIds[512] = {}, drawId = 0;
+    int drawX[kMaxDraws] = {}, drawY[kMaxDraws] = {}, drawIds[kMaxDraws] = {}, drawId = 0;
 } g_cityLayout;
 // Each group's entry: +4 is its first image (+ 0x4000 = the id for image_draw).
 BYTE g_groupBar[8] = {0, 0, 0, 0, 0xcf, 0x04, 0, 0};   // 0x6b: 1231, the top bar (838x30)
@@ -831,7 +866,7 @@ void __fastcall FakeImageDraw(void *, int, int id, int x, int y, int, int, int)
     if (Fires("image_draw")) {
         Fault();
     }
-    if (g_cityLayout.draws < 512) {
+    if (g_cityLayout.draws < kMaxDraws) {
         g_cityLayout.drawX[g_cityLayout.draws] = x;
         g_cityLayout.drawY[g_cityLayout.draws] = y;
         g_cityLayout.drawIds[g_cityLayout.draws] = id;
@@ -1655,7 +1690,7 @@ WORD PixelAt(int x, int y)
 int DrawsOf(int id, int x, int y)
 {
     int n = 0;
-    for (int i = 0; i < g_cityLayout.draws && i < 512; ++i) {
+    for (int i = 0; i < g_cityLayout.draws && i < kMaxDraws; ++i) {
         n += g_cityLayout.drawIds[i] == id && g_cityLayout.drawX[i] == x && g_cityLayout.drawY[i] == y;
     }
     return n;
@@ -2285,6 +2320,182 @@ void WorldMap()
     Check(g_wm.mouseX == 100, "fault: the real mouse from then on");
 }
 
+// ---------------------------------------------------------------------------------------------
+// Every logical size the display scale gives: the common screens
+// at each scale through the core's ChooseLogicalSize, sizes a window gives, fixed sizes. At each: the sidebar inside
+// the screen, the city viewport inside the game's view grid and down to the bottom, the sidebar's filler inside the
+// screen with its picture at the bottom, the information window inside the city area, the world map in the middle
+// of its area and its middle clicked as the map's.
+
+struct SizeCase {
+    int w, h;
+    char what[48];
+};
+
+std::vector<SizeCase> DisplayScaleSizes()
+{
+    std::vector<SizeCase> v;
+    auto add = [&](int w, int h, const char *what) {
+        for (const SizeCase &c : v) {
+            if (c.w == w && c.h == h) {
+                return;
+            }
+        }
+        SizeCase c{w, h, {}};
+        std::snprintf(c.what, sizeof(c.what), "%s", what);
+        v.push_back(c);
+    };
+    const int screens[][2] = {{1920, 1080}, {1920, 1200}, {2560, 1440}, {2560, 1600}, {3440, 1440}, {3840, 2160}};
+    const int scales[] = {0, 100, 125, 150, 175, 200, 250};
+    for (const auto &s : screens) {
+        for (int p : scales) {
+            const core::display::LogicalSize l =
+                core::display::ChooseLogicalSize(s[0], s[1], CORE_RESOLUTION_SCALED, 0, 0, p, 1024, 768);
+            char what[48];
+            std::snprintf(what, sizeof(what), "%dx%d at %s%d%%", s[0], s[1], p ? "" : "auto ", l.scale_percent);
+            add(l.w, l.h, what);
+        }
+    }
+    // Windows (the client area divided by the scale, even widths) and fixed sizes.
+    add(1024, 900, "a window at the narrowest");
+    add(1024, 1081, "a window at the narrowest, uneven height");
+    add(2004, 768, "a window at the lowest");
+    add(2064, 1081, "a window, uneven height");
+    add(1366, 768, "fixed 1366x768");
+    add(1280, 800, "fixed 1280x800");
+    return v;
+}
+
+void DisplayScaleSizesScenario()
+{
+    using core::ui::info_window::Mode;
+    namespace ms = core::display::map_screen;
+    const long logFrom = LogSize();
+    SetupInfo();
+    Thunk(0x599da0, reinterpret_cast<void *>(&FakeWorldMap));
+    Thunk(0x58eb20, reinterpret_cast<void *>(&FakeTopPanel));
+    Thunk(0x407360, reinterpret_cast<void *>(&FakeHit));
+    g_topHook = Map<Top_fn>("frame_top_panel");
+    auto drawMap = Map<Tick_fn>("world_map_draw");
+    auto hit = Map<Hit_fn>("world_map_hit");
+    zeus::world_map::LayoutForTest(true);
+    static Tick_fn place = Res<Tick_fn>("info_window_place");
+    const int inset = 0x1e4 + 0x4000;
+    const std::vector<SizeCase> sizes = DisplayScaleSizes();
+    int checked = 0;
+    for (const SizeCase &c : sizes) {
+        const int w = c.w, h = c.h;
+        char what[200];
+        auto check = [&](bool ok, const char *part) {
+            std::snprintf(what, sizeof(what), "%dx%d (%s): %s", w, h, c.what, part);
+            Check(ok, what);
+        };
+        // The city screen at this size.
+        At<unsigned char>(aGameScreen) = 0x01;
+        At<int>(aModeW) = w;
+        At<int>(aModeH) = h;
+        std::vector<WORD> buf(static_cast<size_t>(w) * (h + 64), 0);
+        At<BYTE *>(aDrawBuffer) = reinterpret_cast<BYTE *>(buf.data());
+        At<int>(aPitch) = w * 2;
+        At<int>(aDdWidth) = w;
+        At<int>(aDdHeight2) = h;
+        At<int>(0xf139b0) = h; // the game's clip: the screen
+        At<int>(0xf139b4) = 0;
+        At<int>(0xf139b8) = w;
+        At<int>(0xf139bc) = 0;
+        Res<Tick_fn>("ui_set_sidebar_position")();
+        const int sx = At<int>(aSidebarX);
+        check(sx + 186 <= w && (w <= 1024 ? sx == 838 : w - (sx + 186) < 60 && sx >= 838),
+              "the sidebar inside the screen, less than 60 px right of it");
+        Res<Tick_fn>("city_viewport_narrow")();
+        check(g_res.cols >= 14 && g_res.cols <= 220 && g_res.rows <= 427 && (g_res.cols + 0) * 60 <= sx + 2 &&
+                  At<int>(aClipBottom) >= h && At<int>(aClipBottom) < h + 15,
+              "the viewport left of the sidebar, inside the view grid, down to the bottom (within one half row)");
+        Res<Tick_fn>("city_viewport_set_640")();
+        check(g_res.cols == w / 60 && g_res.cols <= 220 && g_res.rows <= 427 && At<int>(aClipBottom) >= h,
+              "the viewport under the whole width (sidebar closed)");
+        // The sidebar's filler (without the pack: the strip right of the sidebar).
+        g_cityLayout.draws = 0;
+        Res<Tick_fn>("sidebar_draw")();
+        const int pictureY = h > 768 ? h - 168 : 600;
+        check(PixelAt(sx + 50, pictureY) == 600 && PixelAt(sx + 185, h - 1) == 767,
+              "the sidebar's picture at the bottom (its rows 600..767)");
+        bool inside = g_cityLayout.draws < kMaxDraws;
+        int insets = 0;
+        // Fewer than 32 rows between the sidebar's buttons and its picture: the inset panel squeezed (a 32-row panel
+        // from 600 and one ending at the picture, each drawn inside a clip of half the rows; sidebar_filler checks the
+        // clips), so its tiles lie within 600 .. 632 and picture - 32 .. picture.
+        const bool squeezed = pictureY - 600 < 32;
+        for (int i = 0; i < g_cityLayout.draws && i < kMaxDraws; ++i) {
+            const int id = g_cityLayout.drawIds[i], x = g_cityLayout.drawX[i], y = g_cityLayout.drawY[i];
+            bool ok = x < w && y < h && x >= 0 && y >= 0;
+            if (id >= inset && id < inset + 49) {
+                ++insets;
+                ok = ok && x >= sx && x + 16 <= sx + 186 &&
+                     (squeezed ? y >= pictureY - 32 && y + 16 <= 600 + 32 : y >= 600 && y + 16 <= pictureY);
+            }
+            if (!ok && inside) {
+                std::printf("    draw %d of %d: id %d at (%d, %d)\n", i, g_cityLayout.draws, id, x, y);
+            }
+            inside = inside && ok;
+        }
+        check(inside && (h > 768) == (insets > 0), "every filler draw inside the screen, the inset panel above the picture");
+        check(At<int>(0xf139b0) == h && At<int>(0xf139b8) == w && At<int>(0xf139b4) == 0 && At<int>(0xf139bc) == 0,
+              "the game's clip back after the filler");
+        // The information window: each setting, the cursor at the city area's four corners.
+        const int corners[][2] = {{5, 35}, {sx - 5, 35}, {5, h - 5}, {sx - 5, h - 5}};
+        const Mode modes[] = {Mode::Cursor, Mode::Centered, Mode::Original};
+        bool infoInside = true;
+        for (Mode m : modes) {
+            core::ui::info_window::Set(m);
+            for (const auto &p : corners) {
+                At<unsigned char>(aGameScreen) = 0x01; // the last window closed: placed anew
+                zeus::resolution::OnLoop();
+                At<int>(aMouseX) = p[0];
+                At<int>(aMouseY) = p[1];
+                At<int>(aInfoKind) = 1;
+                place();
+                const int x = At<int>(aInfoX), y = At<int>(aInfoY), ww = At<int>(aInfoCols) * 16,
+                          wh = At<int>(aInfoRows) * 16;
+                infoInside = infoInside && x >= 0 && y >= 30 && x + ww <= sx && y + wh <= h;
+            }
+        }
+        check(infoInside, "the information window inside the city area (cursor, centered, original; four corners)");
+        core::ui::info_window::Set(Mode::Cursor);
+        // The world map: native, over the blurred map.
+        ms::SetModeForTest(1, 0);
+        ms::SetBackgroundForTest(false);
+        WorldScreen(w, h);
+        drawMap();
+        const int nx = (sx - 838) / 2, ny = 30 + (h - 30 - 738) / 2;
+        check(At<int>(aSidebarX) == sx && g_wm.drawBuffer != At<BYTE *>(aDrawBuffer) && Wm(nx, ny) == MapPattern(0, 0) &&
+                  Wm(nx + 837, ny + 737) == MapPattern(837, 737),
+              "the world map taken over, in the middle of the map area");
+        At<int>(aMouseXw) = nx + 419;
+        At<int>(aMouseYw) = ny + 369;
+        hit(nullptr, nullptr);
+        check(g_wm.mouseX == 419 && g_wm.mouseY == 369 + 30, "the world map's middle clicked: the map's middle");
+        // Scaled fit: the middle still the map's.
+        ms::SetModeForTest(0, 0);
+        WorldScreen(w, h);
+        drawMap();
+        const double fit = std::min(sx / 838.0, (h - 30.0) / 738); // map_screen's fit without a fret border
+        const double s = fit < 1.0 ? 1.0 : fit;
+        const int tw = static_cast<int>(838 * s + 0.5), th = static_cast<int>(738 * s + 0.5);
+        const int tx = (sx - tw) / 2, ty = 30 + (h - 30 - th) / 2;
+        At<int>(aMouseXw) = tx + static_cast<int>((419 + 0.5) * s);
+        At<int>(aMouseYw) = ty + static_cast<int>((369 + 0.5) * s);
+        hit(nullptr, nullptr);
+        check(g_wm.mouseX >= 418 && g_wm.mouseX <= 420 && g_wm.mouseY >= 398 && g_wm.mouseY <= 400,
+              "scaled (fit): the middle of the screen's map is the map's");
+        ++checked;
+    }
+    char line[96];
+    std::snprintf(line, sizeof(line), "%d sizes checked", checked);
+    Check(checked == static_cast<int>(sizes.size()) && checked >= 30, line);
+    Check(!LogContainsSince(logFrom, "switched off"), "no feature switched off at any size");
+}
+
 const Scenario kScenarios[] = {
     {"pace_ok", &PaceOk},
     {"pace_fault", &PaceFault},
@@ -2318,6 +2529,7 @@ const Scenario kScenarios[] = {
     {"info_window", &InfoWindow},
     {"fixed_window", &FixedWindow},
     {"world_map", &WorldMap},
+    {"display_scale_sizes", &DisplayScaleSizesScenario},
     {"smoke_actions", &SmokeActions},
 };
 

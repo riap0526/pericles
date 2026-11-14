@@ -22,6 +22,10 @@
 // the map, and the calls of its own drawing, in a MapGame, every field required. The game layer hooks its functions
 // and calls Draw, TopBar, WithMapMouse and CampaignDraw from its detours.
 //
+// A map wider than the map area is drawn the game's way. A map only taller than the area (Emperor's 848x746 below 786
+// rows, e.g. 1366x768) is drawn whole into our buffer -- the game's height and its clip's bottom raised to the map's
+// for the drawing and for the input's mouse -- and shown smaller, as large as fits (added for Zeus).
+//
 // Failure: one guard (the game layer's Feature). On an exception the map is drawn the game's own way from then on
 // (top left, the real mouse).
 #pragma once
@@ -44,14 +48,15 @@ struct MapGame {
 
     MapGame(const char *logPrefix, core::diag::Feature *feature, const char *phaseName,
             core::site::Var<BYTE *> drawBuffer, core::site::Var<int> pitch, core::site::Var<int> ddWidth,
-            core::site::Var<int> ddHeight, core::site::Var<char> redraw, core::site::Var<int> sidebarX,
-            core::site::Var<int> mouseX, core::site::Var<int> mouseY, core::site::Var<int> originX,
+            core::site::Var<int> ddHeight, core::site::Var<int> clipBottom, core::site::Var<char> redraw,
+            core::site::Var<int> sidebarX, core::site::Var<int> mouseX, core::site::Var<int> mouseY, core::site::Var<int> originX,
             core::site::Var<int> originY, core::site::Var<int> scrollX, core::site::Var<int> scrollY,
             core::site::Var<int> mapW, core::site::Var<int> mapH, core::site::Var<int> mapNumber, int topBarH,
             int scrollSlack, Allowed_fn takeOver, Allowed_fn cityBackground, DrawMap_fn drawMap, TopBar_fn topBar, Box_fn gameBox,
             Empty_fn emptyPoint)
         : logPrefix(logPrefix), feature(feature), phaseName(phaseName), drawBuffer(drawBuffer), pitch(pitch),
-          ddWidth(ddWidth), ddHeight(ddHeight), redraw(redraw), sidebarX(sidebarX), mouseX(mouseX), mouseY(mouseY),
+          ddWidth(ddWidth), ddHeight(ddHeight), clipBottom(clipBottom), redraw(redraw), sidebarX(sidebarX),
+          mouseX(mouseX), mouseY(mouseY),
           originX(originX), originY(originY), scrollX(scrollX), scrollY(scrollY), mapW(mapW), mapH(mapH),
           mapNumber(mapNumber), topBarH(topBarH), scrollSlack(scrollSlack), takeOver(takeOver), cityBackground(cityBackground),
           drawMap(drawMap), topBar(topBar), gameBox(gameBox), emptyPoint(emptyPoint)
@@ -64,6 +69,8 @@ struct MapGame {
     core::site::Var<BYTE *> drawBuffer; // the game's back buffer (RGB565)
     core::site::Var<int> pitch;         // its bytes per row
     core::site::Var<int> ddWidth, ddHeight;
+    core::site::Var<int> clipBottom;    // the game's drawing clip, its bottom (exclusive): screen_set_mode sets it to
+                                        // the screen's height; raised with ddHeight to draw a map taller than the area
     core::site::Var<char> redraw;       // screen_redraw: set when a setting changed (the campaign map's picture)
     core::site::Var<int> sidebarX;      // the map area ends there
     core::site::Var<int> mouseX, mouseY;

@@ -107,6 +107,7 @@ const Var<BYTE *> kDrawBuffer{0xf9c100}; // draw_buffer (RGB565)
 const Var<int> kPitch{0xf2a698};
 const Var<int> kDdWidth{0xf2a6a0};
 const Var<int> kDdHeight{0xf2a69c};
+const Var<int> kClipBottom{0xf139b0}; // the drawing clip's bottom (exclusive; symbols graphics, resolution.cpp)
 const Var<int> kModeWidth{0xf2a6b4}, kModeHeight{0xf2a6b0};
 const Var<char> kRedraw{0xf2a6ce}; // screen_redraw
 const Var<unsigned char> kGameScreen{0xf2a6dd};
@@ -198,7 +199,7 @@ void EmptyPoint(int, int, int, int *gx, int *gy)
 }
 
 const map_screen::MapGame kGame("zeus: world map", &g_layoutFeature, "world map layer (ours)",
-                                kDrawBuffer, kPitch, kDdWidth, kDdHeight, kRedraw, kSidebarX, kMouseX, kMouseY,
+                                kDrawBuffer, kPitch, kDdWidth, kDdHeight, kClipBottom, kRedraw, kSidebarX, kMouseX, kMouseY,
                                 kOriginX, kOriginY, kScrollX, kScrollY, kMapW, kMapH, kMapNumber, kTopBarH, kScrollSlack,
                                 &TakeOver,
                                 &CityBackground, &DrawMap, &TopPanel, &GameBox, &EmptyPoint);

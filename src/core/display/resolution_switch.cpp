@@ -123,9 +123,12 @@ void ModeSize(ModeCall &c)
             std::strcat(what, ", front-end screen");
         }
         SIZE native = core::display::NativeSize();
-        char limited[48] = "";
+        char limited[80] = "";
         if (l.limited) {
             std::snprintf(limited, sizeof(limited), ", limited to the %dx%d minimum", MinW(), MinH());
+        }
+        if (l.evened) {
+            std::strcat(limited, ", width made even");
         }
         core_log("%s: mode 3 = %dx%d (%s; native %ldx%ld, scale %d%%%s)", Prefix(), l.w, l.h, what, native.cx,
                  native.cy, l.scale_percent, limited);
