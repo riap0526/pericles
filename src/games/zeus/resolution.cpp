@@ -33,14 +33,15 @@
 //   sidebar_draw 0x517b10, sidebar_draw_units 0x525280: below the sidebar (above 768 high) its picture moved to
 //                       the screen's bottom and the game's inset panel between, right of it the marble (layout G,
 //                       (see the filler's section below);
+//   world_map_sidebars 0x597e50: the world map's sidebar filled the same way on its own picture;
 //   info_window_place 0x5715a0, info_fixed_window_draw 0x5b2880, info_fixed_window_foreground 0x5b38c0,
 //   info_window_input 0x5726e0, buttons_draw 0x4316f0: the building information window where [ui] info_window
 //                       says; the four kinds the game keeps at (0, 0x20) moved on screen (see its section below).
 // Front-end screens (menus, adventure screens, scores, loading pictures) are laid out for the game's own 1024x768: from
 // a full-screen picture (jpeg_draw_background, games/zeus/diag) until the next city screen the game runs at 1024x768
 // and the output frames it (the core's OnLoop calls the game's own screen_switch_mode 0x5c4a30, __cdecl mode, as its
-// F7 does). Overlays (menus, messages, the file dialog) keep the screen beneath. The world map runs at the city's
-// resolution (its layout is a later step).
+// F7 does). Overlays (menus, messages, the file dialog) keep the screen beneath. The world map and the campaign map
+// run at the city's resolution (their layout: games/zeus/world_map).
 // Shift+F7 cycles a few settings until the game ends (on a front-end screen it applies on the next city screen). F6
 // and F7 stay the game's (F6: the game's own 800x600; F7: mode 3, i.e. ours).
 // The game's own screenshot (Alt+1 / Alt+2 in the city: game_wndproc -> 0x42c700 -> bmp_screenshot 0x50b030,
@@ -461,8 +462,60 @@ void __cdecl MessagePanel_detour()
 // later): the backdrop's plain marble (entry 1232, x 50..185, y 30..419), mirrored tiles. The marble is read from the
 // player's own DATA\Zeus_Interface.sg3 in memory only (core/assets/sg3); when it cannot be read, the 800x600 strip
 // (entry 1234, 16x600) is drawn whole with image_draw instead.
-// Not on the world map.
-constexpr int kBackdropH = 768, kPictureTop = 600, kPictureH = 768 - 600, kEdgeW = 7;
+// The world map's sidebar (world_map_sidebars 0x597e50, and the campaign map's, games/zeus/world_map) the same
+// way on its own picture (Zeus_Interface entry 1600: a gold beaded edge of 11 columns, its rows 470..529 repeated,
+// which stay where the game drew them), the city's marble right of it.
+constexpr int kBackdropH = 768, kPictureTop = 600, kPictureH = 768 - 600;
+
+// The sidebar's left edge carried down beside the inset panel: its width and the 60 rows repeated (on the screen:
+// the picture's rows moved to the bottom, or the rows above 600 that stay).
+struct Edge {
+    int w;
+    int bandTop;    // the band's first row on the game's 768 sidebar
+    bool bandMoved; // the band is in the picture's rows (600..767): read where they were moved to
+};
+// Both 11 columns wide: the edge and the strip of plain blue right of it, so the inset panel keeps the same distance
+// from the edge on both sidebars (seen in testing: on the city's it touched the red edge; columns 7..10 of rows
+// 640..699 are the plain blue left of the picture's frame).
+constexpr Edge kCityEdge{11, 640, true};   // the city sidebar's red edge (entry 1232)
+constexpr Edge kWorldEdge{11, 470, false}; // the world map sidebar's gold beaded edge (entry 1600)
+
+// The picture's frame is not at the same place on every sidebar (measured on the screenshots of the first and second
+// builds): Zeus's city and world map sidebars: rows 604..761 (158 rows), the same picture; Poseidon's city sidebar:
+// rows 610..755, Poseidon's world map sidebar: rows 614..759 (146 rows each), and the world map's picture 1 px right
+// of the city's (its frame 1 px wider on the right). The frame is placed in the 168 rows at the screen's bottom one row
+// above the middle: (168 - height) / 2 - 1 rows below the inset panel -- 4 for Zeus's (the frame where the game has
+// it, 600 -> the bottom) and 10 for both of Poseidon's (as the game has the city's); and Poseidon's city picture is
+// moved 1 px right (its left frame line then 1 px right of the world map's). Which sidebar it is: the frame's top row,
+// found on the screen as the game drew it: the first dark row of column 93 from row 600 (the frame's dark line, blue
+// <= 13 of 31; the plain blue above it is 16 or more); another row (or none by row 630): as Zeus's.
+constexpr int kFrameColumn = 93, kFrameLast = 630;
+
+struct Picture {
+    int frameTop, frameH, dx;
+};
+constexpr Picture kPictures[] = {{604, 158, 0}, {610, 146, 1}, {614, 146, 0}};
+
+Picture PictureOf(int frameTop)
+{
+    for (const Picture &p : kPictures) {
+        if (p.frameTop == frameTop) {
+            return p;
+        }
+    }
+    return kPictures[0];
+}
+
+int FrameTop(const core::display::Surface16 &s, int x)
+{
+    for (int y = kPictureTop; y <= kFrameLast && y < s.h; ++y) {
+        const WORD p = reinterpret_cast<const WORD *>(s.px + static_cast<size_t>(y) * s.pitch)[x + kFrameColumn];
+        if ((p & 0x1f) <= 13) {
+            return y;
+        }
+    }
+    return kPictures[0].frameTop;
+}
 constexpr int kGroupInset = 0x84, kGroupStrip = 0x62; // the 800x600 strip: sidebar_draw's 800 branch (entry 1234)
 constexpr int kMarbleEntry = 1232, kMarbleX = 50, kMarbleY = 30, kMarbleW = 136, kMarbleH = 390;
 constexpr wchar_t kInterfacePack[] = L"DATA\\Zeus_Interface.sg3"; // next to Zeus.exe
@@ -562,7 +615,7 @@ void Plain(const core::display::Surface16 &s, const RECT &area, core::diag::Rest
     r.Undo();
 }
 
-void DrawFiller(core::diag::Restore &r)
+void DrawFiller(core::diag::Restore &r, const Edge &edge)
 {
     const core::display::Surface16 s = Screen();
     const int w = *kModeWidth, h = *kModeHeight, x = *kSidebarX;
@@ -574,11 +627,24 @@ void DrawFiller(core::diag::Restore &r)
         return;
     }
     const int pictureY = h - kPictureH;
-    core::display::CopyRect(s, RECT{x, kPictureTop, x + kSidebarWidth, kBackdropH}, x, pictureY);
-    // The left edge, from the picture's rows 640..699 now at the bottom.
-    const int band = pictureY + (640 - kPictureTop);
-    core::display::RepeatRows(s, RECT{x, band, x + kEdgeW, band + 60}, kPictureTop, pictureY);
-    const RECT inset{x + kEdgeW, kPictureTop, x + kSidebarWidth, pictureY};
+    const Picture pic = PictureOf(FrameTop(s, x));
+    const int from = pic.frameTop - ((kPictureH - pic.frameH) / 2 - 1); // 600 on Zeus's and Poseidon's city sidebars
+    core::display::CopyRect(s, RECT{x, from, x + kSidebarWidth, kBackdropH}, x, pictureY);
+    if (pic.dx > 0) { // the picture right by dx: columns edge .. 182 (the right bevel stays), the edge's plain blue in
+        const int top = pictureY + (pic.frameTop - from), bottom = top + pic.frameH; // the frame's rows
+        core::display::CopyRect(s, RECT{x + edge.w, top, x + 183 - pic.dx, bottom}, x + edge.w + pic.dx, top);
+        core::display::CopyRect(s, RECT{x + edge.w - pic.dx, top, x + edge.w, bottom}, x + edge.w, top);
+    }
+    // The left edge, from its 60 rows (the city's: the picture's rows 640..699, now at the bottom).
+    const int band = edge.bandMoved ? pictureY + (edge.bandTop - from) : edge.bandTop;
+    core::display::RepeatRows(s, RECT{x, band, x + edge.w, band + 60}, kPictureTop, pictureY);
+    // Below a picture whose frame starts lower (Poseidon's): the edge carried on, the last plain row repeated.
+    const int end = pictureY + (kBackdropH - from);
+    if (end < h) {
+        core::display::RepeatRows(s, RECT{x, band, x + edge.w, band + 60}, end, h);
+        core::display::RepeatRows(s, RECT{x + edge.w, end - 1, x + kSidebarWidth, end}, end, h);
+    }
+    const RECT inset{x + edge.w, kPictureTop, x + kSidebarWidth, pictureY};
     int base = GroupImage(kGroupInset);
     if (base < 0) {
         Plain(s, inset, r);
@@ -599,59 +665,50 @@ void DrawFiller(core::diag::Restore &r)
     }
 }
 
-// The world map's sidebar (world_map_sidebar_draw 0x597e60, no arguments, ret; world_map_sidebars 0x597e50 calls it
-// and then 0x5980c0): it draws down to 768 and nothing right of the sidebar, where the city screen's filler would
-// stay; cleared there (black, as before the filler) until the world map's own layout.
-const Site kWorldSidebar{"world_map_sidebar_draw", 0x597e60, {0xa1, 0x20, 0x31, 0x90, 0x00, 0x83, 0xec, 0x08}};
-Void_fn o_WorldSidebar;
+// The world map's sidebar: world_map_sidebars 0x597e50 (no arguments, ret; `call 0x597e60; jmp 0x5980c0`):
+// world_map_sidebar_draw 0x597e60 draws its picture (entry 1600, or the Poseidon pack's) down to 768, then 0x5980c0
+// the texts and buttons in it (none below row 599: the button table 0x5ef488). Called by the world map (0x14) and the
+// screens over it (0x1a, 0x09, 0x03, ...); the campaign map draws the same picture itself (games/zeus/world_map calls
+// WorldSidebarFiller after it).
+const Site kWorldSidebars{"world_map_sidebars", 0x597e50, {0xe8, 0x0b, 0x00, 0x00, 0x00, 0xe9, 0x66, 0x02}};
+Void_fn o_WorldSidebars;
 
-void ClearWorldMapFiller()
+bool Wanted(int w, int h)
 {
-    const int w = *kModeWidth, h = *kModeHeight, x = *kSidebarX;
-    if (x <= 0 || x + kSidebarWidth > w) {
-        return;
-    }
-    using Fill_fn = void(__cdecl *)(int, int, int, int, int);
-    if (w > x + kSidebarWidth) {
-        Function<Fill_fn>(kFillRect)(x + kSidebarWidth, 0, w - x - kSidebarWidth, h, 0);
-    }
-    if (h > kBackdropH) {
-        Function<Fill_fn>(kFillRect)(x, kBackdropH, kSidebarWidth, h - kBackdropH, 0);
+    return !(StandardSize(w, h) || w < 1024) && (w > kMinW || h > kBackdropH) && core::diag::Enabled(g_filler);
+}
+
+void Filler(const Edge &edge)
+{
+    struct Ctx {
+        const Edge *edge;
+        core::diag::Restore r;
+    } c{&edge, {}};
+    if (!core::diag::Guarded(
+            g_filler, [](void *p) { DrawFiller(static_cast<Ctx *>(p)->r, *static_cast<Ctx *>(p)->edge); }, &c,
+            &c.r)) {
+        core_log("zeus: resolution: the space below and right of the sidebar is no longer filled after an error");
     }
 }
 
-void __cdecl WorldSidebar_detour()
+void __cdecl WorldSidebars_detour()
 {
-    Original(o_WorldSidebar, kWorldSidebar)();
-    const int w = *kModeWidth, h = *kModeHeight;
-    if (StandardSize(w, h) || w < 1024 || !core::diag::Enabled(g_filler)) {
-        return;
-    }
-    if (!core::diag::Guarded(g_filler, [](void *) { ClearWorldMapFiller(); }, nullptr)) {
-        core_log("zeus: resolution: the space below and right of the sidebar is no longer filled after an error");
+    Original(o_WorldSidebars, kWorldSidebars)();
+    if (Wanted(*kModeWidth, *kModeHeight)) {
+        Filler(kWorldEdge);
     }
 }
 
 bool FillerWanted()
 {
-    const int w = *kModeWidth, h = *kModeHeight;
-    return !(StandardSize(w, h) || w < 1024) && (w > kMinW || h > kBackdropH) && core::diag::Enabled(g_filler) &&
-           *kGameScreen != kScreenWorldMap;
-}
-
-void Filler()
-{
-    core::diag::Restore r;
-    if (!core::diag::Guarded(g_filler, [](void *p) { DrawFiller(*static_cast<core::diag::Restore *>(p)); }, &r, &r)) {
-        core_log("zeus: resolution: the space below and right of the sidebar is no longer filled after an error");
-    }
+    return Wanted(*kModeWidth, *kModeHeight) && *kGameScreen != kScreenWorldMap;
 }
 
 void __cdecl SidebarDraw_detour()
 {
     Original(o_SidebarDraw, kSidebarDraw)();
     if (FillerWanted()) {
-        Filler();
+        Filler(kCityEdge);
     }
 }
 
@@ -659,7 +716,7 @@ void __cdecl SidebarUnits_detour(int screen)
 {
     Original(o_SidebarUnits, kSidebarUnits)(screen);
     if (FillerWanted()) {
-        Filler();
+        Filler(kCityEdge);
     }
 }
 
@@ -912,9 +969,8 @@ void AttachCityLayout()
     const bool side = images && Matches(kSidebarDraw) && Install(kSidebarDraw, &SidebarDraw_detour, o_SidebarDraw);
     const bool units =
         images && Matches(kSidebarUnits) && Install(kSidebarUnits, &SidebarUnits_detour, o_SidebarUnits);
-    // fill_rect is not compared again here (it is hooked above, its bytes are ours now): the world map's clearing
-    // calls it only when that compare and hook succeeded.
-    const bool world = fill && Matches(kWorldSidebar) && Install(kWorldSidebar, &WorldSidebar_detour, o_WorldSidebar);
+    const bool world =
+        images && Matches(kWorldSidebars) && Install(kWorldSidebars, &WorldSidebars_detour, o_WorldSidebars);
     if (!side || !units || !world) {
         core::diag::Disable(g_filler, "its sites do not match or a hook could not be installed");
     }
@@ -952,6 +1008,53 @@ void RegisterSettings()
         Type::Choice, "cursor", Effect::Live, true, true, 0, 0, 0, nullptr, iw::kChoices, iw::kChoiceLabels,
         iw::kChoiceCount});
     iw::Watch(i, "zeus: resolution: "); // the choices and the mode are the core's (shared with Yongle)
+}
+
+// The campaign map draws its sidebar only while its adventure record is there (0x42b480(..., 1) != 0, 0x421c70):
+// the filler moves the picture's rows only after a frame that drew them, never twice. A pixel of the picture's rows
+// (x + 93, 700) is set to a value of ours before the drawing; still ours afterwards: not drawn (put back as it was).
+constexpr WORD kMark = 0xF81F;
+constexpr int kMarkX = 93, kMarkY = 700;
+
+SidebarMark MarkWorldSidebar()
+{
+    SidebarMark m{false, 0};
+    const core::display::Surface16 s = Screen();
+    const int x = *kSidebarX + kMarkX, h = *kModeHeight;
+    if (!Wanted(*kModeWidth, h) || h <= kBackdropH || !s.px || x < 0 || x >= s.w || kMarkY >= s.h) {
+        return m;
+    }
+    WORD *p = reinterpret_cast<WORD *>(s.px + static_cast<size_t>(kMarkY) * s.pitch) + x;
+    m.set = true;
+    m.saved = *p;
+    *p = kMark;
+    return m;
+}
+
+void WorldSidebarFiller(const SidebarMark &m)
+{
+    if (!Wanted(*kModeWidth, *kModeHeight)) {
+        return;
+    }
+    if (m.set) {
+        const core::display::Surface16 s = Screen();
+        const int x = *kSidebarX + kMarkX;
+        WORD *p = x >= 0 && x < s.w && kMarkY < s.h && s.px
+                      ? reinterpret_cast<WORD *>(s.px + static_cast<size_t>(kMarkY) * s.pitch) + x
+                      : nullptr;
+        if (p && *p == kMark) { // the sidebar was not drawn this frame: as it was
+            *p = m.saved;
+            return;
+        }
+    }
+    Filler(kWorldEdge);
+}
+
+void WideTopBar()
+{
+    if (*kModeWidth > kMinW && core::diag::Enabled(g_bars)) { // off: its sites did not match (Attach) or after an error
+        TopBarDraw_detour(0, *kModeWidth); // tiled from the sidebar to the left edge (or nothing after an error)
+    }
 }
 
 void OnBackground()
@@ -996,7 +1099,7 @@ const Detour *Detours(int *count)
         {&kFixedFore, reinterpret_cast<void *>(&FixedFore_detour)},
         {&kInfoInput, reinterpret_cast<void *>(&InfoInput_detour)},
         {&kButtonsDraw, reinterpret_cast<void *>(&ButtonsDraw_detour)},
-        {&kWorldSidebar, reinterpret_cast<void *>(&WorldSidebar_detour)},
+        {&kWorldSidebars, reinterpret_cast<void *>(&WorldSidebars_detour)},
     };
     *count = static_cast<int>(sizeof(kDetours) / sizeof(kDetours[0]));
     return kDetours;

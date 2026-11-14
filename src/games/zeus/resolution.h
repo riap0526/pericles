@@ -28,6 +28,19 @@ void OnLoop();
 // the city screens starts the 1024x768 frame.
 void OnBackground();
 
+// For games/zeus/world_map: after the campaign map's sidebar (the world map's own picture, drawn by the campaign
+// map itself), the filler below and right of it as on the world map; wider than 1024, the top bar tiled from the
+// sidebar to the left edge (the campaign map's background draws the bar only at 800 and 1024 wide). Each under its
+// own guard (sidebar filler, top bar). MarkWorldSidebar before the campaign map's drawing: the filler runs only when
+// the drawing drew the sidebar (it does not when the adventure's record is missing).
+struct SidebarMark {
+    bool set;
+    WORD saved;
+};
+SidebarMark MarkWorldSidebar();
+void WorldSidebarFiller(const SidebarMark &mark);
+void WideTopBar();
+
 // The key filter's part (games/zeus/zeus.cpp): Shift+F7 cycles the resolution until the game ends. True when the key
 // is ours (the game does not see it).
 bool KeyFilter(UINT message, WPARAM key, LPARAM l);

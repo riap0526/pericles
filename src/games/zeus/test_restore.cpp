@@ -64,7 +64,8 @@
 //                           strip not blanked (only city_bottom_and_sidebar's call); a fault: clip back, off
 //   sidebar_filler              the sidebar's picture moved to the bottom, its left edge carried on, the inset panel's
 //                           tiles edge to edge; both sidebars; not on the world map; 768 and 790 high; without the
-//                           pack the strip inside a narrowed clip; a fault: the clip back, off
+//                           pack the strip inside a narrowed clip; the world map's sidebar on its own picture;
+//                           a fault: the clip back, off
 //   pace_behind         the pace's cap when frames come slowly (Emperor's falling_behind): at most 2 ticks per
 //                           frame, logged when it starts and ends
 //   info_window                [ui] info_window: original (the game's 768 rule at any height, moved with the city
@@ -73,6 +74,13 @@
 //   fixed_window        the granary's window drawn into a copy and shown beside the cursor, the input's mouse
 //                           in the game's place, its buttons shifted (by return address); a fault: draw_buffer and
 //                           the mouse back, off, drawn where the game has it
+//
+// The world map's layout (games/zeus/world_map with the core's core/display/map_screen):
+//   world_map           the first map (not loaded yet) into our layer with the game's 768, native in the middle,
+//                           background city and map, the mouse in map coordinates (hover, beside the map, sidebar),
+//                           scaled fit and 200%; the game's own at 1024x768 and in the editors; the campaign map (the
+//                           blurred map whatever the setting, the top bar tiled, markers and clicks in map
+//                           coordinates, the sidebar's filler); a fault: the game's own drawing, the real mouse, off
 //
 // The smoke test's actions (games/zeus/smoke; only in a smoke test, no detour):
 //   smoke_actions       win calls cheat_run(0) (a __cdecl fake) only in the city, not governing on, with the
@@ -87,6 +95,7 @@
 #include "core/config.h"
 #include "core/ddraw/surface_memory.h"
 #include "core/display/framed_screens.h"
+#include "core/display/map_screen.h"
 #include "core/output/sdl_output.h"
 #include "core/ui/info_window.h"
 #include "games/zeus/anim_clock.h"
@@ -831,10 +840,13 @@ void __fastcall FakeImageDraw(void *, int, int id, int x, int y, int, int, int)
     ++g_cityLayout.draws;
 }
 
-// The game's sidebar (both kinds): its backdrop's rows numbered (pixel = row) at sidebar_x, into draw_buffer.
-void PaintSidebar()
+// A sidebar's backdrop: rows numbered (pixel = row) at sidebar_x, into draw_buffer; in column 93 the picture's frame
+// starts at g_frameRow (a dark pixel, as the filler looks for it: Zeus's 604, Poseidon's 610 and 614) and the rows
+// from 600 to it are bright.
+int g_frameRow = 604;
+
+void PaintBackdrop()
 {
-    ++g_cityLayout.sidebars;
     WORD *buf = reinterpret_cast<WORD *>(At<BYTE *>(0xf9c100));
     const int pitch = At<int>(0xf2a698) / 2, x0 = At<int>(0x10dff34);
     for (int y = 0; y < 768; ++y) {
@@ -842,6 +854,17 @@ void PaintSidebar()
             buf[y * pitch + x] = static_cast<WORD>(y);
         }
     }
+    for (int y = 600; y < g_frameRow; ++y) {
+        buf[y * pitch + x0 + 93] = 0x001f;
+    }
+    buf[g_frameRow * pitch + x0 + 93] = 0x0000;
+}
+
+// The game's sidebar (both kinds).
+void PaintSidebar()
+{
+    ++g_cityLayout.sidebars;
+    PaintBackdrop();
 }
 
 void __cdecl FakeSidebarDraw()
@@ -854,9 +877,11 @@ void __cdecl FakeSidebarUnits(int)
     PaintSidebar();
 }
 
-void __cdecl FakeWorldSidebar()
+// world_map_sidebars: the world map's sidebar picture (rows numbered as above) down to 768.
+void __cdecl FakeWorldSidebars()
 {
     ++g_cityLayout.worldSidebars;
+    PaintBackdrop();
 }
 
 void __cdecl FakeFillRect(int, int, int, int, int)
@@ -923,7 +948,7 @@ void SetupResolution()
     Thunk(fMessagePanel, reinterpret_cast<void *>(&FakeMessagePanel));
     Thunk(0x517b10, reinterpret_cast<void *>(&FakeSidebarDraw));
     Thunk(0x525280, reinterpret_cast<void *>(&FakeSidebarUnits));
-    Thunk(0x597e60, reinterpret_cast<void *>(&FakeWorldSidebar));
+    Thunk(0x597e50, reinterpret_cast<void *>(&FakeWorldSidebars));
     At<int>(aScreenMode) = 3;
     FakeModeSize(3);
     At<unsigned char>(aGameScreen) = 0x00; // the main menu
@@ -1651,30 +1676,45 @@ void SidebarFiller()
     const int x = 1678, pictureY = 1080 - 168;
     Check(g_cityLayout.sidebars == 1 && PixelAt(x + 50, pictureY) == 600 && PixelAt(x + 185, 1079) == 767,
           "1920x1080: the backdrop's rows 600..767 (frame, picture) moved to the bottom (912..1079)");
-    Check(PixelAt(x, 600) == 640 && PixelAt(x + 6, 659) == 699 && PixelAt(x + 3, 660) == 640 &&
-              PixelAt(x + 6, pictureY - 1) == 640 + (pictureY - 1 - 600) % 60,
-          "the left edge (7 columns) carried on from the picture's rows 640..699 down to it");
+    Check(PixelAt(x, 600) == 640 && PixelAt(x + 10, 659) == 699 && PixelAt(x + 3, 660) == 640 &&
+              PixelAt(x + 10, pictureY - 1) == 640 + (pictureY - 1 - 600) % 60,
+          "the left edge (11 columns: the edge and its plain blue) carried on from the picture's rows 640..699");
     const int inset = 0x1e4 + 0x4000;
-    Check(DrawsOf(inset + 0, x + 7, 600) == 1 && DrawsOf(inset + 6, x + 186 - 16, 600) == 1 &&
-              DrawsOf(inset + 42, x + 7, pictureY - 16) == 1 && DrawsOf(inset + 48, x + 186 - 16, pictureY - 16) == 1,
-          "the inset panel edge to edge: its four corners at (1685, 600), (1848, 600), (1685, 896), (1848, 896)");
-    Check(DrawsOf(inset + 8, x + 7 + 16, 616) == 1 && DrawsOf(inset + 13, x + 186 - 16, 616) == 1,
+    Check(DrawsOf(inset + 0, x + 11, 600) == 1 && DrawsOf(inset + 6, x + 186 - 16, 600) == 1 &&
+              DrawsOf(inset + 42, x + 11, pictureY - 16) == 1 && DrawsOf(inset + 48, x + 186 - 16, pictureY - 16) == 1,
+          "the inset panel edge to edge: its four corners at (1689, 600), (1848, 600), (1689, 896), (1848, 896)");
+    Check(DrawsOf(inset + 8, x + 11 + 16, 616) == 1 && DrawsOf(inset + 13, x + 186 - 16, 616) == 1,
           "an inner tile and a right edge tile where the game's inner_panel_draw would put them");
     const int strip = 0x4d2 + 0x4000;
     Check(DrawsOf(strip, 1864, 0) == 1 && DrawsOf(strip, 1912, 600) == 1,
           "without the pack: the 800x600 strip right of the sidebar (1864 .. 1920)");
     g_cityLayout.draws = 0;
     Res<Units_fn>("sidebar_draw_units")(0x48);
-    Check(g_cityLayout.sidebars == 2 && DrawsOf(inset + 0, x + 7, 600) == 1, "the army's sidebar: the same filler");
+    Check(g_cityLayout.sidebars == 2 && DrawsOf(inset + 0, x + 11, 600) == 1, "the army's sidebar: the same filler");
     g_cityLayout.draws = 0;
     At<unsigned char>(aGameScreen) = 0x14; // the world map
     Res<Tick_fn>("sidebar_draw")();
     Check(g_cityLayout.draws == 0, "the world map: not filled (games/zeus/world_map lays it out)");
+    g_frameRow = 614; // Poseidon's world map sidebar: the frame lower
+    Res<Tick_fn>("world_map_sidebars")();
+    Check(PixelAt(x + 50, pictureY) == 604 && PixelAt(x + 93, pictureY + 10) == 0 && PixelAt(x + 50, 1075) == 767 &&
+              PixelAt(x + 50, 1079) == 767 && PixelAt(x + 2, 1077) == 471,
+          "Poseidon's world map sidebar (frame at 614, 146 rows): rows from 604 moved, the frame 10 rows below the "
+          "panel (one above the middle); the last row and the edge repeated below");
+    g_frameRow = 610; // Poseidon's city sidebar: the same place, its picture 1 px right
+    Res<Tick_fn>("world_map_sidebars")();
+    Check(PixelAt(x + 50, pictureY) == 600 && PixelAt(x + 94, pictureY + 10) == 0 &&
+              PixelAt(x + 93, pictureY + 10) == 610 && PixelAt(x + 11, pictureY + 10) == 610 &&
+              PixelAt(x + 50, 1079) == 767,
+          "Poseidon's city sidebar (frame at 610): rows from 600, the frame 10 rows below the panel, the picture 1 px "
+          "right");
+    g_frameRow = 604;
+    g_cityLayout.draws = 0;
     At<unsigned char>(aGameScreen) = 0x01;
     At<int>(aModeH) = 768; // 1920x768: the picture stays, only the right of the sidebar
     At<int>(aDdHeight2) = 768;
     Res<Tick_fn>("sidebar_draw")();
-    Check(PixelAt(x + 50, 600) == 600 && DrawsOf(inset + 0, x + 7, 600) == 0 && DrawsOf(strip, 1864, 0) == 1,
+    Check(PixelAt(x + 50, 600) == 600 && DrawsOf(inset + 0, x + 11, 600) == 0 && DrawsOf(strip, 1864, 0) == 1,
           "768 high: the picture where the game drew it, no inset panel; the strip on the right");
     At<int>(aModeH) = 790; // 22 rows below 768: no room for the panel's two edges, plain beside the edge
     At<int>(aDdHeight2) = 790;
@@ -1682,19 +1722,25 @@ void SidebarFiller()
     At<int>(0xf139b8) = 1920;
     g_cityLayout.draws = 0;
     Res<Tick_fn>("sidebar_draw")();
-    Check(PixelAt(x + 50, 790 - 168) == 600 && DrawsOf(inset + 0, x + 7, 600) == 1 &&
-              DrawsOf(inset + 48, x + 186 - 16, 622 - 16) == 1 && DrawsOf(strip, x + 7, 600) == 0,
+    Check(PixelAt(x + 50, 790 - 168) == 600 && DrawsOf(inset + 0, x + 11, 600) == 1 &&
+              DrawsOf(inset + 48, x + 186 - 16, 622 - 16) == 1 && DrawsOf(strip, x + 11, 600) == 0,
           "790 high: the picture at the bottom, the inset panel squeezed into the 22 rows (its top and bottom edges)");
     Check(At<int>(0xf139b0) == 790 && At<int>(0xf139b8) == 1920 && At<int>(0xf139b4) == 0 && At<int>(0xf139bc) == 0,
           "the strip and the squeezed panel drawn inside narrowed clips, the game's clip back afterwards");
-    At<unsigned char>(aGameScreen) = 0x14; // the world map's sidebar: the city's filler cleared below and right of it
-    const int fills = g_cityLayout.fills;
-    Res<Tick_fn>("world_map_sidebar_draw")();
-    Check(g_cityLayout.fills == fills + 2 && g_cityLayout.worldSidebars == 1,
-          "the world map's sidebar: the game's, then right of it and below 768 cleared (2 fill_rect)");
-    At<unsigned char>(aGameScreen) = 0x01;
+    At<unsigned char>(aGameScreen) = 0x14; // the world map's sidebar filled the same way on its own picture
     At<int>(aModeH) = 1080;
     At<int>(aDdHeight2) = 1080;
+    g_cityLayout.draws = 0;
+    Res<Tick_fn>("world_map_sidebars")();
+    Check(g_cityLayout.worldSidebars == 3 && PixelAt(x + 50, pictureY) == 600 && PixelAt(x + 185, 1079) == 767,
+          "the world map's sidebar: its rows 600..767 moved to the bottom");
+    Check(PixelAt(x, 600) == 470 && PixelAt(x + 10, 659) == 529 && PixelAt(x + 10, 660) == 470 &&
+              PixelAt(x + 50, 500) == 500,
+          "... its gold edge (11 columns) carried on from its rows 470..529, which stay where the game drew them");
+    Check(DrawsOf(inset + 0, x + 11, 600) == 1 && DrawsOf(inset + 48, x + 186 - 16, pictureY - 16) == 1 &&
+              DrawsOf(strip, 1864, 0) == 1,
+          "... the inset panel right of the edge, the city's marble (here the strip) right of the sidebar");
+    At<unsigned char>(aGameScreen) = 0x01;
     g_cityLayout.draws = 0;
     g_fault = "image_draw";
     Res<Tick_fn>("sidebar_draw")();
@@ -1969,6 +2015,276 @@ void FixedWindow()
           "afterwards drawn where the game has it");
 }
 
+// ---------------------------------------------------------------------------------------------
+// The world map's layout (games/zeus/world_map with the core's core/display/map_screen), without the player's
+// interface pack (no fret border: the map alone in the middle)
+
+constexpr DWORD aOriginX = 0x5fb7b4, aOriginY = 0x5fb7b8, aScrollX = 0x8f9838, aScrollY = 0x8f9834, aMapW = 0x5fb7ac,
+                aMapH = 0x5fb7b0, aMapNumber = 0x90311c, aMouseXw = 0xf2a738, aMouseYw = 0xf2a734,
+                aEditorMode = 0x665e2c;
+constexpr WORD kSentinel16 = 0xdead;
+
+WORD MapPattern(int x, int y) // the map's pixel (x, y): never the sentinel, never 0
+{
+    return static_cast<WORD>(0x4000 + ((x * 7 + y * 13) & 0x3fff));
+}
+
+struct MapCalls {
+    int draws = 0, tops = 0, hits = 0, campaign = 0, clicks = 0;
+    BYTE *drawBuffer = nullptr, *topBuffer = nullptr;
+    int drawHeight = 0, mouseX = 0, mouseY = 0;
+    bool noSidebar = false; // the campaign map's drawing draws nothing (its adventure record missing)
+} g_wm;
+using Top_fn = int(__cdecl *)(int);
+using Hit_fn = int(__cdecl *)(void *, void *);
+Top_fn g_topHook = nullptr; // the detour world_map_draw calls (frame_top_panel's)
+
+// world_map_draw: loads the map (838 x 738), the origin (0, 30), scroll 0; the picture into draw_buffer at (0, 30),
+// as high as dd_height allows; frame_top_panel(1).
+void __cdecl FakeWorldMap()
+{
+    ++g_wm.draws;
+    g_wm.drawBuffer = At<BYTE *>(aDrawBuffer);
+    g_wm.drawHeight = At<int>(aDdHeight2);
+    At<int>(aMapW) = 838;
+    At<int>(aMapH) = 738;
+    At<int>(aOriginX) = 0;
+    At<int>(aOriginY) = 30;
+    if (Fires("world_map_draw")) {
+        Fault();
+    }
+    WORD *buf = reinterpret_cast<WORD *>(g_wm.drawBuffer);
+    const int pitch = At<int>(aPitch) / 2, rows = g_wm.drawHeight - 30 < 738 ? g_wm.drawHeight - 30 : 738;
+    for (int y = 0; y < rows; ++y) {
+        for (int x = 0; x < 838; ++x) {
+            buf[(y + 30) * pitch + x] = MapPattern(x, y);
+        }
+    }
+    At<int>(aScrollX) = -1; // as world_map_draw leaves it for a map that fills its box (0x599ec1)
+    g_topHook(1);
+}
+
+int __cdecl FakeTopPanel(int)
+{
+    ++g_wm.tops;
+    g_wm.topBuffer = At<BYTE *>(aDrawBuffer);
+    return 0;
+}
+
+int __cdecl FakeHit(void *, void *)
+{
+    ++g_wm.hits;
+    g_wm.mouseX = At<int>(aMouseXw);
+    g_wm.mouseY = At<int>(aMouseYw);
+    return 7;
+}
+
+// The campaign map's frame: its sidebar (rows numbered, a pixel 0x0002 at sidebar_x + 5, 5) and a marker at the
+// map's (100, 100).
+void __cdecl FakeCampaignDraw()
+{
+    ++g_wm.campaign;
+    g_wm.mouseX = At<int>(aMouseXw);
+    g_wm.mouseY = At<int>(aMouseYw);
+    if (g_wm.noSidebar) {
+        return;
+    }
+    WORD *buf = reinterpret_cast<WORD *>(At<BYTE *>(aDrawBuffer));
+    const int pitch = At<int>(aPitch) / 2, x0 = At<int>(aSidebarX);
+    PaintBackdrop();
+    buf[(At<int>(aOriginY) + 100) * pitch + At<int>(aOriginX) + 100] = 0x0001;
+    buf[5 * pitch + x0 + 5] = 0x0002;
+}
+
+void __cdecl FakeCampaignClick()
+{
+    ++g_wm.clicks;
+    g_wm.mouseX = At<int>(aMouseXw);
+    g_wm.mouseY = At<int>(aMouseYw);
+}
+
+std::vector<WORD> g_wmScreen;
+
+template <typename F> F Map(const char *name)
+{
+    int n;
+    const zeus::Detour *d = zeus::world_map::Detours(&n);
+    return Detour<F>(d, n, name);
+}
+
+void __cdecl FakeCampaignBack()
+{
+    Map<Tick_fn>("world_map_draw")();
+}
+
+void WorldScreen(int w, int h)
+{
+    g_wmScreen.assign(static_cast<size_t>(w) * (h + 64), kSentinel16);
+    At<BYTE *>(aDrawBuffer) = reinterpret_cast<BYTE *>(g_wmScreen.data());
+    At<int>(aPitch) = w * 2;
+    At<int>(aDdWidth) = w;
+    At<int>(aDdHeight2) = h;
+    At<int>(aModeW) = w;
+    At<int>(aModeH) = h;
+    At<int>(aSidebarX) = 60 * ((w - 186 + 2) / 60) - 2;
+    At<int>(aScrollX) = 0;
+    At<int>(aScrollY) = 0;
+    At<int>(aMapNumber) = 1;
+    At<int>(aEditorMode) = 0;
+    At<unsigned char>(aGameScreen) = 0x14;
+    At<int>(0xf139b0) = h; // the game's clip: the screen
+    At<int>(0xf139b8) = w;
+    g_wm = MapCalls{};
+}
+
+WORD Wm(int x, int y)
+{
+    return g_wmScreen[static_cast<size_t>(y) * At<int>(aDdWidth) + x];
+}
+
+void WorldMap()
+{
+    namespace ms = core::display::map_screen;
+    SetupResolution();
+    ToCity();
+    Thunk(0x599da0, reinterpret_cast<void *>(&FakeWorldMap));
+    Thunk(0x58eb20, reinterpret_cast<void *>(&FakeTopPanel));
+    Thunk(0x407360, reinterpret_cast<void *>(&FakeHit));
+    Thunk(0x421c70, reinterpret_cast<void *>(&FakeCampaignDraw));
+    Thunk(0x421af0, reinterpret_cast<void *>(&FakeCampaignClick));
+    Thunk(0x422d40, reinterpret_cast<void *>(&FakeCampaignBack));
+    g_topHook = Map<Top_fn>("frame_top_panel");
+    auto draw = Map<Tick_fn>("world_map_draw");
+    auto hit = Map<Hit_fn>("world_map_hit");
+    zeus::world_map::LayoutForTest(true);
+
+    // 2560x1440, sidebar at 2338: the map area is 2338 x 1410 below the top bar. The first frame after the city with
+    // background = city: the city left in draw_buffer stays around the map; native: the map in the middle.
+    WorldScreen(2560, 1440);
+    for (WORD &p : g_wmScreen) {
+        p = 0x7777; // the city
+    }
+    ms::SetModeForTest(1, 0);
+    ms::SetBackgroundForTest(true);
+    At<int>(aMapW) = 0; // no map loaded yet: the drawing loads it
+    At<int>(aMapH) = 0;
+    draw();
+    const int nx = (2338 - 838) / 2, ny = 30 + (1410 - 738) / 2; // 750, 366
+    Check(g_wm.draws == 1 && g_wm.drawBuffer != At<BYTE *>(aDrawBuffer) && g_wm.drawHeight == 768,
+          "the first map: drawn into our layer with the game's own height 768");
+    Check(At<int>(aDdHeight2) == 1440 && At<BYTE *>(aDrawBuffer) == reinterpret_cast<BYTE *>(g_wmScreen.data()),
+          "dd_height and draw_buffer back afterwards");
+    Check(Wm(nx, ny) == MapPattern(0, 0) && Wm(nx + 837, ny + 737) == MapPattern(837, 737) &&
+              Wm(nx + 300, ny + 200) == MapPattern(300, 200),
+          "native: the map pixel for pixel in the middle of the map area (750, 366)");
+    Check(Wm(20, 700) == 0x7777 && Wm(2337, 1439) == 0x7777, "background city: the city around the map");
+    Check(Wm(2400, 700) == 0x7777 && Wm(100, 10) == 0x7777, "the sidebar and the top bar are not touched");
+    Check(g_wm.tops == 1 && g_wm.topBuffer == At<BYTE *>(aDrawBuffer),
+          "frame_top_panel: once, after the map, on the screen (not into the layer)");
+    At<int>(aMouseXw) = nx + 300;
+    At<int>(aMouseYw) = ny + 200;
+    Check(hit(nullptr, nullptr) == 7 && g_wm.mouseX == 300 && g_wm.mouseY == 230,
+          "world_map_hit: the mouse in the game's map coordinates, its result passed on");
+    Check(At<int>(aMouseXw) == nx + 300 && At<int>(aMouseYw) == ny + 200, "and the real position afterwards");
+    At<int>(aMouseXw) = 100;
+    At<int>(aMouseYw) = 700;
+    hit(nullptr, nullptr);
+    Check(g_wm.mouseX == -10000 && g_wm.mouseY == -10000, "mouse beside the map: a point where nothing is");
+    At<int>(aMouseXw) = 2400;
+    At<int>(aMouseYw) = 100;
+    hit(nullptr, nullptr);
+    Check(g_wm.mouseX == 2400 && g_wm.mouseY == 100, "mouse on the sidebar: the real position");
+
+    // Background map: the same map blurred around it.
+    WorldScreen(2560, 1440);
+    ms::SetBackgroundForTest(false);
+    draw();
+    Check(Wm(20, 700) != kSentinel16 && Wm(20, 700) != 0x7777 && Wm(nx + 300, ny + 200) == MapPattern(300, 200),
+          "background map: the blurred map around it");
+    // Scaled, fit at 2560x1440 (1.91): the mouse follows the scale.
+    ms::SetModeForTest(0, 0);
+    WorldScreen(2560, 1440);
+    draw();
+    const double s = 1410.0 / 738;
+    const int tw = static_cast<int>(838 * s + 0.5), tx = (2338 - tw) / 2, ty = 30;
+    At<int>(aMouseXw) = tx + static_cast<int>((419 + 0.5) * s);
+    At<int>(aMouseYw) = ty + static_cast<int>((369 + 0.5) * s);
+    hit(nullptr, nullptr);
+    Check(g_wm.mouseX == 419 && g_wm.mouseY == 369 + 30, "scaled (fit): the middle of the screen's map is the map's");
+    // 200% at 3840x2160 (fit 288%): each map pixel a 2 x 2 block.
+    ms::SetModeForTest(0, 200);
+    WorldScreen(3840, 2160); // sidebar 3598: area 3598 x 2130
+    draw();
+    const int ix = (3598 - 1676) / 2, iy = 30 + (2130 - 1476) / 2;
+    Check(Wm(ix + 600, iy + 400) == MapPattern(300, 200) && Wm(ix + 601, iy + 401) == MapPattern(300, 200),
+          "scale 200% at 3840x2160: each map pixel a 2 x 2 block");
+
+    // The game's own sizes and the editor's map: the game's own drawing.
+    ms::SetModeForTest(1, 0);
+    WorldScreen(1024, 768);
+    draw();
+    Check(g_wm.drawBuffer == At<BYTE *>(aDrawBuffer) && Wm(5, 35) == MapPattern(5, 5) && g_wm.drawHeight == 768,
+          "1024x768: the game's own drawing, straight to the screen");
+    WorldScreen(2560, 1440);
+    At<int>(aEditorMode) = 1;
+    draw();
+    Check(g_wm.drawBuffer == At<BYTE *>(aDrawBuffer) && g_wm.drawHeight == 768 && At<int>(aDdHeight2) == 1440,
+          "the editors: the game's own drawing, still with the game's own height");
+    At<int>(aEditorMode) = 0;
+    At<int>(aMouseXw) = 100;
+    At<int>(aMouseYw) = 700;
+    hit(nullptr, nullptr);
+    Check(g_wm.mouseX == 100, "... and the real mouse");
+
+    // The campaign map (0x34): the background on a redraw (always the blurred map), the top bar tiled; each frame the
+    // markers into the layer and shown on the map, the sidebar's strip on the screen, then the filler below it.
+    WorldScreen(2560, 1440);
+    for (WORD &p : g_wmScreen) {
+        p = 0x7777; // the victory screen left behind
+    }
+    ms::SetBackgroundForTest(true);
+    At<unsigned char>(aGameScreen) = 0x34;
+    g_cityLayout.draws = 0;
+    Map<Tick_fn>("campaign_map_background")();
+    Check(Wm(20, 700) != 0x7777 && Wm(nx + 300, ny + 200) == MapPattern(300, 200),
+          "campaign map: the map in the middle over the blurred map, whatever the background setting");
+    Check(DrawsOf(0x4cf + 0x4000, 2338 - 838, 0) == 1, "campaign map wider than 1024: the top bar ending at the sidebar");
+    At<int>(aMouseXw) = nx + 300;
+    At<int>(aMouseYw) = ny + 200;
+    g_cityLayout.draws = 0;
+    Map<Tick_fn>("campaign_map_draw")();
+    Check(g_wm.campaign == 1 && g_wm.mouseX == 300 && g_wm.mouseY == 230, "campaign map: hover in map coordinates");
+    Check(Wm(nx + 100, ny + 100) == 0x0001, "campaign map: the marker shown on the map");
+    Check(Wm(2338 + 5, 5) == 0x0002, "campaign map: the sidebar drawn where it belongs");
+    const int inset = 0x1e4 + 0x4000;
+    Check(DrawsOf(inset + 0, 2338 + 11, 600) == 1 && Wm(2338 + 50, 1440 - 168) == 600,
+          "campaign map: the sidebar's filler below it (the gold edge's width, the picture at the bottom)");
+    const WORD below = Wm(2338 + 93, 700);
+    g_wm.noSidebar = true;
+    g_cityLayout.draws = 0;
+    Map<Tick_fn>("campaign_map_draw")();
+    Check(DrawsOf(inset + 0, 2338 + 11, 600) == 0 && Wm(2338 + 93, 700) == below && Wm(2338 + 50, 1440 - 168) == 600,
+          "a frame that does not draw the sidebar: no filler (nothing moved twice), the screen as it was");
+    g_wm.noSidebar = false;
+    Map<Tick_fn>("campaign_map_click")();
+    Check(g_wm.clicks == 1 && g_wm.mouseX == 300 && g_wm.mouseY == 230, "campaign map: the click in map coordinates");
+
+    // A fault while the game draws into our layer: off, the game's own drawing again, the height still the game's.
+    At<unsigned char>(aGameScreen) = 0x14;
+    WorldScreen(2560, 1440);
+    g_fault = "world_map_draw";
+    draw();
+    Check(g_wm.draws == 2 && g_wm.drawBuffer == At<BYTE *>(aDrawBuffer) && Wm(5, 35) == MapPattern(5, 5) &&
+              At<int>(aDdHeight2) == 1440 && g_wm.drawHeight == 768,
+          "fault: drawn again the game's way (top left, 768 high), dd_height back");
+    Check(LogContains("feature \"world map layout (games/zeus/world_map)\" switched off"),
+          "fault: the world map layout is switched off");
+    At<int>(aMouseXw) = 100;
+    At<int>(aMouseYw) = 700;
+    hit(nullptr, nullptr);
+    Check(g_wm.mouseX == 100, "fault: the real mouse from then on");
+}
+
 const Scenario kScenarios[] = {
     {"pace_ok", &PaceOk},
     {"pace_fault", &PaceFault},
@@ -2001,6 +2317,7 @@ const Scenario kScenarios[] = {
     {"pace_behind", &PaceBehind},
     {"info_window", &InfoWindow},
     {"fixed_window", &FixedWindow},
+    {"world_map", &WorldMap},
     {"smoke_actions", &SmokeActions},
 };
 

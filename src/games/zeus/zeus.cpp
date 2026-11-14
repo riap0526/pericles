@@ -112,6 +112,7 @@ extern "C" void zeus_register_settings(void)
     zeus::intro::RegisterSettings();       // [ui] intro_movie
     zeus::resolution::RegisterSettings();  // [ui] info_window
     zeus::fullscreen::RegisterSettings();  // [video] loading_screen, menu_screens, background_blur, background_brightness
+    zeus::world_map::RegisterSettings();   // [video] world_map, world_map_scale, world_map_background
     // The settings file this version ships: an older file gets its descriptions.
     core::settings::SetTemplate(zeus::kIniTemplate);
 }
@@ -162,6 +163,9 @@ extern "C" void zeus_attach(void)
         else {
             core_log("zeus: fullscreen: not installed (jpeg_draw_background is not hooked): the game's own frame");
         }
+        // The world map in the middle of its area (the border's tiles come from fullscreen's Configure; without
+        // them the map has no border).
+        zeus::world_map::AttachLayout();
     }
     // Screenshot file names and the present mode log's lines carry game_screen 0xf2a6dd (one byte, reads only).
     // The tag is asked for when a screenshot is taken (game thread): the draw census sums up the next frame too.

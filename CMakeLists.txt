@@ -82,6 +82,7 @@ set(CORE_SOURCES
     src/core/sim/panel_pause.cpp
     src/core/display/framed_screens.cpp
     src/core/display/framing.cpp
+    src/core/display/map_screen.cpp
     src/core/display/city_layout.cpp
     src/core/display/window_move.cpp
     src/core/ui/info_window.cpp
