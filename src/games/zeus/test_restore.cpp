@@ -37,6 +37,8 @@
 //   intro_skip               skip: game_main's call of bink_open (seen by its return address) is left out; another
 //                           caller's movie opens with its arguments; play: game_main's opens
 //   intro_fault         a fault while skipping: off, the movie opens as the game does it
+//   intro_mismatch      Attach (a smoke test asks for the skip) where the sites' bytes are not the game's: nothing
+//                           installed, the log says which site, the movie plays
 //
 // The framed front-end screens (games/zeus/fullscreen with the core's core/display/framed_screens and
 // core/display/resolution_switch; without the player's interface pack, so no background is composed):
@@ -188,7 +190,8 @@ void SetFraming(const core::output::Framing &f)
 namespace core::diag::autorun { // the smoke test is not started here (its own test: test_autorun)
 bool Start(const Game &) { return false; }
 void Frame() {}
-bool Requested() { return false; }
+bool g_requested = false; // intro_mismatch: as when a smoke test started the game
+bool Requested() { return g_requested; }
 bool IntroRequested() { return false; }
 } // namespace core::diag::autorun
 
@@ -1610,6 +1613,25 @@ void IntroFault()
           "afterwards: the game's own way");
 }
 
+// Attach where the game's bytes are not there: a smoke test asks for the skip, but Matches reads the sites at the
+// game's own addresses (0x417b00, 0x5c3bab), which in this test program are not Zeus.exe's code (the copy of the
+// game's range is elsewhere), so the bytes differ. Nothing is installed and the movie plays.
+void IntroMismatch()
+{
+    SetupIntro(true); // as if skipping: Attach must take it back
+    core::diag::autorun::g_requested = true;
+    zeus::intro::Attach();
+    core::diag::autorun::g_requested = false;
+    Check(LogContains("intro: a smoke test: the intro movie is skipped whatever intro_movie says"),
+          "log: the smoke test's skip asked for");
+    Check(LogContains("intro: bink_open does not match: the intro movie plays"), "log: the site does not match");
+    Check(!LogContains("bink_open could not be hooked"), "no hook tried");
+    int player = 0;
+    Check(GameMainIntro(&player, "Binks\\zeus_intro.bik", 112, 84) == 1 && g_bink.opens == 1 && g_bink.x == 112 &&
+              g_bink.y == 84,
+          "the movie plays: game_main's call opens it");
+}
+
 // --- The smoke test's actions (games/zeus/smoke). cheat_run is __cdecl (one argument [esp+4], returns al,
 // plain ret; the caller cleans): the fake is the same.
 int g_cheatArg = -1;
@@ -2514,6 +2536,7 @@ const Scenario kScenarios[] = {
     {"draw_only", &DrawOnly},
     {"intro_skip", &IntroSkip},
     {"intro_fault", &IntroFault},
+    {"intro_mismatch", &IntroMismatch},
     {"framed_screens", &FramedScreens},
     {"framed_setting", &FramedSetting},
     {"framed_fault", &FramedFault},
