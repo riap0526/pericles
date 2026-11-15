@@ -41,6 +41,12 @@ bool CityDrawingHooked();
 void DrawCityOriginal(int x, int y, int z);
 void DrawCityNotCounting(int x, int y, int z);
 
+// For games/zeus/city_picture: a picture's drawing can be made now (the put-back works and this frame's
+// drawing counts, so the copy buffer is free), and fn(ctx) as one drawing that never counts and puts itself back.
+// False (fn not called) when it cannot be made now, or (fn called) when the put-back was switched off by a fault in it.
+bool PictureDrawingNow();
+bool PutBackDrawing(void (*fn)(void *), void *ctx);
+
 // Offline tests only (src/games/zeus/test_restore.cpp): the detours above by site name; the copy buffer of the
 // drawn-frame animations without the site checks of Attach; whether each feature is still on.
 const Detour *Detours(int *count);

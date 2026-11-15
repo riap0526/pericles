@@ -10,6 +10,7 @@
 #include "core/hook/hook.h"
 #include "core/log.h"
 #include "core/settings/settings.h"
+#include "games/zeus/city_picture.h"
 #include "games/zeus/debug_log.h"
 #include "games/zeus/diag.h"
 #include "games/zeus/fullscreen.h"
@@ -122,6 +123,7 @@ extern "C" void zeus_register_settings(void)
     zeus::fullscreen::RegisterSettings();  // [video] loading_screen, menu_screens, background_blur, background_brightness
     zeus::zoom::RegisterSettings();        // [video] city_zoom, city_zoom_shrink (the core's, as Yongle's)
     zeus::world_map::RegisterSettings();   // [video] world_map, world_map_scale, world_map_background
+    zeus::city_picture::RegisterSettings(); // [ui] city_picture_key, minimap_picture_key, minimap_picture_scale
     // The settings file this version ships: an older file gets its descriptions.
     core::settings::SetTemplate(zeus::kIniTemplate);
 }
@@ -181,7 +183,8 @@ extern "C" void zeus_attach(void)
     zeus::notice::Attach(); // our messages in the game's notice boxes
     // Smooth scrolling (the camera and the city drawn with its pixel remainder; after timing's city_render hook);
     // gameplay.smooth_scroll from the panel.
-    if (zeus::scroll::Attach(core_config_get()->smooth_scroll != 0)) {
+    const bool scroll = zeus::scroll::Attach(core_config_get()->smooth_scroll != 0);
+    if (scroll) {
         core::settings::OnChange(core::settings::Find("gameplay", "smooth_scroll"), &ApplySmooth);
         // Zoom: drawn by smooth scrolling's picture, laid out by the resolution's viewports (as Yongle's).
         if (layout) {
@@ -194,6 +197,8 @@ extern "C" void zeus_attach(void)
     else {
         core_log("zoom: not installed (smooth scrolling's hooks are not): the city stays at 100%%");
     }
+    // The city and minimap pictures (drawn from smooth scrolling's city_render path).
+    zeus::city_picture::Attach(scroll);
     // Screenshot file names and the present mode log's lines carry game_screen 0xf2a6dd (one byte, reads only).
     // The tag is asked for when a screenshot is taken (game thread): the draw census sums up the next frame too.
     core::capture::SetTagProvider([](char *out, size_t size) {

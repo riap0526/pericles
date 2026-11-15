@@ -1,5 +1,6 @@
 #include "games/zeus/smoke.h"
 
+#include "core/capture/city_picture.h"
 #include "core/log.h"
 #include "core/ui/notice.h"
 #include "games/zeus/site.h"
@@ -98,7 +99,8 @@ bool Lose(char *why, int size)
 
 } // namespace
 
-const char kActions[] = "win lose notice notice_long notice_bracket notice_red zoom_50 zoom_75 zoom_125";
+const char kActions[] =
+    "win lose notice notice_long notice_bracket notice_red zoom_50 zoom_75 zoom_125 picture_city picture_minimap";
 
 bool Action(const char *name, char *why, int size)
 {
@@ -127,6 +129,16 @@ bool Action(const char *name, char *why, int size)
             core::ui::notice::Zoom(z.percent);
             return true;
         }
+    }
+    // city_picture: as the keys F10 and Shift+F10 (the picture is drawn at
+    // a later city_render; the log and shots\ show the result, e.g. a colony's name in the file name).
+    if (std::strcmp(name, "picture_city") == 0) {
+        core::capture::city_picture::RequestCity();
+        return true;
+    }
+    if (std::strcmp(name, "picture_minimap") == 0) {
+        core::capture::city_picture::RequestMinimap();
+        return true;
     }
     if (std::strcmp(name, "win") == 0) {
         return Win(why, size);

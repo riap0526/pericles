@@ -13,6 +13,9 @@ constexpr int kTextSize = 100;
 
 // The zoom box's text (printf format with the zoom in percent); the same in every game.
 extern const char *const kZoomFormat;
+// The city and minimap pictures' texts (core/capture/city_picture); the same in every game.
+extern const char *const kCityPictureSaved, *const kMinimapPictureSaved, *const kPictureNotSaved, *const kPictureBusy,
+    *const kPictureOnlyCity, *const kPictureUnavailable, *const kPictureNoMemory, *const kPictureClosePanel;
 
 // What the game layer does on the game thread. Every field is given; there are no defaults.
 struct Game {
@@ -20,8 +23,9 @@ struct Game {
     // so with the text).
     enum class Red { kGameFont, kNone };
 
-    Game(const char *logPrefix_, Red red_, void (*newBox_)(const char *text, bool red), void (*zoomBox_)(int percent))
-        : logPrefix(logPrefix_), red(red_), newBox(newBox_), zoomBox(zoomBox_)
+    Game(const char *logPrefix_, Red red_, void (*newBox_)(const char *text, bool red), void (*zoomBox_)(int percent),
+         bool (*showsBoxes_)())
+        : logPrefix(logPrefix_), red(red_), newBox(newBox_), zoomBox(zoomBox_), showsBoxes(showsBoxes_)
     {
     }
 
@@ -32,7 +36,13 @@ struct Game {
     void (*newBox)(const char *text, bool red);
     // The zoom box: made once, then rewritten in place while the zoom changes (kZoomFormat).
     void (*zoomBox)(int percent);
+    // The game keeps its boxes on this frame's screen. Off it (a building's window, a message, a dialog...) the game
+    // clears every box on every frame, so our texts wait until it is true again (at most kHoldMs).
+    bool (*showsBoxes)();
 };
+
+// How long a text waits for a screen that shows the boxes; older ones are dropped (they are in the log).
+constexpr unsigned long kHoldMs = 60000;
 
 // From the game layer's attach, after its sites matched and its detour of the notice drawing is in. Logs that our
 // messages go to the game's boxes. The Game is copied.
@@ -45,11 +55,12 @@ bool Attached();
 void SetLogPrefix(const char *prefix);
 
 // From the game layer's detour of the game's notice drawing, before the game's own: the texts posted since the last
-// frame, then the latest zoom. Guarded: a fault switches this off (logged) and Post goes back to the caption line.
+// frame, then the latest zoom -- or, while the game does not show its boxes (showsBoxes), nothing: they wait.
+// Guarded: a fault switches this off (logged) and Post goes back to the caption line.
 void OnFrame();
 
-// Any thread: shows text in a notice box at the next game frame (at most 4 per frame, longer texts cut to 99
-// characters). red: as the game shows errors and what needs attention, where it has such a font.
+// Any thread: shows text in a notice box at the next game frame that shows the boxes (at most 4 waiting, longer texts
+// cut to 99 characters). red: as the game shows errors and what needs attention, where it has such a font.
 void Post(const char *text, bool red = false);
 
 // Game thread, from the game layer's box: something of the game's faulted where the game layer guarded it (and put

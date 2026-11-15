@@ -877,6 +877,24 @@ void DrawCityNotCounting(int x, int y, int z)
     WithDrawnState([&] { Original(o_CityRender, kCityRender)(x, y, z); }, true);
 }
 
+// city_picture: a picture is drawn only in a counting frame. Its
+// outer drawing copied nothing then, so each strip (a drawing that never counts) copies and puts back on its own and
+// every strip starts from the same state; in a frame that does not count the outer drawing's copy is in the buffer and
+// the strips would add up (the per-building count and tile_anim of 0x44c2f0, 0x847d14).
+bool PictureDrawingNow()
+{
+    return g_drawnCopy && core::diag::Enabled(g_drawnFeature) && g_countingFrame;
+}
+
+bool PutBackDrawing(void (*fn)(void *), void *ctx)
+{
+    if (!PictureDrawingNow()) {
+        return false;
+    }
+    WithDrawnState([&] { fn(ctx); }, true);
+    return core::diag::Enabled(g_drawnFeature); // a fault in its copy or put-back switched it off
+}
+
 bool PrepareForTest()
 {
     g_randomPutBack = true; // no site checks in the offline test

@@ -96,6 +96,7 @@ set(CORE_SOURCES
     src/core/capture/screenshot.cpp
     src/core/capture/big_picture.cpp
     src/core/capture/png_stream.cpp
+    src/core/capture/city_picture.cpp
     src/core/diag/guard.cpp
     src/core/diag/report.cpp
     src/core/diag/state_line.cpp
@@ -229,6 +230,14 @@ add_executable(test_zoom proxy/ddraw/test_zoom.cpp src/core/scroll/zoom.cpp src/
 target_include_directories(test_zoom PRIVATE src)
 target_link_options(test_zoom PRIVATE -static)
 target_link_libraries(test_zoom PRIVATE augustus_core winmm)
+
+# Offline test of core/capture/city_picture: the city and minimap pictures on a fake game.
+add_executable(test_city_picture_core proxy/ddraw/test_city_picture_core.cpp src/core/capture/city_picture.cpp
+    src/core/capture/big_picture.cpp src/core/capture/png_stream.cpp src/core/display/city_strips.cpp
+    src/core/ui/notice_text.cpp src/core/ui/hotkey.cpp src/core/diag/guard.cpp src/core/log.cpp)
+target_include_directories(test_city_picture_core PRIVATE src)
+target_link_options(test_city_picture_core PRIVATE -static)
+target_link_libraries(test_city_picture_core PRIVATE png_encode)
 
 # Offline test of core/display/logical_size (the display scale rules).
 add_executable(test_logical proxy/ddraw/test_logical.cpp src/core/display/logical_size.cpp)

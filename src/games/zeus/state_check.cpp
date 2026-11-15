@@ -38,6 +38,9 @@ DWORD g_low = 0, g_size = 0;       // the game's addresses compared (the exe's .
 unsigned char *g_copy = nullptr;
 DWORD g_last = 0;
 bool g_pending = false;            // Before ran; AfterDraw / AfterPutBack compare
+const char *g_label = nullptr;     // the picture whose drawing is checked (BeginPicture; nullptr: a drawing that
+                                   // does not count)
+int g_drawRuns = 0;                // AfterDraw's differences (the picture's log line)
 long g_checks = 0, g_checksChanged = 0, g_checksLeft = 0;
 long g_untracked = 0;              // differences found once the region table was full
 
@@ -227,16 +230,18 @@ void LogNew()
         if (!r.logged && r.changed) {
             r.logged = true;
             Describe(r, where, sizeof(where));
-            core_log("zeus: state check: new region 0x%lx (+%lu B, %s) changed by a drawing that does not count%s%s",
+            core_log("zeus: state check: new region 0x%lx (+%lu B, %s) changed by %s%s%s",
                      static_cast<unsigned long>(r.low), static_cast<unsigned long>(r.high - r.low), where,
+                     g_label ? g_label : "a drawing that does not count",
                      r.left ? "; still changed after our put-back" : "; undone by our put-back", left);
             r.loggedLeft = r.left != 0;
         }
         else if (r.logged && !r.loggedLeft && r.left) {
             r.loggedLeft = true;
             Describe(r, where, sizeof(where));
-            core_log("zeus: state check: region 0x%lx (+%lu B, %s) now also still changed after our put-back%s",
-                     static_cast<unsigned long>(r.low), static_cast<unsigned long>(r.high - r.low), where, left);
+            core_log("zeus: state check: region 0x%lx (+%lu B, %s) now also still changed after our put-back%s%s%s%s",
+                     static_cast<unsigned long>(r.low), static_cast<unsigned long>(r.high - r.low), where, left,
+                     g_label ? " (by " : "", g_label ? g_label : "", g_label ? ")" : "");
         }
     }
 }
@@ -345,6 +350,7 @@ void AfterDraw()
         g_pending = false;
         return;
     }
+    g_drawRuns = runs;
     if (runs) {
         ++g_checksChanged;
     }
@@ -365,6 +371,11 @@ void AfterPutBack()
     }
     ++g_checks;
     LogNew();
+    if (g_label) {
+        core_log("zeus: state check (%s): %d place(s) changed by the drawing, %d still changed after our put-back",
+                 g_label, g_drawRuns, runs);
+        g_label = nullptr;
+    }
     if (g_checks == 1 || g_checks % kStatsEvery == 0) {
         Summary();
     }
@@ -376,6 +387,25 @@ void AfterPutBack()
 void Cancel()
 {
     g_pending = false;
+    g_label = nullptr;
+}
+
+bool BeginPicture(const char *label)
+{
+    if (!g_copy || !core::diag::Enabled(g_feature)) {
+        return false;
+    }
+    if (g_pending) { // not expected: the pictures are drawn only in counting frames, whose drawings are not checked
+        core_log("zeus: state check: a check was under way when the %s was drawn; that check is not counted", label);
+        Cancel();
+    }
+    g_label = label;
+    g_drawRuns = 0;
+    Before();
+    if (!g_pending) {
+        g_label = nullptr;
+    }
+    return g_pending;
 }
 
 void Report(const char *why)

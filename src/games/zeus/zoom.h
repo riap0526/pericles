@@ -19,6 +19,11 @@ bool Attach();
 // The current map's range (columns x half rows; 0 or less before a map), for the rate log.
 void MapRange(int *cols, int *rows);
 
+// The limits view_clamp works with now (the city picture, games/zeus/city_picture): view x from left to right -
+// columns, view y from top to bottom - half rows (bottom: the map's bottom less the margin + 4 the game keeps below the
+// screen); mapRows: the map's range in half rows.
+void ViewLimits(int *left, int *right, int *top, int *bottom, int *mapRows);
+
 // games/zeus/resolution: lays the city's view out again (the viewport hooks' work, for the last viewport kind).
 void SetRelayout(void (*fn)());
 

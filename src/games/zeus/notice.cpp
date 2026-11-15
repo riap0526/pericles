@@ -51,6 +51,7 @@ Draw_fn o_Draw = nullptr;
 constexpr int kTextId = 1000; // city_warning_show: the text in city_warning_text (the game's own "Sound Frags %d")
 const Var<BYTE> kWarningsOn{0xf2a7c9}; // warnings_on (city_warning_show's first check; config_load, 0x402620 write it)
 const Var<int> kFrameTime{0xf9c0f4};   // frame_time (ms): when a box was shown
+const Var<unsigned char> kGameScreen{0xf2a6dd};
 // city_warning_text 0x916af8, 200 bytes: block 125 of the save file (the save table 0x50d180), cleared for a new game
 // (0x511e30), also used by the city message windows (0x4f2d10, 0x430d80). Ours is put back right after the call:
 // city_warning_show has copied the text by then and does not read it again.
@@ -231,9 +232,19 @@ void __cdecl Draw_detour()
     Original(o_Draw, kDraw)();
 }
 
+// city_warnings_draw calls centered_slots_reset 0x5233a0 on every frame whose screen is not 0x01 or 0x12, which
+// clears every box's in-use word (disassembly to its ret; seen in testing):
+// our boxes are made only on those two screens.
+bool ShowsBoxes()
+{
+    const unsigned char s = *kGameScreen;
+    return s == 0x01 || s == 0x12;
+}
+
 core::ui::notice::Game ZeusGame()
 {
-    return core::ui::notice::Game{"zeus: notice", core::ui::notice::Game::Red::kNone, &NewBoxForCore, &ShowZoom};
+    return core::ui::notice::Game{"zeus: notice", core::ui::notice::Game::Red::kNone, &NewBoxForCore, &ShowZoom,
+                                  &ShowsBoxes};
 }
 
 } // namespace

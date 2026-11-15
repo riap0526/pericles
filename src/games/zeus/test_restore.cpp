@@ -134,6 +134,9 @@
 // Each scenario runs in a child process of its own (a feature switched off stays off for the rest of a process):
 //   test_restore.exe            runs every scenario and prints one line each
 //   test_restore.exe <name>     one scenario (exit code 0 = passed)
+#include "core/capture/big_picture.h"
+#include "core/capture/city_picture.h"
+#include "core/capture/screenshot.h"
 #include "core/diag/autorun.h"
 #include "core/diag/guard.h"
 #include "core/log.h"
@@ -146,7 +149,9 @@
 #include "core/output/sdl_output.h"
 #include "core/scroll/zoom.h"
 #include "core/ui/info_window.h"
+#include "core/display/virtual_display.h"
 #include "games/zeus/anim_clock.h"
+#include "games/zeus/city_picture.h"
 #include "games/zeus/fullscreen.h"
 #include "core/ui/notice.h"
 #include "games/zeus/intro.h"
@@ -247,7 +252,26 @@ bool Requested() { return g_requested; }
 bool IntroRequested() { return false; }
 } // namespace core::diag::autorun
 
+// city_picture: the pictures handed to the writer (not written here) and its done callback.
+struct SavedPic {
+    std::string kind;
+    int w, h;
+};
+std::vector<SavedPic> g_savedPics;
+void (*g_savedDone)(bool, const char *) = nullptr;
+
+namespace core::display {
+void AddActionKey(ActionKey *) {} // the pictures' keys (the scenarios ask through RequestCity / RequestMinimap)
+} // namespace core::display
+
 namespace core::capture {
+bool SaveBig(BigPicture *pic, const BigOptions &o)
+{
+    g_savedPics.push_back(SavedPic{o.kind, pic->Width(), pic->Height()});
+    g_savedDone = o.done;
+    delete pic;
+    return true;
+}
 int Flush(unsigned long) { return 0; }
 bool SaveOne(const void *, int, int, int, const char *, const char *) { return true; } // a report's city buffer
 bool SaveAs(const void *, int, int, int, const char *, bool) // the city kept for the menus (menu_background_auto.png)
@@ -3785,6 +3809,349 @@ void ZoomFault()
           "log: the zoom off with the reason");
 }
 
+// ---------------------------------------------------------------------------------------------
+// city_picture (games/zeus/city_picture, core/capture/city_picture): the city in
+// strips inside timing's drawing that never counts, drawn only in a counting frame; the game's variables, the water
+// marks, the ambient counts, city_render's own and minimap_draw's put back; a fault in a strip; the put-back off.
+
+constexpr DWORD fMinimapDraw = 0x454980, fPlayerCity = 0x4621e0, fLangGetString = 0x507bf0;
+constexpr DWORD aOverlay = 0xfa05f0, aPreview = 0xda2fa8, aMarkers = 0x160ac80, aWater = 0x83ad6c,
+                aAmbient = 0x10e41f0, aRhythmFlag = 0x7d3b1c, aDrawClip = 0xf139b0, aMinimapState = 0x7d3b08,
+                aMinimapRow = 0x7d3b30, aCityCache = 0x903128, aCities = 0x8fbac0,
+                aScreenZ = 0xf2a6dd;
+
+struct PictureSeen {
+    bool on = false;          // count the drawings into our picture buffer
+    int strips = 0;           // drawings into a buffer that is not the back buffer
+    int tileFirst = -1;       // the tile byte each of them saw on entry (all the same: put back in between)
+    bool tilesSame = true;
+    bool held = true;         // overlay, preview and markers 0, anim_due 0 in every strip
+    int faultAt = -1;         // fault in this strip (0-based)
+    bool touchOutside = false; // every strip changes 0x7d3f00, which nothing puts back (city_picture_check)
+    int listFirst = -1;        // each tile's first figure (save block 19) as each strip saw it: the same in all
+    bool listSame = true;
+    int minimaps = 0;
+    bool minimapHeld = true;  // overlay 0, our buffer, anim_due 0
+} g_ps;
+
+void __cdecl FakeCityRenderPicture(int x, int y, int z)
+{
+    // A strip: the picture's clip starts at the buffer's top (the game's layout has the top bar above it).
+    const bool strip = g_ps.on && At<int>(0x7d3b8c) == 0;
+    if (strip) {
+        const int tile = At<unsigned char>(aTiles + 7);
+        if (g_ps.tileFirst < 0) {
+            g_ps.tileFirst = tile;
+        }
+        g_ps.tilesSame = g_ps.tilesSame && tile == g_ps.tileFirst;
+        const int list = At<short>(aTileFigures + 2 * 777);
+        if (g_ps.listFirst < 0) {
+            g_ps.listFirst = list;
+        }
+        g_ps.listSame = g_ps.listSame && list == g_ps.listFirst;
+        At<short>(aTileFigures + 2 * 777) = static_cast<short>(list + 1); // as the drawing relinks a tile's figures
+        bool zero = true;
+        for (int i = 0; i < zeus::anim::kTimers; ++i) {
+            zero = zero && At<unsigned char>(aAnimDue + i) == 0;
+        }
+        g_ps.held = g_ps.held && zero && At<int>(aOverlay) == 0 && At<int>(aPreview) == 0 && At<int>(aMarkers) == 0;
+        if (g_ps.strips++ == g_ps.faultAt) {
+            Fault();
+        }
+        if (g_ps.touchOutside) {
+            At<int>(0x7d3f00) = At<int>(0x7d3f00) + 1;
+        }
+    }
+    // What city_render and the drawing of the whole map change besides kDrawnState.
+    At<unsigned char>(aWater + 9) = At<unsigned char>(aWater + 9) + 1;
+    At<int>(aAmbient) = At<int>(aAmbient) + 1;
+    At<int>(aRhythmFlag) = 1;
+    At<int>(aDrawClip) = 777;
+    FakeCityRender(x, y, z);
+}
+
+void __cdecl FakeMinimapDraw(int x, int y, int, int)
+{
+    ++g_ps.minimaps;
+    bool zero = true;
+    for (int i = 0; i < zeus::anim::kTimers; ++i) {
+        zero = zero && At<unsigned char>(aAnimDue + i) == 0;
+    }
+    BYTE *buf = At<BYTE *>(aDrawBuffer);
+    g_ps.minimapHeld = g_ps.minimapHeld && zero && At<int>(aOverlay) == 0 &&
+                       buf != reinterpret_cast<BYTE *>(g_back.data());
+    // As the game's: every cell of the view table painted (outside the map a filler), from 4 half rows above y and
+    // 4 columns (8 px) right of x; a few map cells drawn.
+    const int pitchPx = At<int>(aPitch) / 2;
+    for (int r = 0; r < 0x1c9; ++r) {
+        for (int c = 0; c < 2 * 0xe7; ++c) {
+            reinterpret_cast<WORD *>(buf)[(y - 4 + r) * pitchPx + x + 8 + c] = 0x5555;
+        }
+    }
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 6; ++c) {
+            reinterpret_cast<WORD *>(buf)[(y - 4 + 30 + r) * pitchPx + x + 8 + 30 + c] = static_cast<WORD>(0x300 + c);
+        }
+    }
+    At<int>(aMinimapState) = x; // its own variables
+    At<int>(aMinimapRow) = 5;
+    At<int>(aDrawClip) = 555;
+    At<unsigned char>(aTiles + 7) = At<unsigned char>(aTiles + 7) + 1; // something put back by the drawing state
+}
+
+int __cdecl FakePlayerCity()
+{
+    At<int>(aCityCache) = 3;
+    return 3;
+}
+
+const char *__cdecl FakeLangGetString(int group, int index)
+{
+    return group == 21 && index == 7 ? "Mount Olympus" : "?";
+}
+
+// A 1920x1080 city (SetupPicture) on a map of columns 10..50 and half rows 20..140 (no bottom margin): 2 strips of
+// 64 half rows. The pictures installed, the copy buffer ready, the first frame (counting) run.
+bool SetupCityPicture()
+{
+    SetupPicture();
+    if (!zeus::timing::PrepareForTest()) {
+        Check(false, "the copy buffer");
+        return false;
+    }
+    Thunk(fCityRender, reinterpret_cast<void *>(&FakeCityRenderPicture));
+    Thunk(fMinimapDraw, reinterpret_cast<void *>(&FakeMinimapDraw));
+    Thunk(fPlayerCity, reinterpret_cast<void *>(&FakePlayerCity));
+    Thunk(fLangGetString, reinterpret_cast<void *>(&FakeLangGetString));
+    At<int>(aMapColMin) = 10;
+    At<int>(aMapColMax) = 50;
+    At<int>(aMapRowMin) = 20;
+    At<int>(aMapRowMax) = 140;
+    At<unsigned char>(aBottomMargin) = 0;
+    At<int>(aDirection) = 0;
+    At<unsigned char>(aScreenZ) = 0x01;
+    At<int>(aEditorMode) = 0;
+    At<int>(aCityCache) = 9;
+    At<unsigned char>(aCities + 3 * 0x23c + 3) = 7;
+    At<int>(aOverlay) = 4;
+    At<int>(aPreview) = 1;
+    At<int>(aMarkers) = 1;
+    zeus::city_picture::InstallForTest();
+    g_ps = PictureSeen{};
+    g_ps.on = true;
+    g_savedPics.clear();
+    return true;
+}
+
+struct PictureState {
+    int overlay, preview, markers, water, ambient, rhythm, clip, minimap, minimapRow, cache, cols, origin;
+    BYTE *buffer;
+};
+
+PictureState ReadPictureState()
+{
+    return PictureState{At<int>(aOverlay),       At<int>(aPreview),       At<int>(aMarkers),
+                        At<unsigned char>(aWater + 9), At<int>(aAmbient), At<int>(aRhythmFlag),
+                        At<int>(aDrawClip),      At<int>(aMinimapState),  At<int>(aMinimapRow),
+                        At<int>(aCityCache),     At<int>(aColsZ),         At<int>(aOriginYz),
+                        At<BYTE *>(aDrawBuffer)};
+}
+
+bool SameState(const PictureState &a, const PictureState &b)
+{
+    return std::memcmp(&a, &b, sizeof(a)) == 0;
+}
+
+void CityPicture()
+{
+    if (!SetupCityPicture()) {
+        return;
+    }
+    Timing<Frame_fn>("game_frame")(); // a counting frame
+    core::capture::city_picture::RequestCity();
+    Check(LogContains("picture: city picture asked for"), "F10 in the city: asked for");
+    // The frame's drawing: the outer drawing moves its state on by one; the strips put theirs back.
+    const PictureState before = ReadPictureState();
+    const Drawn drawn0 = ReadDrawn();
+    const Random random0 = ReadRandom();
+    g_calls.touchRandom = true;
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    g_calls.touchRandom = false;
+    Check(g_savedPics.size() == 1 && g_savedPics[0].kind == "Mount-Olympus" && g_savedPics[0].w == 2398 &&
+              g_savedPics[0].h == 115 * 15,
+          "drawn in the same frame: one picture, the player's city's name, 40 columns x 115 half rows");
+    Check(g_ps.strips == 2 && g_ps.tilesSame && g_ps.tileFirst == drawn0.tile + 1,
+          "2 strips, each starting from the state after the frame's own drawing (tile animation put back between)");
+    Check(g_ps.listSame && At<short>(aTileFigures + 2 * 777) == g_ps.listFirst,
+          "save block 19 (each tile's first figure): the same in every strip, put back after the picture");
+    Check(g_ps.held, "every strip: anim_due 0, the overlay, the building preview and the markers 0");
+    const Drawn drawn1 = ReadDrawn();
+    Check(drawn1.tile == drawn0.tile + 1 && drawn1.counter == drawn0.counter + 1 &&
+              drawn1.building == drawn0.building + 1,
+          "afterwards: only the frame's own (counting) drawing moved the animations on");
+    const Random random1 = ReadRandom();
+    Check(random1.index == random0.index + 1, "the random numbers: only the frame's own drawing turned them");
+    const PictureState after = ReadPictureState();
+    Check(after.overlay == 4 && after.preview == 1 && after.markers == 1 && after.buffer == before.buffer &&
+              after.cols == before.cols && after.origin == before.origin && ViewportIsGame(),
+          "afterwards: the overlay, the preview, the markers, draw_buffer and the viewport the game's");
+    Check(after.water == before.water + 1 && after.ambient == before.ambient + 1,
+          "the water marks and the ambient counts: as after the frame's own drawing (the picture's put back)");
+    Check(after.cache == 9, "the player's city's cache put back");
+    Check(DueIsFrame(&At<unsigned char>(aAnimDue)), "the frame's anim_due back");
+    Check(zeus::timing::DrawnWorking() && zeus::scroll::Working(), "drawn-frame put-back and smooth scrolling on");
+
+    // The minimap in the next counting frame.
+    g_savedDone(true, "shots\\x.png");
+    Sleep(60);
+    Timing<Frame_fn>("game_frame")();
+    core::capture::city_picture::RequestMinimap();
+    const PictureState mBefore = ReadPictureState();
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    const PictureState mAfter = ReadPictureState();
+    Check(g_ps.minimaps == 2 && g_ps.minimapHeld, "the minimap: drawn twice into our buffer, overlay 0, anim_due 0");
+    // The map's part (columns 10..50, half rows 20..138, minimap_center's row 5 as the fake leaves it): x 8 + 8 + 20 - 1
+    // .. + 100 + 1, y 8 - 4 + 20 - 1 .. 8 - 4 + 138 - 1: 83 x 119 (the filler around it cut away).
+    Check(g_savedPics.size() == 2 && g_savedPics[1].kind == "Mount-Olympus_minimap" && g_savedPics[1].w == 83 &&
+              g_savedPics[1].h == 119,
+          "the minimap: saved, cropped to the map's part (no filler around it)");
+    Check(mAfter.minimap == mBefore.minimap && mAfter.minimapRow == mBefore.minimapRow &&
+              mAfter.clip == mBefore.clip && mAfter.buffer == mBefore.buffer &&
+              ReadDrawn().tile == drawn1.tile + 1,
+          "the minimap: its variables and draw_buffer put back, the tile byte it moved put back");
+    Check(LogContains("picture: the player's city is 3 of the world, name text 21 / 7: \"Mount Olympus\""),
+          "log: the player's city and its name");
+}
+
+// Asked in a frame that does not count: not drawn until the next counting frame.
+void CityPictureWait()
+{
+    if (!SetupCityPicture()) {
+        return;
+    }
+    CountingThenNot();
+    core::capture::city_picture::RequestCity();
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(g_savedPics.empty() && g_ps.strips == 0, "a frame that does not count: not drawn, the request kept");
+    Sleep(60);
+    Timing<Frame_fn>("game_frame")();
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(g_savedPics.size() == 1 && g_ps.strips == 2 && g_ps.tilesSame, "the next counting frame: drawn");
+    // Only the city screens without a window: a sidebar panel's dialog (0x07) and a
+    // building's information window (0x09) are refused, the city with a company selected (0x48) is not; the editors
+    // are refused.
+    g_savedDone(true, "a");
+    At<unsigned char>(aScreenZ) = 0x07;
+    core::capture::city_picture::RequestCity();
+    Check(LogContains("picture: city picture key pressed outside the city (screen 0x07)"), "a sidebar dialog: refused");
+    At<unsigned char>(aScreenZ) = 0x09;
+    At<unsigned char>(aInfoPrev) = 0x01;
+    core::capture::city_picture::RequestCity();
+    Check(LogContains("picture: city picture key pressed outside the city (screen 0x09)"),
+          "a building's information window: refused");
+    At<unsigned char>(aScreenZ) = 0x48;
+    core::capture::city_picture::RequestCity();
+    Sleep(60);
+    Timing<Frame_fn>("game_frame")();
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(g_savedPics.size() == 2 && !LogContains("outside the city (screen 0x48)"),
+          "the city with a company selected: drawn");
+    g_savedDone(true, "b");
+    At<unsigned char>(aScreenZ) = 0x01;
+    At<int>(aEditorMode) = 1;
+    core::capture::city_picture::RequestCity();
+    Check(LogContains("picture: city picture key pressed outside the city (screen 0x01)"), "the editor: refused");
+}
+
+// A fault in the second strip: that drawing's put-back still runs, the game's variables back, the pictures off.
+void CityPictureFault()
+{
+    if (!SetupCityPicture()) {
+        return;
+    }
+    Timing<Frame_fn>("game_frame")();
+    core::capture::city_picture::RequestCity();
+    g_ps.faultAt = 1;
+    const PictureState before = ReadPictureState();
+    const Drawn drawn0 = ReadDrawn();
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    const PictureState after = ReadPictureState();
+    Check(g_savedPics.empty() && g_ps.strips == 2, "fault in the second strip: not saved, no strip after it");
+    Check(ReadDrawn().tile == drawn0.tile + 1 && ReadDrawn().counter == drawn0.counter + 1,
+          "the faulting strip's drawing state put back (only the frame's own drawing counted)");
+    Check(after.overlay == 4 && after.preview == 1 && after.markers == 1 && after.buffer == before.buffer &&
+              after.water == before.water + 1 && after.ambient == before.ambient + 1 && ViewportIsGame(),
+          "the game's variables, the water marks and the ambient counts put back");
+    Check(DueIsFrame(&At<unsigned char>(aAnimDue)), "the frame's anim_due back");
+    Check(zeus::timing::DrawnWorking() && zeus::scroll::Working(), "drawn-frame put-back and smooth scrolling still on");
+    Check(LogContains("feature \"city picture (core/capture/city_picture)\" switched off") &&
+              LogContains("picture: the city picture is off for the rest of the run"),
+          "log: the pictures off");
+    core::capture::city_picture::RequestCity();
+    Check(LogContains("picture: city picture key pressed, but the pictures are off"), "afterwards: unavailable");
+}
+
+// The drawn-frame put-back switched off by a fault: refused before the key; dropped when it happens after the key.
+void CityPictureDrawnOff()
+{
+    if (!SetupCityPicture()) {
+        return;
+    }
+    CountingThenNot();
+    core::capture::city_picture::RequestCity(); // asked in a frame that does not count: waits
+    g_calls.protectAfterDraw = true;           // this frame's put-back faults: the put-back switched off
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    g_calls.protectAfterDraw = false;
+    ProtectCounters(PAGE_READWRITE);
+    Check(!zeus::timing::DrawnWorking() && g_savedPics.empty(), "the put-back off; nothing drawn yet");
+    Sleep(60);
+    Timing<Frame_fn>("game_frame")();
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(g_savedPics.empty() && g_ps.strips == 0 &&
+              LogContains("picture: the picture asked for is not drawn: the city drawing's hooks were switched off"),
+          "the next frame: dropped, not saved");
+    core::capture::city_picture::RequestCity();
+    Check(LogContains("picture: city picture key pressed, but the pictures are off"), "a new key: unavailable");
+}
+
+// [debug] state_check on: each picture checked as one (labelled), what our put-back leaves found.
+void CityPictureCheck()
+{
+    if (!SetupCityPicture()) {
+        return;
+    }
+    if (!zeus::state_check::EnableForTest(0x7d3000, 0x1000)) { // the city's and the minimap's variables
+        Check(false, "the check's copy");
+        return;
+    }
+    Timing<Frame_fn>("game_frame")();
+    core::capture::city_picture::RequestCity();
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(g_savedPics.size() == 1 &&
+              LogContains("zeus: state check (the city picture): ") &&
+              LogContains("place(s) changed by the drawing, 0 still changed after our put-back"),
+          "the city picture checked: our changes found after the drawing, none left after the put-back");
+    g_savedDone(true, "a");
+    Sleep(60);
+    Timing<Frame_fn>("game_frame")();
+    core::capture::city_picture::RequestMinimap();
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(LogContains("zeus: state check (the minimap picture): ") && g_savedPics.size() == 2,
+          "the minimap picture checked");
+    Check(!LogContains("still changed after our put-back (by"), "nothing left by either");
+    g_savedDone(true, "b");
+    Sleep(60);
+    Timing<Frame_fn>("game_frame")();
+    g_ps.touchOutside = true; // the strips change a place nothing puts back
+    core::capture::city_picture::RequestCity();
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    g_ps.touchOutside = false;
+    Check(LogContains("zeus: state check: new region 0x7d3f00") &&
+              LogContains("changed by the city picture; still changed after our put-back") &&
+              LogContains("1 still changed after our put-back"),
+          "a place the put-back misses: reported as left, with the picture's label");
+}
+
 const Scenario kScenarios[] = {
     {"pace_ok", &PaceOk},
     {"pace_fault", &PaceFault},
@@ -3839,6 +4206,11 @@ const Scenario kScenarios[] = {
     {"zoom_layout", &ZoomLayoutScenario},
     {"zoom_render", &ZoomRender},
     {"zoom_fault", &ZoomFault},
+    {"city_picture", &CityPicture},
+    {"city_picture_wait", &CityPictureWait},
+    {"city_picture_fault", &CityPictureFault},
+    {"city_picture_drawn_off", &CityPictureDrawnOff},
+    {"city_picture_check", &CityPictureCheck},
 };
 
 } // namespace

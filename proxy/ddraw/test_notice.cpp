@@ -1,8 +1,9 @@
 // Offline test of core/ui/notice (not the game): on a fake game layer, the texts posted wait until the next frame
 // and are handed over in order (at most 4 per frame, cut to 99 characters, red kept); the latest zoom wins and is
 // handed after the texts; before Install the texts go to our caption line (core/output SetNotice) and the zoom is
-// dropped; a fault in the game layer's box switches the feature off, after which the texts go to the caption line
-// again and the frames hand nothing over. The scenarios run in order in one process (the fault last: a feature
+// dropped; while the game shows no boxes (a screen that clears them) the texts and the zoom wait and are handed over
+// once it does (seen in testing); a fault in the game layer's box switches the feature off, after which
+// the texts go to the caption line again and the frames hand nothing over. The scenarios run in order in one process (the fault last: a feature
 // switched off stays off).
 #include "core/diag/guard.h"
 #include "core/log.h"
@@ -48,6 +49,12 @@ std::vector<int> g_zooms;
 std::vector<char> g_order; // 'b' a box, 'z' the zoom: the zoom after the texts of the same frame
 volatile int *volatile g_null = nullptr;
 bool g_faultNext = false;
+bool g_shows = true; // the game shows its boxes on this frame's screen
+
+bool ShowsBoxes()
+{
+    return g_shows;
+}
 
 void NewBox(const char *text, bool red)
 {
@@ -89,7 +96,7 @@ int main()
           "not installed: the text on the caption line, no box, the zoom dropped");
     Clear();
 
-    notice::Install(notice::Game{"test: notice", notice::Game::Red::kNone, &NewBox, &ZoomBox});
+    notice::Install(notice::Game{"test: notice", notice::Game::Red::kNone, &NewBox, &ZoomBox, &ShowsBoxes});
     Check(notice::Attached(), "installed");
 
     // Waiting for the frame, in order, red kept.
@@ -140,6 +147,21 @@ int main()
     char zoomText[32];
     std::snprintf(zoomText, sizeof(zoomText), notice::kZoomFormat, 125);
     Check(std::strcmp(zoomText, "Zoom: 125%") == 0, "the zoom box's text");
+
+    // A screen where the game clears its boxes: the texts and the zoom wait, in order, until the city.
+    g_shows = false;
+    notice::Post("saved");
+    notice::Post("busy", true);
+    notice::Zoom(125);
+    notice::OnFrame();
+    notice::OnFrame();
+    Check(g_boxes.empty() && g_zooms.empty(), "no boxes on this screen: nothing handed over, nothing dropped");
+    g_shows = true;
+    notice::OnFrame();
+    Check(g_boxes.size() == 2 && g_boxes[0].text == "saved" && g_boxes[1].text == "busy" && g_boxes[1].red &&
+              g_zooms.size() == 1 && g_zooms[0] == 125,
+          "back on the city: both texts in order (red kept) and the zoom");
+    Clear();
 
     // A fault in the game layer's box: the feature off, then the caption line; frames hand nothing over.
     g_faultNext = true;

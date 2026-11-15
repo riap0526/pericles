@@ -26,6 +26,11 @@ void AfterDraw();
 void AfterPutBack();
 void Cancel();
 
+// city_picture (games/zeus/city_picture): the picture's drawings checked as one, whenever the check is on (not
+// once a second): BeginPicture before anything of ours is changed (label: e.g. "the city picture", for the log), then
+// AfterDraw after its last drawing and AfterPutBack after everything is put back. False: no check this time.
+bool BeginPicture(const char *label);
+
 // The table of regions with their counts (every 600 checks and at the game's end; why: e.g. " (game ended)").
 void Report(const char *why);
 

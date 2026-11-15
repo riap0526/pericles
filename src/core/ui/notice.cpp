@@ -17,13 +17,14 @@ namespace {
 
 core::diag::Feature g_feature{"notices in the game's boxes (core/ui/notice)"};
 std::atomic<bool> g_attached{false};
-Game g_game{"notice", Game::Red::kNone, nullptr, nullptr};
+Game g_game{"notice", Game::Red::kNone, nullptr, nullptr, nullptr};
 
 // Posted texts (any thread), shown at the next frame.
 constexpr int kQueue = 4;
 struct Posted {
     char text[kTextSize];
     bool red;
+    DWORD at; // GetTickCount when posted
 };
 SRWLOCK g_lock = SRWLOCK_INIT;
 Posted g_queue[kQueue];
@@ -31,8 +32,36 @@ int g_queued = 0;
 
 std::atomic<int> g_zoom{-1}; // the zoom to show (-1: nothing new)
 
+bool g_waiting = false; // the last frame did not show the boxes (logged once per wait)
+
 void Flush(void *)
 {
+    if (!g_game.showsBoxes()) {
+        // The game clears its boxes on this screen: the texts and the zoom wait. Too old ones are dropped.
+        const DWORD now = GetTickCount();
+        AcquireSRWLockExclusive(&g_lock);
+        int kept = 0, dropped = 0;
+        for (int k = 0; k < g_queued; ++k) {
+            if (now - g_queue[k].at > kHoldMs) {
+                ++dropped;
+                continue;
+            }
+            g_queue[kept++] = g_queue[k];
+        }
+        const bool wait = g_queued > 0 && !g_waiting;
+        g_queued = kept;
+        ReleaseSRWLockExclusive(&g_lock);
+        if (wait) {
+            g_waiting = true;
+            core_log("%s: the game shows no notice boxes on this screen: our messages wait for the city", g_game.logPrefix);
+        }
+        if (dropped) {
+            core_log("%s: %d message(s) not shown (waited %lu s for the city)", g_game.logPrefix, dropped,
+                     kHoldMs / 1000);
+        }
+        return;
+    }
+    g_waiting = false;
     Posted posted[kQueue];
     AcquireSRWLockExclusive(&g_lock);
     const int n = g_queued;
@@ -85,6 +114,7 @@ void Post(const char *text, bool red)
     AcquireSRWLockExclusive(&g_lock);
     if (g_queued < kQueue) {
         std::snprintf(g_queue[g_queued].text, kTextSize, "%s", text);
+        g_queue[g_queued].at = GetTickCount();
         g_queue[g_queued++].red = red;
     }
     ReleaseSRWLockExclusive(&g_lock);
@@ -105,7 +135,8 @@ void Zoom(int percent)
 void ResetForTest()
 {
     g_attached.store(false);
-    g_game = Game{"notice", Game::Red::kNone, nullptr, nullptr};
+    g_game = Game{"notice", Game::Red::kNone, nullptr, nullptr, nullptr};
+    g_waiting = false;
     AcquireSRWLockExclusive(&g_lock);
     g_queued = 0;
     ReleaseSRWLockExclusive(&g_lock);

@@ -32,6 +32,9 @@
 #               (no DLL)
 #   test_city_picture the city picture's strips and its PNG written a row at a time, read back (no DLL; writes and
 #               deletes test_city_picture_*.png)
+#   test_city_picture_core core/capture/city_picture: the city and minimap pictures on a fake game (the refusals, the
+#               strips, the put-back order, a fault, the minimap's two key colors, file names) (no DLL; writes
+#               test_city_picture_core.log)
 #   test_framing core/display/framing: the framed full-screen picture geometry (no DLL)
 #   test_surface_memory core/ddraw/surface_memory: spare rows with a canary below each emulated surface, guard
 #               pages around it (no DLL)
@@ -104,6 +107,7 @@ Run 'test_logical' 'emulated' @()
 Run 'test_common_sizes' 'emulated' @()
 Run 'test_city_zoom' 'emulated' @()
 Run 'test_city_picture' 'emulated' @()
+Run 'test_city_picture_core' 'emulated' @()
 Run 'test_framing' 'emulated' @()
 Run 'test_moved_rect' 'emulated' @()
 Run 'test_city_layout' 'emulated' @()
