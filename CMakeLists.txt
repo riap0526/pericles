@@ -117,6 +117,7 @@ set(CORE_SOURCES
     src/core/scroll/smooth_scroll.cpp
     src/core/scroll/camera.cpp
     src/core/scroll/picture.cpp
+    src/core/scroll/zoom.cpp
     src/core/ui/panel.cpp
     src/core/ui/hotkey.cpp
     src/core/options/window.cpp
@@ -218,6 +219,16 @@ add_executable(test_picture proxy/ddraw/test_picture.cpp src/core/scroll/picture
 target_include_directories(test_picture PRIVATE src)
 target_link_options(test_picture PRIVATE -static)
 target_link_libraries(test_picture PRIVATE augustus_core winmm)
+
+# Offline test of core/scroll/zoom: the city's zoom on a fake game.
+add_executable(test_zoom proxy/ddraw/test_zoom.cpp src/core/scroll/zoom.cpp src/core/scroll/picture.cpp
+    src/core/scroll/camera.cpp src/core/scroll/smooth_scroll.cpp src/core/display/city_zoom.cpp
+    src/core/display/scaled_rect.cpp src/core/platform/parallel.cpp src/core/platform/affinity.cpp
+    src/core/diag/environment.cpp src/core/platform/files.cpp src/core/game.cpp
+    src/core/diag/perf.cpp src/core/diag/guard.cpp src/core/log.cpp)
+target_include_directories(test_zoom PRIVATE src)
+target_link_options(test_zoom PRIVATE -static)
+target_link_libraries(test_zoom PRIVATE augustus_core winmm)
 
 # Offline test of core/display/logical_size (the display scale rules).
 add_executable(test_logical proxy/ddraw/test_logical.cpp src/core/display/logical_size.cpp)

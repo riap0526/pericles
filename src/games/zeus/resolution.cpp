@@ -67,10 +67,12 @@
 #include "core/display/resolution_switch.h"
 #include "core/hook/hook.h"
 #include "core/log.h"
+#include "core/scroll/zoom.h"
 #include "core/settings/settings.h"
 #include "core/ui/info_window.h"
 #include "games/zeus/diag.h"
 #include "games/zeus/scroll.h"
+#include "games/zeus/zoom.h"
 
 #include <cstring>
 #include <cwchar>
@@ -122,6 +124,7 @@ const Var<unsigned char> kGameScreen{0xf2a6dd};
 const Var<char> kRedraw{0xf2a6ce};
 const Var<int> kSidebarX{0x10dff34};
 const Var<int> kSidebarX2{0x10dff30};
+const Var<int> kEditorMode{0x665e2c}; // editor_mode: 1 in the editors (the zoom is not used there)
 const Var<int> kCityClipBottom{0x7d3b88}; // viewport_init: (half rows - 1) x 15 + 30
 const Var<int> kCityClipRight{0x7d3b90};  // viewport_init: 60 x columns - 2
 const Var<int> kMapColMin{0xfa05b4}; // view_clamp 0x51cd60's limits (as Emperor's order)
@@ -266,7 +269,10 @@ struct ViewportCall {
 
 void SetViewport(int cols, int rows)
 {
-    const int maxCols = kViewCols - 11, maxRows = kViewRows - 30; // margins as in Emperor's draw loop [guess]
+    // The widest draw loops (0x458170, 0x44ad70) check the view grid's bounds; the one that does not (0x454420)
+    // reads columns view_drawn_x .. + cols and rows view_drawn_y .. + rows - 1, well
+    // inside these margins (Emperor's).
+    const int maxCols = kViewCols - 11, maxRows = kViewRows - 30;
     if (cols > maxCols) cols = maxCols;
     if (rows > maxRows) rows = maxRows;
     Function<ViewportInit_fn>(kViewportInit)(0xe4, 0xe4, 0, kTopBar, cols, rows, kTileW, kTileH);
@@ -275,7 +281,7 @@ void SetViewport(int cols, int rows)
     const int mapCols = *kMapColMax - *kMapColMin, mapRows = *kMapRowMax - *kMapRowMin;
     static int logged[6] = {-1, -1, -1, -1, -1, -1};
     const int key[6] = {cols, rows, *kModeWidth, *kModeHeight, mapCols, mapRows};
-    if (std::memcmp(key, logged, sizeof(key)) != 0) {
+    if (!core::scroll::zoom::Moving() && std::memcmp(key, logged, sizeof(key)) != 0) { // not every wheel frame
         std::memcpy(logged, key, sizeof(key));
         core_log("zeus: resolution: city viewport %d x %d for %dx%d (clip bottom %d); current map view range %d x %d%s",
                  cols, rows, *kModeWidth, *kModeHeight, *kCityClipBottom, mapCols, mapRows,
@@ -320,11 +326,24 @@ void AfterViewport(bool wide)
 }
 
 // Our layout, with the city's clip reaching the screen's bottom (or past it): the bottom strip is not blanked and the
-// city message panel is put on the screen's bottom.
+// city message panel is put on the screen's bottom. The case without smooth scrolling's picture (CityExtended).
 bool CityToBottom()
 {
     const int w = *kModeWidth, h = *kModeHeight;
     return !(StandardSize(w, h) || w < 1024) && core::diag::Enabled(g_layout) && *kCityClipBottom >= h;
+}
+
+// Zoom: the city is shown up to the sidebar (the screen's right edge without one) and down to the
+// screen's bottom just now, whatever the clip: our layout and smooth scrolling's picture working (it draws the city
+// past its clip, and the zoomed city, whose clip is our buffer's). Emperor's CityExtended.
+bool CityExtended()
+{
+    return OurLayout(*kModeWidth, *kModeHeight) && zeus::scroll::Working();
+}
+
+int ShownRight()
+{
+    return g_wideViewport ? *kModeWidth : *kSidebarX;
 }
 
 // 640, 800, 1024 -> 10, 13, 17 columns (the city under the whole width).
@@ -332,10 +351,18 @@ void __cdecl ViewportWide_detour()
 {
     const int w = *kModeWidth, h = *kModeHeight;
     if (StandardSize(w, h) || w < 1024) {
+        core::scroll::zoom::ResetView(); // the game's own sizes: no zoom
         Original(o_ViewportWide, kViewportWide)();
     }
     else {
-        Viewport({w / 60, Rows(h)}, {17, 50});
+        int cols = w / 60, rows = Rows(h);
+        if (*kEditorMode != 0) {
+            core::scroll::zoom::ResetView(); // the editors: no zoom
+        }
+        else {
+            core::scroll::zoom::ViewFor(w, h - kTopBar, kTileW + 2, kTileH / 2, &cols, &rows); // zoom
+        }
+        Viewport({cols, rows}, {17, 50});
     }
     AfterViewport(true);
 }
@@ -345,12 +372,35 @@ void __cdecl ViewportNarrow_detour()
 {
     const int w = *kModeWidth, h = *kModeHeight;
     if (StandardSize(w, h) || w < 1024) {
+        core::scroll::zoom::ResetView(); // the game's own sizes: no zoom
         Original(o_ViewportNarrow, kViewportNarrow)();
     }
     else {
-        Viewport({NarrowColumns(w), Rows(h)}, {14, 50});
+        // Zoom: the zoomed view for the city as shown, from the top bar to the bottom and to the sidebar;
+        // capped to the map's range by the core's zoom (100: the columns and rows as before).
+        // The editors (the adventure editor's city is screen 0x01 at our resolution): no zoom.
+        int cols = NarrowColumns(w), rows = Rows(h);
+        if (*kEditorMode != 0) {
+            core::scroll::zoom::ResetView();
+        }
+        else {
+            core::scroll::zoom::ViewFor(*kSidebarX, h - kTopBar, kTileW + 2, kTileH / 2, &cols, &rows);
+        }
+        Viewport({cols, rows}, {14, 50});
     }
     AfterViewport(false);
+}
+
+// Zoom: the city view laid out again after the scale or the map changed, as the last viewport was (the game
+// lays out the narrow one; the wide one is not used by the game).
+void RelayoutCity()
+{
+    if (g_wideViewport) {
+        ViewportWide_detour();
+    }
+    else {
+        ViewportNarrow_detour();
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -441,31 +491,39 @@ void __cdecl TopBarDraw_detour(int a, int b)
 void __cdecl FillRect_detour(int x, int y, int w, int h, int colour)
 {
     if (GameAddress(__builtin_return_address(0)) == kBottomStripCall && core::diag::Enabled(g_message) &&
-        CityToBottom()) {
+        (CityExtended() || CityToBottom())) {
         return;
     }
     Original(o_FillRect, kFillRect)(x, y, w, h, colour);
 }
 
-// The city message panel on the screen's bottom: the layout puts it on the city clip's bottom, up to 14 rows below
-// the screen with our half rows. While it runs the clip's bottom is the screen's (the city it draws meanwhile is then
-// clipped at the screen's bottom). Emperor's MessagePanel_detour, the bottom only: the sidebar is at the clip's right
-// edge here.
+// The city message panel laid out in the city as it is shown: the layout puts it on the city clip's bottom and makes
+// it as wide as the clip. While it runs the clip's bottom is the screen's and, while the city is shown up to the
+// sidebar (CityExtended: smooth scrolling's picture, also when zoomed, where the clip is our buffer's), its right is
+// the sidebar's left edge (as wide as the city up to the sidebar, as Yongle's). Without the
+// picture only the bottom (the clip reaches up to 14 rows below the screen with our half rows). The city it
+// draws meanwhile still uses the grid clip (the picture works it out from the viewport). Emperor's
+// MessagePanel_detour.
 struct PanelCall {
     core::diag::Restore r;
+    bool right;
 };
 
 void __cdecl MessagePanel_detour()
 {
-    if (!CityToBottom() || *kCityClipBottom <= *kModeHeight || !core::diag::Enabled(g_message)) {
+    const bool extended = CityExtended();
+    if (!core::diag::Enabled(g_message) || !(extended || (CityToBottom() && *kCityClipBottom > *kModeHeight))) {
         Original(o_MessagePanel, kMessagePanel)();
         return;
     }
-    PanelCall c;
+    PanelCall c{{}, extended};
     if (core::diag::Guarded(
             g_message,
             [](void *p) {
                 auto &c = *static_cast<PanelCall *>(p);
+                if (c.right) {
+                    c.r.Set(kCityClipRight.ptr(), ShownRight());
+                }
                 c.r.Set(kCityClipBottom.ptr(), *kModeHeight);
                 Original(o_MessagePanel, kMessagePanel)();
                 c.r.Undo();
@@ -1143,6 +1201,7 @@ const Detour *Detours(int *count)
 void InstalledForTest(const core_config *cfg)
 {
     switching::InstalledForTest(Game(), cfg);
+    zeus::zoom::SetRelayout(&RelayoutCity);
 }
 
 bool FrontEndForTest()
@@ -1185,6 +1244,7 @@ bool Attach(const core_config *cfg)
                  kConfigLoad.name);
     }
     AttachCityLayout();
+    zeus::zoom::SetRelayout(&RelayoutCity); // zoom: the scale or the map changed
     char what[48];
     core::display::DescribeSetting(cfg->resolution, cfg->resolution_w, cfg->resolution_h, cfg->scale_percent, what,
                                    sizeof(what));

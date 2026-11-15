@@ -63,6 +63,11 @@ bool Attached()
     return g_attached.load();
 }
 
+void SetLogPrefix(const char *prefix)
+{
+    g_game.logPrefix = prefix;
+}
+
 void OnFrame()
 {
     if (g_attached.load() && core::diag::Enabled(g_feature)) {

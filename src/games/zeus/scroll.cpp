@@ -24,6 +24,7 @@
 #include "core/log.h"
 #include "core/scroll/camera.h"
 #include "core/scroll/picture.h"
+#include "core/scroll/zoom.h"
 #include "games/zeus/timing.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -43,7 +44,8 @@ namespace picture = core::scroll::picture;
 const Site kScrollGetDirection{"scroll_get_direction", 0x50b7b0, {0x51, 0x53, 0x56, 0x57, 0xe8, 0x97, 0xb1, 0x00}};
 // view_scroll_step(dir): __cdecl, one argument; 8 does nothing.
 const Site kViewScrollStep{"view_scroll_step", 0x51cad0, {0xa1, 0x70, 0xfe, 0x63, 0x00, 0x8b, 0x4c, 0x24}};
-// view_clamp(): __cdecl, no arguments (keeps view_x / view_y in the map's range, view_y even). Called, not hooked.
+// view_clamp(): __cdecl, no arguments (keeps view_x / view_y in the map's range, view_y even). Called here (through the
+// zoom's hook once games/zeus/zoom has installed it, as Yongle's camera does).
 const Site kViewClamp{"view_clamp", 0x51cd60, {0x83, 0xec, 0x08, 0xa1, 0x88, 0x2f, 0xda, 0x00}};
 // sound_view_decay(): __cdecl, no arguments (the ambient sound weights, once per scroll step). Called, not hooked.
 const Site kSoundViewDecay{"sound_view_decay", 0x42e560, {0xb9, 0x54, 0x74, 0x77, 0x00, 0x8d, 0x51, 0x08}};
@@ -60,6 +62,10 @@ const Site kCityWidth{"city_view_width_px", 0x44a7c0, {0xa1, 0xb0, 0x3b, 0x7d, 0
 const Site kDragStart{"drag_select_start", 0x433380, {0x8b, 0x15, 0x74, 0x2f, 0xda, 0x00, 0x83, 0xec}};
 const Site kDragDraw{"drag_select_draw", 0x433400, {0x83, 0xec, 0x0c, 0x8b, 0x15, 0x74, 0x2f, 0xda}};
 const Site kDragFinish{"drag_select_finish", 0x433700, {0x83, 0xec, 0x20, 0xa0, 0xd9, 0xa6, 0xf2, 0x00}};
+// line_draw(x1, y1, x2, y2, colour): __cdecl, ret (the caller pops 5). Its pixels are dropped
+// at dd_width / dd_height (0x5096d0), as Emperor's: the drag selection's frame, zoomed, is worked out in
+// buffer pixels and drawn on the screen (the core's LineDraw).
+const Site kLineDraw{"line_draw", 0x509700, {0x8b, 0x44, 0x24, 0x10, 0x8b, 0x4c, 0x24, 0x08}};
 
 // Return addresses of the scroll_get_direction calls whose result goes to view_scroll_step (the city view; each is
 // "call 0x50b7b0; push eax; call 0x51cad0"). The two other callers (0x516218, 0x5c1e1e) keep the original behavior.
@@ -121,15 +127,19 @@ const camera::CameraGame kCamera{
     [] { Function<VoidFn>(kSoundViewDecay)(); },
     // Pericles has no key bindings yet: the arrow key itself (as Yongle's own keys do with its bindings off).
     [](unsigned vk) { return (GetAsyncKeyState(static_cast<int>(vk)) & 0x8000) != 0; },
-    // After a fault: the picture's state back to rest (Zeus has no zoom to put back).
-    [] { picture::Reset(); },
-    // No city zoom in Zeus yet: never moving, so no zoom step; the speed is never scaled.
-    [] { return false; },
-    [] {},
-    [](double *, double *) { return false; },
+    // After a fault: the picture's state back to rest, and the zoom back to 100% first (the game then draws straight
+    // into the back buffer, which a zoomed view would overrun).
+    [] {
+        picture::Reset();
+        core::scroll::zoom::Off("smooth scrolling was switched off after an error");
+    },
+    // The city's zoom (core/scroll/zoom.h).
+    &core::scroll::zoom::CameraMoving,
+    &core::scroll::zoom::CameraStep,
+    &core::scroll::zoom::CameraScale,
 };
 
-// The picture's view of Zeus (core/scroll/picture.h). No zoom (the zoom's callbacks say "100%" and "no").
+// The picture's view of Zeus (core/scroll/picture.h). The zoom's callbacks are the core's (core/scroll/zoom.h).
 const picture::PictureGame kPicture{
     "zeus",
     &kCamera,
@@ -143,11 +153,11 @@ const picture::PictureGame kPicture{
     kDragDrawCorner,
     &zeus::timing::DrawCityOriginal,
     &zeus::timing::DrawCityNotCounting, // the extra drawing after an abandoned one never counts
-    [] { return 100; },
-    [](int *w, int *h) { *w = *h = 0; },
-    [](picture::RenderCall &) { return false; },
-    [](core::diag::Restore &) {},
-    [](picture::ZoomMap *) { return false; },
+    &core::scroll::zoom::Percent,
+    &core::scroll::zoom::BufferSize,
+    &core::scroll::zoom::RenderZoomed,
+    &core::scroll::zoom::DragDrawZoom,
+    &core::scroll::zoom::DragLinesMap,
 };
 
 using GetDirection_fn = int(__cdecl *)();
@@ -157,6 +167,7 @@ using MouseToGrid_fn = int(__cdecl *)();
 using GridToScreen_fn = void(__cdecl *)(int, int, int *, int *);
 using CityWidth_fn = int(__cdecl *)();
 using Drag_fn = void(__fastcall *)(int *);
+using Line_fn = void(__cdecl *)(int, int, int, int, int);
 GetDirection_fn o_GetDirection;
 ScrollStep_fn o_ScrollStep;
 ScreenToGrid_fn o_ScreenToGrid, o_ScreenToGridRaw;
@@ -164,6 +175,7 @@ MouseToGrid_fn o_MouseToGrid;
 GridToScreen_fn o_GridToScreen;
 CityWidth_fn o_CityWidth;
 Drag_fn o_DragStart, o_DragDraw, o_DragFinish;
+Line_fn o_Line;
 
 int __cdecl GetDirection_detour()
 {
@@ -229,6 +241,14 @@ void __fastcall DragFinish_detour(int *drag)
     picture::DragAdjusted(kPicture, drag, [](int *drag) { Original(o_DragFinish, kDragFinish)(drag); }, false);
 }
 
+// Zoom: the drag selection's frame, zoomed, drawn on the screen (the core's LineDraw).
+void __cdecl Line_detour(int x1, int y1, int x2, int y2, int colour)
+{
+    core::scroll::zoom::LineDraw(x1, y1, x2, y2, colour, [](int x1, int y1, int x2, int y2, int colour) {
+        Original(o_Line, kLineDraw)(x1, y1, x2, y2, colour);
+    });
+}
+
 const Detour kDetours[] = {
     {&kScrollGetDirection, reinterpret_cast<void *>(&GetDirection_detour)},
     {&kViewScrollStep, reinterpret_cast<void *>(&ScrollStep_detour)},
@@ -240,6 +260,7 @@ const Detour kDetours[] = {
     {&kDragStart, reinterpret_cast<void *>(&DragStart_detour)},
     {&kDragDraw, reinterpret_cast<void *>(&DragDraw_detour)},
     {&kDragFinish, reinterpret_cast<void *>(&DragFinish_detour)},
+    {&kLineDraw, reinterpret_cast<void *>(&Line_detour)},
 };
 
 bool g_attached = false;
@@ -250,7 +271,7 @@ bool Attach(bool smooth)
 {
     const Site *sites[] = {&kScrollGetDirection, &kViewScrollStep, &kViewClamp,   &kSoundViewDecay, &kScreenToGrid,
                            &kMouseToGrid,        &kScreenToGridRaw, &kGridToScreen, &kCityWidth,      &kDragStart,
-                           &kDragDraw,           &kDragFinish};
+                           &kDragDraw,           &kDragFinish,      &kLineDraw};
     for (const Site *s : sites) {
         if (!Matches(*s)) {
             core_log("zeus: %s at 0x%lx does not match; smooth scrolling not installed (the game's own scrolling)",
@@ -275,6 +296,7 @@ bool Attach(bool smooth)
     ok = Install(kDragStart, &DragStart_detour, o_DragStart) && ok;
     ok = Install(kDragDraw, &DragDraw_detour, o_DragDraw) && ok;
     ok = Install(kDragFinish, &DragFinish_detour, o_DragFinish) && ok;
+    ok = Install(kLineDraw, &Line_detour, o_Line) && ok;
     ok = Install(kScrollGetDirection, &GetDirection_detour, o_GetDirection) && ok;
     if (!ok) {
         // The hooks that are in pass the calls through once the feature is off (remainder 0, no extent use).
@@ -357,6 +379,11 @@ const Detour *Detours(int *count)
 {
     *count = static_cast<int>(sizeof(kDetours) / sizeof(kDetours[0]));
     return kDetours;
+}
+
+const picture::PictureGame &Picture()
+{
+    return kPicture;
 }
 
 void StartForTest(bool smooth)

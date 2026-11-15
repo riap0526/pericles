@@ -31,6 +31,7 @@ set(GAME_SOURCES
     src/games/zeus/smoke.cpp
     src/games/zeus/notice.cpp
     src/games/zeus/scroll.cpp
+    src/games/zeus/zoom.cpp
 )
 
 # The offline tests of this game layer (run by src/games/zeus/tests.ps1 through proxy/ddraw/run_tests.ps1).
@@ -57,6 +58,7 @@ macro(game_add_tests)
         src/core/ui/info_window.cpp
         src/games/zeus/smoke.cpp src/games/zeus/notice.cpp src/core/ui/notice.cpp src/core/ui/notice_text.cpp
         src/games/zeus/scroll.cpp src/core/scroll/camera.cpp src/core/scroll/picture.cpp
+        src/games/zeus/zoom.cpp src/core/scroll/zoom.cpp src/core/platform/parallel.cpp
         src/core/display/city_zoom.cpp
         src/core/scroll/smooth_scroll.cpp
         src/core/settings/intro_movie.cpp src/core/display/logical_size.cpp

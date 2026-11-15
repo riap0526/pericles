@@ -21,6 +21,7 @@
 #include "games/zeus/state_check.h"
 #include "games/zeus/timing.h"
 #include "games/zeus/world_map.h"
+#include "games/zeus/zoom.h"
 #include "ini_template.h" // generated from src/games/zeus/zeus_engine.ini (CMakeLists.txt)
 
 #define WIN32_LEAN_AND_MEAN
@@ -119,6 +120,7 @@ extern "C" void zeus_register_settings(void)
     zeus::intro::RegisterSettings();       // [ui] intro_movie
     zeus::resolution::RegisterSettings();  // [ui] info_window
     zeus::fullscreen::RegisterSettings();  // [video] loading_screen, menu_screens, background_blur, background_brightness
+    zeus::zoom::RegisterSettings();        // [video] city_zoom, city_zoom_shrink (the core's, as Yongle's)
     zeus::world_map::RegisterSettings();   // [video] world_map, world_map_scale, world_map_background
     // The settings file this version ships: an older file gets its descriptions.
     core::settings::SetTemplate(zeus::kIniTemplate);
@@ -158,10 +160,12 @@ extern "C" void zeus_attach(void)
     // The allies' flags at the original's pace; the map drawn with the game's own height (without it the map
     // reads past its picture on a screen higher than 768, so the logical resolution needs it).
     const bool mapHeight = zeus::world_map::Attach();
+    bool layout = false; // our resolution's layout is installed (the zoom's viewports)
     if (!mapHeight) {
         core_log("zeus: resolution: not installed (the world map needs the game's own height): the game's own sizes");
     }
     else if (zeus::resolution::Attach(core_config_get())) { // the logical resolution
+        layout = true;
         core::settings::OnChange(core::settings::Find("video", "resolution"), &ApplyResolution);
         core::settings::OnChange(core::settings::Find("video", "scale"), &ApplyResolution);
         if (zeus::diag::PicturesHooked()) {
@@ -179,6 +183,16 @@ extern "C" void zeus_attach(void)
     // gameplay.smooth_scroll from the panel.
     if (zeus::scroll::Attach(core_config_get()->smooth_scroll != 0)) {
         core::settings::OnChange(core::settings::Find("gameplay", "smooth_scroll"), &ApplySmooth);
+        // Zoom: drawn by smooth scrolling's picture, laid out by the resolution's viewports (as Yongle's).
+        if (layout) {
+            zeus::zoom::Attach();
+        }
+        else {
+            core_log("zoom: not installed (our layout is not): the city stays at 100%%");
+        }
+    }
+    else {
+        core_log("zoom: not installed (smooth scrolling's hooks are not): the city stays at 100%%");
     }
     // Screenshot file names and the present mode log's lines carry game_screen 0xf2a6dd (one byte, reads only).
     // The tag is asked for when a screenshot is taken (game thread): the draw census sums up the next frame too.

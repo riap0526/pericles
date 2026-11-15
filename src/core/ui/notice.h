@@ -40,6 +40,10 @@ void Install(const Game &game);
 
 bool Attached();
 
+// Start-up, from the game layer's Attach before its checks: the prefix of Post's log line also when Install is never
+// reached (the boxes not hooked: our messages on the caption line).
+void SetLogPrefix(const char *prefix);
+
 // From the game layer's detour of the game's notice drawing, before the game's own: the texts posted since the last
 // frame, then the latest zoom. Guarded: a fault switches this off (logged) and Post goes back to the caption line.
 void OnFrame();

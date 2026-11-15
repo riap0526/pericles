@@ -9,6 +9,7 @@
 #include "core/diag/state_line.h"
 #include "core/display/virtual_display.h"
 #include "core/log.h"
+#include "core/scroll/zoom.h"
 #include "core/settings/settings.h"
 #include "core/ui/panel.h"
 #include "core/ui/perf_view.h"
@@ -561,7 +562,8 @@ void CityRender(int a, int b, int c)
     g_viewB = b;
     g_viewC = c;
     const int now[4] = {*kCityLeft, *kCityTop, *kCityRight, *kCityBottom};
-    if (std::memcmp(now, g_lastCity, sizeof(now)) != 0) {
+    // Not while the wheel moves the zoom (the viewport changes every frame then); the layout it ends on is logged.
+    if (!core::scroll::zoom::Moving() && std::memcmp(now, g_lastCity, sizeof(now)) != 0) {
         core_log("zeus: city viewport (%d,%d)-(%d,%d) = %dx%d in mode %dx%d (view %d,%d,%d)", now[0], now[1], now[2],
                  now[3], now[2] - now[0], now[3] - now[1], *kWidth, *kHeight, a, b, c);
         std::memcpy(g_lastCity, now, sizeof(now));

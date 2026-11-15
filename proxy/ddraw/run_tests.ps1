@@ -19,6 +19,8 @@
 #               (no DLL; writes test_camera.log; ~2 s)
 #   test_picture core/scroll/picture: smooth scrolling's picture on a fake game (the buffer, the extent, a clip past
 #               the bottom, conversions, the drag, a fault) (no DLL; writes test_picture.log)
+#   test_zoom   core/scroll/zoom: the city's zoom on a fake game (the wheel, the middle button, the map's limit,
+#               the zoomed drawing, a scaling that fails) (no DLL; writes test_zoom.log)
 #   test_logical core/display/logical_size: display scale rules (no DLL)
 #   test_moved_rect core/display/moved_rect: a rectangle shown elsewhere, every buffer between no-access pages
 #   test_city_layout core/display/city_layout: spare rows, the top bar's tiling, the sidebar filler's inset panel,
@@ -97,6 +99,7 @@ Run 'test_settings' 'emulated' @()
 Run 'test_scroll' 'emulated' @()
 Run 'test_camera' 'emulated' @()
 Run 'test_picture' 'emulated' @()
+Run 'test_zoom' 'emulated' @()
 Run 'test_logical' 'emulated' @()
 Run 'test_common_sizes' 'emulated' @()
 Run 'test_city_zoom' 'emulated' @()

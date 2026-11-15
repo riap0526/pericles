@@ -25,8 +25,9 @@
 // already reaches past the screen's bottom (Zeus's layout, into the back buffer's spare rows) only the rows on the
 // screen are shown.
 //
-// The city's zoom (Emperor's): the game layer's callbacks (zoomPercent, zoomBufferSize, renderZoomed, ...); a game
-// without a zoom says so with callbacks that return "100%" / "no".
+// The city's zoom: the PictureGame's callbacks (zoomPercent, zoomBufferSize, renderZoomed, ...), which both games
+// fill with the core's zoom (core/scroll/zoom.h); a game without a zoom would say so with callbacks that return
+// "100%" / "no".
 //
 // Failure (our features never end the game): every call that changes game state for us runs under core/diag's guard
 // with the changes in a Restore list (moved origin, larger viewport and clip, our buffer as draw_buffer). On an
@@ -73,7 +74,7 @@ struct PictureVars {
     core::site::Var<signed char> tileHeights; // the ground's height of each tile (by tile index)
 };
 
-// The city's zoom as the conversions see it (Emperor's; Zeus has none).
+// The city's zoom as the conversions see it (core/scroll/zoom.h).
 struct ZoomMap {
     int left, top;             // where the city starts (screen and buffer)
     int showRight, showBottom; // the city on the screen (exclusive)
@@ -191,7 +192,7 @@ void SaveCityBuffer(int report);
 void LogInstalled(const PictureGame &g);
 
 // ---------------------------------------------------------------------------------------------
-// For the game layer's zoom (Emperor's RenderZoomed, ZoomStep, line_draw)
+// For the zoom (core/scroll/zoom: RenderZoomed, CameraStep, LineDraw)
 
 // The zoom now (false at 100%, or without an extent): outside the drawing from the screen's sizes, while city_render
 // draws the drawing's own.
@@ -210,7 +211,7 @@ void SetRenderShown(const Shown &s);
 void SetRenderZoom(const ZoomMap &m);
 // The flag "city_render draws into our buffer" (for r.Set).
 bool *InRenderFlag();
-// The drag selection works in buffer pixels (Emperor's line_draw detour reads it).
+// The drag selection works in buffer pixels.
 bool BufferMode();
 // The camera's pixel remainder.
 int RemX();

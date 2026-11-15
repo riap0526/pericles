@@ -13,6 +13,7 @@
 #include "core/diag/stall.h"
 #include "core/log.h"
 #include "core/output/sdl_output.h"
+#include "core/scroll/zoom.h"
 #include "core/platform/timing.h"
 #include "core/settings/settings.h"
 #include "core/sim/pace.h"
@@ -27,6 +28,7 @@
 #include "games/zeus/site.h"
 #include "games/zeus/smoke.h"
 #include "games/zeus/state_check.h"
+#include "games/zeus/zoom.h"
 
 #include <mmsystem.h>
 
@@ -209,14 +211,17 @@ void LogRates(const char *why)
     TakeCopyStats(&copied, &buildings);
     long multi = 0, torn = 0;
     core::diag::TakeIntegrity(&multi, &torn);
+    int mapCols = 0, mapRows = 0;
+    zeus::zoom::MapRange(&mapCols, &mapRows); // as Yongle's rate line
     core_log("rates%s: frames %.0f/s (at most %d/s), sim ticks %.1f/s (%ld with game-time animation), city drawings "
              "%.1f/s counting + %.1f/s put back (%.0f MB/s, buildings 0..%lu), game presents %.1f/s, frames shown "
-             "%.1f/s over %lu ms (present=%s, display %d Hz, game speed %d%%, screen %d, mode %dx%d, timer %u us); "
-             "frame check: %ld game frames with 2+ presents, %ld torn%s%s",
+             "%.1f/s over %lu ms (present=%s, display %d Hz, game speed %d%%, screen %d, mode %dx%d, city zoom %d%% on "
+             "map %dx%d %s, timer %u us); frame check: %ld game frames with 2+ presents, %ld torn%s%s",
              why, g_frames / s, FrameCap(), g_ticks / s, g_animTicks, counted / s, reverted / s,
              copied / s / (1024.0 * 1024.0), static_cast<unsigned long>(buildings), presented / s, shown / s, ms,
              kPresent[core_config_get()->present], core::output::RefreshHz(), *kGameSpeed,
-             static_cast<int>(*kGameScreen), *kModeWidth, *kModeHeight, core_timer_resolution_us(), multi, torn,
+             static_cast<int>(*kGameScreen), *kModeWidth, *kModeHeight, core::scroll::zoom::Percent(), mapCols, mapRows,
+             core::scroll::zoom::AverageShrink() ? "average" : "nearest", core_timer_resolution_us(), multi, torn,
              scroll, paceNote);
     core::diag::LogRateTail(why); // time, time max, intervals, cpu (the same lines in every game)
     g_frames = g_ticks = g_animTicks = 0;

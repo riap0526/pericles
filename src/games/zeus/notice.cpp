@@ -178,7 +178,18 @@ int NewBox(const char *text)
     const int px = TextWidth(s->text);
     const short game = s->width;
     s->width = BoxWidth(px);
-    core_log("zeus: notice: %d px wide: the %d box (the game's %d)", px, s->width, game);
+    // The first 20 boxes only (the zoom box is opened again and again).
+    static int logged = 0;
+    constexpr int kWidthLogs = 20;
+    if (logged < kWidthLogs) {
+        core_log("zeus: notice: %d px wide: the %d box (the game's %d)", px, s->width, game);
+    }
+    else if (logged == kWidthLogs) {
+        core_log("zeus: notice: the box widths are not logged any more");
+    }
+    if (logged <= kWidthLogs) {
+        ++logged;
+    }
     return k;
 }
 
@@ -229,6 +240,7 @@ core::ui::notice::Game ZeusGame()
 
 bool Attach()
 {
+    core::ui::notice::SetLogPrefix("zeus: notice"); // also on the caption line, when the boxes are not hooked
     const Site *sites[] = {&kDraw, &kShow, &kTextWidth, &kTextLength, &kTextCopy};
     for (const Site *s : sites) {
         if (!Matches(*s)) {

@@ -141,8 +141,10 @@
 #include "core/ddraw/surface_memory.h"
 #include "core/display/framed_screens.h"
 #include "core/display/logical_size.h"
+#include "core/display/city_zoom.h"
 #include "core/display/map_screen.h"
 #include "core/output/sdl_output.h"
+#include "core/scroll/zoom.h"
 #include "core/ui/info_window.h"
 #include "games/zeus/anim_clock.h"
 #include "games/zeus/fullscreen.h"
@@ -156,6 +158,7 @@
 #include "games/zeus/state_check.h"
 #include "games/zeus/timing.h"
 #include "games/zeus/world_map.h"
+#include "games/zeus/zoom.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -227,6 +230,12 @@ void SetFraming(const core::output::Framing &f)
     }
     g_framing = f;
     ++g_framings;
+}
+// The core's zoom: the wheel's mouse filter, kept for the zoom scenarios to call.
+bool (*g_mouseFilter)(UINT, WPARAM, int, int) = nullptr;
+void SetMouseFilter(bool (*filter)(UINT, WPARAM, int, int))
+{
+    g_mouseFilter = filter;
 }
 } // namespace core::display
 
@@ -912,7 +921,7 @@ constexpr DWORD fTopBar = 0x59ebe0, fImageGroup = 0x40fcf0, fImageDraw = 0x5acf5
                 fFillRect = 0x509b20, fMessagePanel = 0x4f2d80;
 constexpr int kMaxDraws = 4096; // image_draw calls recorded (the filler at 3840x2160: about 900)
 struct CityLayoutCalls {
-    int topBars = 0, draws = 0, fills = 0, panels = 0, panelClip = 0, sidebars = 0, worldSidebars = 0;
+    int topBars = 0, draws = 0, fills = 0, panels = 0, panelClip = 0, panelClipR = 0, sidebars = 0, worldSidebars = 0;
     int drawX[kMaxDraws] = {}, drawY[kMaxDraws] = {}, drawIds[kMaxDraws] = {}, drawId = 0;
 } g_cityLayout;
 // Each group's entry: +4 is its first image (+ 0x4000 = the id for image_draw).
@@ -1014,6 +1023,7 @@ void __cdecl FakeMessagePanel()
 {
     ++g_cityLayout.panels;
     g_cityLayout.panelClip = At<int>(aClipBottom);
+    g_cityLayout.panelClipR = At<int>(0x7d3b90);
     if (Fires("city_message_layout")) {
         Fault();
     }
@@ -1974,6 +1984,21 @@ void NoticeBoxes()
               SlotShort(1, 0) == 1000,
           "smoke: the red text shown through id 1000 as the others");
     Check(LogContains("zeus: notice (red): Red test"), "log: the red text");
+
+    // The box widths are logged for the first 20 boxes only (the zoom box is opened again and
+    // again); then one line says so.
+    Check(!LogContains("the box widths are not logged any more"), "fewer than 21 boxes: each width logged");
+    for (int i = 0; i < 16; ++i) {
+        for (int k = 0; k < 5; ++k) {
+            At<short>(aSlots + k * 0x78 + 6) = 0;
+        }
+        core::ui::notice::Post("box");
+        core::ui::notice::OnFrame();
+    }
+    Check(LogContains("zeus: notice: the box widths are not logged any more"), "the 21st box: one line, then no more");
+    for (int k = 0; k < 5; ++k) {
+        At<short>(aSlots + k * 0x78 + 6) = 0;
+    }
 
     // A fault inside city_warning_show: city_warning_text and warnings_on put back, notices off, the caption line.
     g_fault = "city_warning_show";
@@ -3432,6 +3457,334 @@ void ScrollAttach()
           "each passed to the game");
 }
 
+// The notice boxes not hooked (Attach fails: the sites are not the game's here): our messages on the caption line,
+// logged with Pericles's prefix (before, the core's default "notice").
+void NoticePrefix()
+{
+    Check(!zeus::notice::Attach(), "Attach where the sites do not match: false");
+    const int caption = core::output::g_captionNotices;
+    core::ui::notice::Post("unhooked");
+    Check(core::output::g_captionNotices == caption + 1 && LogContains("zeus: notice: unhooked"),
+          "the caption line, logged as zeus: notice");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Zoom: the core's zoom (core/scroll/zoom) with Zeus's layer -- the wheel and the middle
+// button on the city screens only, the layout's view for the scale (Zeus's bottom margin rule), the message panel and
+// the bottom strip in the city as shown, the zoomed drawing, conversions and the drag's lines (Yongle's zoom_conversions), and
+// the zoom switched off when the scaling fails or smooth scrolling faults.
+
+constexpr DWORD aMapColMin = 0xfa05b4, aMapColMax = 0xfa05b0, aMapRowMin = 0xfa05ac, aMapRowMax = 0xfa05a8,
+                aBottomMargin = 0x8f9820, aDirection = 0xda2f88, aViewDrawnX = 0x7d3bd0, aViewDrawnY = 0x7d3bcc;
+constexpr DWORD fLineDraw = 0x509700;
+
+struct LineSeen {
+    int calls = 0, x1 = 0, y1 = 0, x2 = 0, y2 = 0, ddH = 0;
+} g_line;
+
+void __cdecl FakeLineDraw(int x1, int y1, int x2, int y2, int)
+{
+    ++g_line.calls;
+    g_line.x1 = x1;
+    g_line.y1 = y1;
+    g_line.x2 = x2;
+    g_line.y2 = y2;
+    g_line.ddH = At<int>(aDdHeight2);
+}
+
+using Line_fn = void(__cdecl *)(int, int, int, int, int);
+
+bool Wheel(int delta, int x, int y, WORD keys = 0)
+{
+    return core::display::g_mouseFilter(WM_MOUSEWHEEL, MAKEWPARAM(keys, static_cast<WORD>(static_cast<short>(delta))),
+                                        x, y);
+}
+
+bool Middle(int x, int y)
+{
+    return core::display::g_mouseFilter(WM_MBUTTONDOWN, 0, x, y);
+}
+
+// One wheel movement (delta) at (x, y) and the zoom's step (whole tiles: the target at once).
+void WheelTo(int delta, int x = 500, int y = 500)
+{
+    Wheel(delta, x, y);
+    core::scroll::zoom::CameraStep();
+}
+
+// The view the core's rule gives for a percent on the 1920x1080 city (1734 x 1050 px, columns of 60, half rows of 15)
+// and the current map (Zeus's clamp: the map's half rows less the margin and 4).
+core::display::ZoomLayout Expected(int percent)
+{
+    const int cols = At<int>(aMapColMax) - At<int>(aMapColMin), rows = At<int>(aMapRowMax) - At<int>(aMapRowMin);
+    return core::display::ZoomFor({percent, 1734, 1050, 60, 15, cols, rows, rows - (At<unsigned char>(aBottomMargin) + 4),
+                                   150});
+}
+
+bool ViewIs(const core::display::ZoomLayout &l)
+{
+    return At<int>(aColsZ) == l.cols && At<int>(aRowsZ) == l.rows;
+}
+
+// 1920x1080, our layout, a map of 200 x 400 (bottom margin 0), smooth scrolling installed (whole tiles: the wheel reaches its target in one step)
+// and the zoom given Zeus's view (without view_clamp's hook: the fake view_clamp is called).
+void SetupZoom()
+{
+    SetupResolution();
+    PictureFakes();
+    Thunk(fViewClamp, reinterpret_cast<void *>(&FakeViewClamp));
+    Thunk(fLineDraw, reinterpret_cast<void *>(&FakeLineDraw));
+    ToCity();
+    BackBuffer(1920, 1080);
+    At<int>(aMapColMin) = 0;
+    At<int>(aMapColMax) = 200;
+    At<int>(aMapRowMin) = 0;
+    At<int>(aMapRowMax) = 400;
+    At<unsigned char>(aBottomMargin) = 0;
+    At<int>(aDirection) = 0;
+    zeus::scroll::StartForTest(false);
+    zeus::zoom::InstallForTest();
+    Res<Tick_fn>("ui_set_sidebar_position")();
+    Res<Tick_fn>("city_viewport_narrow")();
+}
+
+// city_bottom_and_sidebar's fill_rect call at 0x58e320 (returning to 0x58e325), as in message_panel.
+Tick_fn BottomStrip()
+{
+    using Fill_fn = void(__cdecl *)(int, int, int, int, int);
+    BYTE *stub = reinterpret_cast<BYTE *>(0x58e300 + g_imageShift);
+    const DWORD args[5] = {0, 6, 1920, 1074, 0}; // pushed in this order: colour, h, w, y, x
+    for (int i = 0; i < 5; ++i) {
+        stub[i * 5] = 0x68;
+        *reinterpret_cast<DWORD *>(stub + i * 5 + 1) = args[i];
+    }
+    for (int i = 25; i < 0x20; ++i) {
+        stub[i] = 0x90;
+    }
+    BYTE *call = reinterpret_cast<BYTE *>(0x58e320 + g_imageShift);
+    call[0] = 0xe8;
+    *reinterpret_cast<DWORD *>(call + 1) =
+        reinterpret_cast<DWORD>(Res<Fill_fn>("fill_rect")) - reinterpret_cast<DWORD>(call + 5);
+    call[5] = 0x83; // add esp, 0x14
+    call[6] = 0xc4;
+    call[7] = 0x14;
+    call[8] = 0xc3;
+    return reinterpret_cast<Tick_fn>(stub);
+}
+
+void ZoomWheel()
+{
+    SetupZoom();
+    Check(core::scroll::zoom::Percent() == 100 && At<int>(aColsZ) == 28 && At<int>(aRowsZ) == 71,
+          "at start: 100%, the layout's 28 x 71");
+    Check(Wheel(-120, 500, 500), "the wheel over the city: taken");
+    core::scroll::zoom::CameraStep();
+    Check(core::scroll::zoom::Percent() == 125 && ViewIs(Expected(125)),
+          "a notch towards the player: 125%, the view the core's rule gives");
+    Check(At<int>(aViewDrawnX) == At<int>(aViewX) && At<int>(aViewDrawnY) == At<int>(aViewY),
+          "the drawn view written with the view after the relayout (viewport_init set it to the map's middle)");
+    Check(LogContains("zoom: wheel at (500,500): 100% -> 125%"), "log: the wheel");
+    Check(!Wheel(-120, 1800, 500) && core::scroll::zoom::Percent() == 125, "the wheel over the sidebar: the game's");
+    At<unsigned char>(aGameScreen) = 0x07;
+    Check(!Wheel(-120, 500, 500), "a sidebar panel's dialog (0x07): the game's");
+    At<unsigned char>(aGameScreen) = 0x06;
+    Check(!Wheel(-120, 500, 500), "the build submenu (0x06): the game's (it does nothing with it)");
+    At<unsigned char>(aGameScreen) = 0x09;
+    Check(!Wheel(-120, 500, 500), "the information window (0x09): the game's");
+    At<unsigned char>(aGameScreen) = 0x48;
+    Check(Wheel(0, 500, 500), "the city with a company selected (0x48): ours");
+    At<unsigned char>(aGameScreen) = 0x01;
+    Check(Wheel(-120, 500, 500, MK_LBUTTON), "dragging with the left button: taken ...");
+    core::scroll::zoom::CameraStep();
+    Check(core::scroll::zoom::Percent() == 125, "... but no zoom (the drag works in its scale)");
+    At<unsigned char>(aMouseMode) = 0x4d;
+    Check(Wheel(-120, 500, 500), "a military drag selection: taken ...");
+    core::scroll::zoom::CameraStep();
+    Check(core::scroll::zoom::Percent() == 125, "... but no zoom");
+    At<unsigned char>(aMouseMode) = 0;
+    WheelTo(-120);
+    Check(core::scroll::zoom::Percent() == 150 && ViewIs(Expected(150)), "another notch: 150%");
+    WheelTo(-120);
+    Check(core::scroll::zoom::Percent() == 150 && LogContains("150% -> 150% (nothing to do)"),
+          "at the cap (150): nothing to do");
+    Check(Middle(500, 500), "the middle button over the city: taken");
+    core::scroll::zoom::CameraStep();
+    Check(core::scroll::zoom::Percent() == 100 && At<int>(aColsZ) == 28 && At<int>(aRowsZ) == 71,
+          "the middle button: back to 100%, the layout's view");
+    WheelTo(240);
+    Check(core::scroll::zoom::Percent() == 50 && ViewIs(Expected(50)), "two notches away: 50%");
+    // The adventure editor's city (screen 0x01 at our resolution, editor_mode 1): no zoom, the wheel the game's.
+    At<int>(0x665e2c) = 1;
+    Res<Tick_fn>("city_viewport_narrow")();
+    Check(core::scroll::zoom::Percent() == 100 && At<int>(aColsZ) == 28 && At<int>(aRowsZ) == 71 &&
+              !Wheel(-120, 500, 500) && !Middle(500, 500),
+          "the editor's city: 100% (the layout's view), the wheel and the middle button the game's");
+    At<int>(0x665e2c) = 0;
+    Res<Tick_fn>("city_viewport_narrow")();
+    Check(core::scroll::zoom::Percent() == 50, "out of the editor: the zoom again (50%)");
+    At<int>(aModeW) = 1024; // the game's own size: not zoomed, the wheel the game's
+    At<int>(aModeH) = 768;
+    Res<Tick_fn>("ui_set_sidebar_position")();
+    Res<Tick_fn>("city_viewport_narrow")();
+    Check(core::scroll::zoom::Percent() == 100 && !Wheel(-120, 300, 300),
+          "1024x768: 100% (the game's layout), the wheel the game's");
+    Check(zeus::scroll::Working(), "smooth scrolling still on");
+}
+
+void ZoomLayoutScenario()
+{
+    SetupZoom();
+    Tick_fn strip = BottomStrip();
+    WheelTo(-240);
+    Check(core::scroll::zoom::Percent() == 150 && At<int>(aClipRightZ) > 1734 && At<int>(aClipBottom) > 1080,
+          "150%: the clip (the zoomed buffer's) past the sidebar and the screen's bottom");
+    const int clipR = At<int>(aClipRightZ), clipB = At<int>(aClipBottom);
+    Res<Tick_fn>("city_message_layout")();
+    Check(g_cityLayout.panelClip == 1080 && g_cityLayout.panelClipR == 1734,
+          "150%: the message panel laid out on the screen's bottom, as wide as the city up to the sidebar");
+    Check(At<int>(aClipRightZ) == clipR && At<int>(aClipBottom) == clipB, "afterwards the clip is the zoomed one again");
+    WheelTo(480);
+    Check(core::scroll::zoom::Percent() == 50 && At<int>(aClipBottom) < 1080, "50%: the clip above the screen's bottom");
+    Res<Tick_fn>("city_message_layout")();
+    Check(g_cityLayout.panelClip == 1080 && g_cityLayout.panelClipR == 1734, "50%: the panel on the screen's bottom, up to the sidebar");
+    strip();
+    Check(g_cityLayout.fills == 0, "50%: the bottom strip not blanked (the city is shown to the bottom)");
+    Middle(500, 500);
+    core::scroll::zoom::CameraStep();
+    Res<Tick_fn>("city_message_layout")();
+    Check(core::scroll::zoom::Percent() == 100 && g_cityLayout.panelClip == 1080 && g_cityLayout.panelClipR == 1734,
+          "100%: the panel up to the sidebar too (as Yongle's; the clip ends at 1678)");
+    // The build cost text (seen in testing: cut off below 100%) and a loaded game (back to the starting zoom).
+    struct Cost {
+        static void __cdecl Draw()
+        {
+            g_cityLayout.panelClip = At<int>(aClipBottom);
+            g_cityLayout.panelClipR = At<int>(0x7d3b90);
+        }
+        static int __cdecl Load(int, int, int, int)
+        {
+            return 7;
+        }
+    };
+    Thunk(0x4542b0, reinterpret_cast<void *>(&Cost::Draw));
+    Thunk(0x50d6e0, reinterpret_cast<void *>(&Cost::Load));
+    int nz;
+    const zeus::Detour *dz = zeus::zoom::Detours(&nz);
+    WheelTo(240); // 100 -> 50
+    Detour<Tick_fn>(dz, nz, "build_cost_text_draw")();
+    Check(core::scroll::zoom::Percent() == 50 && g_cityLayout.panelClip == 1080 && g_cityLayout.panelClipR == 1734 &&
+              At<int>(aClipBottom) < 1080,
+          "50%: the build cost text clipped to the city as shown (the screen's bottom, the sidebar), the clip back");
+    using Load_fn = int(__cdecl *)(int, int, int, int);
+    Check(Detour<Load_fn>(dz, nz, "save_load")(1, 2, 3, 4) == 7 && core::scroll::zoom::Percent() == 100 &&
+              At<int>(aColsZ) == 28 && At<int>(aRowsZ) == 71,
+          "a game loaded (save_load): the starting zoom (100%) and the layout's view at once, the result passed on");
+    // Another map (loading a game): the view laid out again before the game clamps (view_clamp's hook).
+    WheelTo(-240);
+    At<int>(aMapColMax) = 60;
+    At<int>(aMapRowMax) = 100;
+    At<unsigned char>(aBottomMargin) = 3;
+    int n;
+    const zeus::Detour *d = zeus::zoom::Detours(&n);
+    Detour<Tick_fn>(d, n, "view_clamp")();
+    const core::display::ZoomLayout small = Expected(150);
+    Check(LogContains("zoom: the city view is laid out again (the map's range changed)") &&
+              core::scroll::zoom::Percent() == small.percent && ViewIs(small) && small.percent < 150,
+          "another map (60 x 100): laid out again at once, capped by the map");
+    Check(LogContains("map range 60 x 100 (the clamp holds 93 half rows)"),
+          "Zeus's clamp: the map's half rows less the margin (3) and 4");
+    Check(LogContains("zoom: the bottom margin for direction 0 is 3 half row(s)"), "log: the bottom margin");
+    Check(zeus::scroll::Working(), "smooth scrolling still on");
+}
+
+void ZoomRender()
+{
+    SetupZoom();
+    WheelTo(-240); // whole tiles: the target at once
+    zeus::scroll::SetSmooth(true);
+    zeus::scroll::SetRemainderForTest(5, 6);
+    int bufW = 0, bufH = 0;
+    core::scroll::zoom::BufferSize(&bufW, &bufH);
+    const int cols = At<int>(aColsZ), rows = At<int>(aRowsZ);
+    BYTE *back = At<BYTE *>(aDrawBuffer);
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(core::scroll::zoom::Percent() == 150 && g_calls.draws == 1 && g_pic.buffer != back &&
+              g_pic.cols == cols + 1 && g_pic.rows == rows + 2,
+          "150%: drawn once into our buffer, the view a column and a row pair larger meanwhile");
+    Check(At<BYTE *>(aDrawBuffer) == back && At<int>(aColsZ) == cols && At<int>(aDdHeight2) == 1080,
+          "afterwards: draw_buffer, the viewport and dd_height the game's");
+    Check(LogContains("zoom: city buffer"), "log: the zoom's buffer");
+    int left, top, right, bottom;
+    const char *why = nullptr;
+    Check(zeus::scroll::DrawnCity(&left, &top, &right, &bottom, &why) && left == 0 && top == 30 && right == 1734 &&
+              bottom == 1080,
+          "the menus' background: the city as shown on the screen (not the zoomed buffer)");
+    Check(Scr<Int_fn>("city_view_width_px")() == 1734, "the Game paused banner: the city's width on the screen");
+    namespace cd = core::display;
+    const double fx = static_cast<double>(bufW) / 1734, fy = static_cast<double>(bufH) / 1050;
+    Scr<S2g_fn>("screen_to_grid")(100, 140, 0);
+    Check(g_conv.x == cd::ZoomToBuffer(100, 0, fx) && g_conv.y == cd::ZoomToBuffer(140, 30, fy) && g_conv.ox == -5 &&
+              g_conv.oy == 24,
+          "screen_to_grid: the buffer pixel the point shows, the origin moved by the remainder");
+    At<int>(aMouseX) = 1750;
+    At<int>(aMouseY) = 500;
+    Check(Scr<Mouse_fn>("mouse_to_grid")() == 0, "the cursor on the sidebar: no tile (the zoomed view reaches past it)");
+    // The drag selection's frame: drag_select_draw's limits as buffer pixels, its lines drawn on the screen.
+    struct DragLine {
+        static void __fastcall Draw(int *drag)
+        {
+            g_dragSeen[0] = At<int>(aSidebarX);
+            g_dragSeen[1] = At<int>(aDdHeight2);
+            Scr<Line_fn>("line_draw")(drag[2], drag[3], drag[2] + 100, drag[3], 0);
+        }
+    };
+    Thunk(fDragDraw, reinterpret_cast<void *>(&DragLine::Draw));
+    At<int>(aMouseX) = 500;
+    At<int>(aMouseY) = 500;
+    int drag[16] = {0, 0, 300, 400};
+    Scr<DragZ_fn>("drag_select_start")(drag);
+    zeus::scroll::SetRemainderForTest(5, 6);
+    Scr<DragZ_fn>("drag_select_draw")(drag);
+    Check(g_dragSeen[0] == cd::ZoomToBuffer(1734, 0, fx) && g_dragSeen[1] == cd::ZoomToBuffer(1080, 30, fy),
+          "drag_select_draw: sidebar_x and dd_height as buffer pixels while it runs");
+    Check(g_line.calls == 1 && g_line.x1 == cd::ZoomToScreen(300, 0, fx) && g_line.x2 == cd::ZoomToScreen(400, 0, fx) &&
+              g_line.y1 == cd::ZoomToScreen(400, 30, fy) && g_line.ddH == 1080,
+          "line_draw: the frame's buffer pixels drawn on the screen, with the screen's dd_height");
+    Check(At<int>(aSidebarX) == 1734 && At<int>(aDdHeight2) == 1080, "afterwards sidebar_x and dd_height the game's");
+    Scr<Line_fn>("line_draw")(1, 2, 3, 4, 0);
+    Check(g_line.calls == 2 && g_line.x1 == 1 && g_line.y2 == 4, "line_draw elsewhere: as the game's");
+    // The scaling fails: the zoom off for the rest of the run, laid out at 100 at once; the game's
+    // drawing is not made again (it would count).
+    core::scroll::zoom::FailScalingForTest(true);
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(g_calls.draws == 2 && core::scroll::zoom::Percent() == 100 && At<int>(aColsZ) == 28 && At<int>(aRowsZ) == 71,
+          "the scaling fails: drawn once, the zoom at 100% and the layout's view at once");
+    Check(LogContains("zoom: off for the rest of the run (the ") && LogContains("could not be shrunk"),
+          "log: why the zoom is off");
+    core::scroll::zoom::FailScalingForTest(false);
+    Check(!Wheel(-120, 500, 500), "afterwards the wheel is the game's");
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(g_calls.draws == 3 && g_pic.cols != cols + 1, "the next drawing at 100% (smooth scrolling's own)");
+    Check(zeus::scroll::Working(), "smooth scrolling still on");
+}
+
+// A fault in smooth scrolling's drawing while zoomed: the zoom off and laid out at 100% before the game draws again
+// its own way (straight into the back buffer: a zoomed view there would overrun it).
+void ZoomFault()
+{
+    SetupZoom();
+    WheelTo(-240); // whole tiles: the target at once
+    zeus::scroll::SetSmooth(true);
+    BYTE *back = At<BYTE *>(aDrawBuffer);
+    g_fault = "city_render";
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(!zeus::scroll::Working() && core::scroll::zoom::Percent() == 100, "fault: smooth scrolling and the zoom off");
+    Check(g_calls.draws == 2 && g_pic.buffer == back && g_pic.cols == 28 && g_pic.rows == 71,
+          "drawn again the game's way with the layout's 100% view");
+    Check(LogContains("zoom: off for the rest of the run (smooth scrolling was switched off after an error)"),
+          "log: the zoom off with the reason");
+}
+
 const Scenario kScenarios[] = {
     {"pace_ok", &PaceOk},
     {"pace_fault", &PaceFault},
@@ -3481,6 +3834,11 @@ const Scenario kScenarios[] = {
     {"city_extent", &CityExtent},
     {"figure_portrait", &FigurePortrait},
     {"scroll_attach", &ScrollAttach},
+    {"notice_prefix", &NoticePrefix},
+    {"zoom_wheel", &ZoomWheel},
+    {"zoom_layout", &ZoomLayoutScenario},
+    {"zoom_render", &ZoomRender},
+    {"zoom_fault", &ZoomFault},
 };
 
 } // namespace

@@ -6,6 +6,7 @@
 #pragma once
 
 #include "core/diag/guard.h"
+#include "core/scroll/picture.h"
 #include "games/zeus/site.h"
 
 #include <cstddef>
@@ -52,6 +53,9 @@ bool DrawnCity(int *left, int *top, int *right, int *bottom, const char **why);
 
 // For a problem report (game thread): saves our city buffer as last drawn, or logs that it has not been used yet.
 void SaveCityBuffer(int report);
+
+// The picture's view of Zeus, for the core's zoom (games/zeus/zoom: core/scroll/zoom.h ZoomGame).
+const core::scroll::picture::PictureGame &Picture();
 
 // For the offline tests (src/games/zeus/test_restore.cpp): the detours by site, the setting without the hooks, the
 // pixel remainder.
