@@ -56,7 +56,8 @@ macro(game_add_tests)
         src/core/ddraw/surface_memory.cpp src/core/display/moved_rect.cpp src/core/display/window_move.cpp
         src/core/ui/info_window.cpp
         src/games/zeus/smoke.cpp src/games/zeus/notice.cpp src/core/ui/notice.cpp src/core/ui/notice_text.cpp
-        src/games/zeus/scroll.cpp src/core/scroll/camera.cpp
+        src/games/zeus/scroll.cpp src/core/scroll/camera.cpp src/core/scroll/picture.cpp
+        src/core/display/city_zoom.cpp
         src/core/scroll/smooth_scroll.cpp
         src/core/settings/intro_movie.cpp src/core/display/logical_size.cpp
         src/core/display/resolution_switch.cpp src/core/sim/panel_pause.cpp

@@ -111,6 +111,26 @@
 //   direction_fault      view_clamp faults in a smooth frame: the camera, edge_scrolling and the key flag put back,
 //                           remainder 0, off, the game's own direction; cannot be switched on again
 //
+// Smooth scrolling's picture (games/zeus/scroll with the core's core/scroll/picture):
+//   render_ok            with a remainder: drawn into our buffer (the clip two columns and a row pair larger, the
+//                           viewport +2 / +2), shown offset into the gap left of the sidebar and on the last row, nothing
+//                           on the sidebar or below the screen; conversions moved (a conversion while drawing: not
+//                           made larger again); the Game paused width and the menus' background up to the sidebar
+//   render_fault         a fault while drawing in a counting frame: put back, off, drawn again with anim_due all 0
+//                           and put back (the half before the fault counts); the next counting frame counts
+//   render_fault_uncounted  the same in a frame that does not count: the outer drawing puts both halves back
+//   convert_fault        a fault in screen_to_grid with the origin moved: put back, off, converted again
+//   drag_fault           the drag's start corner moved by the remainder and 2 px per column for the call only; a
+//                           fault: put back, off, drawn again
+//   city_input           the cursor on the sidebar or the top bar is no tile (the game not asked), in the gap it is;
+//                           grid_to_screen moved; a drag's mouse kept to the city as shown; the smallest frame
+//   city_extent               the layout's extent: the sidebar at the right edge, the gap drawn by the city (also with
+//                           smooth_scroll off), a clip past the screen's bottom shown to the bottom only; 1024x768 the
+//                           clip only
+//   figure_portrait             the figure portrait (city_render_2): the game's own conversions, the remainder back after it
+//   scroll_attach        Attach where the sites do not match: nothing installed (logged), the game's own drawing;
+//                           view_scroll_step's detour counts the game's own steps
+//
 // Each scenario runs in a child process of its own (a feature switched off stays off for the rest of a process):
 //   test_restore.exe            runs every scenario and prints one line each
 //   test_restore.exe <name>     one scenario (exit code 0 = passed)
@@ -220,6 +240,7 @@ bool IntroRequested() { return false; }
 
 namespace core::capture {
 int Flush(unsigned long) { return 0; }
+bool SaveOne(const void *, int, int, int, const char *, const char *) { return true; } // a report's city buffer
 bool SaveAs(const void *, int, int, int, const char *, bool) // the city kept for the menus (menu_background_auto.png)
 {
     ++g_cityPictures;
@@ -446,11 +467,36 @@ void ProtectCounters(DWORD protect)
     VirtualProtect(reinterpret_cast<void *>(aCounters + g_imageShift), 16, protect, &old);
 }
 
+// What the drawing sees of smooth scrolling's picture (draw_buffer, the clip, the viewport), and pixels it draws.
+struct PicSeen {
+    BYTE *buffer = nullptr;
+    int clipR = 0, clipB = 0, cols = 0, rows = 0;
+    struct Mark {
+        int x, y;
+        WORD v;
+    } marks[4];
+    int markCount = 0;
+    int (*mouse)() = nullptr; // asked for the cursor tile while drawing (as the drawing's markers do)
+    int mouseTile = -1;
+} g_pic;
+
 // As the city drawing: one tile animation byte, a building's field, a figure's field and the drawing counters
 // move on by one.
 void __cdecl FakeCityRender(int, int, int)
 {
     ++g_calls.draws;
+    g_pic.buffer = At<BYTE *>(0xf9c100);
+    g_pic.clipR = At<int>(0x7d3b90);
+    g_pic.clipB = At<int>(0x7d3b88);
+    g_pic.cols = At<int>(0x7d3bbc);
+    g_pic.rows = At<int>(0x7d3bb8);
+    for (int i = 0; i < g_pic.markCount; ++i) {
+        reinterpret_cast<WORD *>(g_pic.buffer + g_pic.marks[i].y * At<int>(0xf2a698))[g_pic.marks[i].x] =
+            g_pic.marks[i].v;
+    }
+    if (g_pic.mouse) {
+        g_pic.mouseTile = g_pic.mouse();
+    }
     const volatile unsigned char *due = &At<unsigned char>(aAnimDue);
     g_calls.drawFlagsZero = true;
     for (int i = 0; i < zeus::anim::kTimers; ++i) {
@@ -473,6 +519,9 @@ void __cdecl FakeCityRender(int, int, int)
         At<DWORD>(aRandomPool + 4 * 7) = At<DWORD>(aRandomPool + 4 * 7) + 1;
         At<DWORD>(aRandomIndex) = At<DWORD>(aRandomIndex) + 1;
         At<DWORD>(aRandomIv1) = At<DWORD>(aRandomIv1) ^ 0x5a5a;
+    }
+    if (Fires("city_render")) { // after what it moved on (the half of a drawing that ran before the fault)
+        Fault();
     }
 }
 
@@ -834,7 +883,7 @@ void __cdecl FakeViewNarrow()
 
 constexpr DWORD aClipBottom = 0x7d3b88;
 
-void __cdecl FakeViewportInit(int, int, int, int top, int cols, int rows, int tileW, int)
+void __cdecl FakeViewportInit(int, int, int x, int top, int cols, int rows, int tileW, int tileH)
 {
     ++g_res.inits;
     if (Fires("viewport_init")) {
@@ -844,7 +893,17 @@ void __cdecl FakeViewportInit(int, int, int, int top, int cols, int rows, int ti
     g_res.cols = cols;
     g_res.rows = rows;
     g_res.tileW = tileW;
-    At<int>(aClipBottom) = (rows - 1) * 15 + top; // as the game's
+    // As the game's (the variables smooth scrolling's picture reads).
+    At<int>(aClipBottom) = (rows - 1) * (tileH / 2) + top;
+    At<int>(0x7d3b90) = (tileW + 2) * cols - 2 + x; // the clip's right
+    At<int>(0x7d3b94) = x;                          // left
+    At<int>(0x7d3b8c) = top;                        // top
+    At<int>(0x7d3be8) = x;                          // the origin
+    At<int>(0x7d3be4) = top;
+    At<int>(0x7d3bbc) = cols;
+    At<int>(0x7d3bb8) = rows;
+    At<int>(0x7d3bb0) = tileW;
+    At<int>(0x7d3ba4) = tileH / 2;
 }
 
 // The top bar, the bottom strip and the city message panel. The image functions are __thiscall: as __fastcall
@@ -1076,8 +1135,8 @@ void ViewportLayout()
     SetupResolution();
     ToCity();
     Res<Tick_fn>("ui_set_sidebar_position")();
-    Check(g_res.sidebars == 0 && At<int>(aSidebarX) == 60 * 28 - 2 && At<int>(aSidebarX2) == 60 * 28 - 2 + 0x78,
-          "1920 wide: 28 columns, the sidebar where they end (1678, 56 px left on its right)");
+    Check(g_res.sidebars == 0 && At<int>(aSidebarX) == 1920 - 186 && At<int>(aSidebarX2) == 1920 - 186 + 0x78,
+          "1920 wide: the sidebar against the right edge (1734; before: 1678 where 28 columns end)");
     Res<Tick_fn>("city_viewport_set_640")();
     Check(g_res.wides == 0 && g_res.cols == 32 && g_res.rows == 71 && g_res.top == 0x1e && g_res.tileW == 0x3a,
           "1920x1080, sidebar closed: 32 x 71");
@@ -1141,9 +1200,9 @@ void TopBarTiled()
     Res<Bar_fn>("top_bar_draw")(0, 1920);
     Check(g_cityLayout.topBars == 0 && g_cityLayout.draws == 5 && g_cityLayout.drawId == 0x4cf + 0x4000,
           "1920 wide: the top bar (group 0x6b, image 1231) once whole and 4 times its even section, not the game's");
-    Check(g_cityLayout.drawX[0] == -120 - 158 && g_cityLayout.drawX[1] == 120 - 158 && g_cityLayout.drawX[2] == 360 - 158 &&
-              g_cityLayout.drawX[3] == 600 - 158 && g_cityLayout.drawX[4] == 1678 - 838 && g_cityLayout.drawY[0] == 0 && g_cityLayout.drawY[4] == 0,
-          "columns 158..397 from the left (-120, 120, 360, 600; only the left side clipped), the whole bar last (840)");
+    Check(g_cityLayout.drawX[0] == -64 - 158 && g_cityLayout.drawX[1] == 176 - 158 && g_cityLayout.drawX[2] == 416 - 158 &&
+              g_cityLayout.drawX[3] == 656 - 158 && g_cityLayout.drawX[4] == 1734 - 838 && g_cityLayout.drawY[0] == 0 && g_cityLayout.drawY[4] == 0,
+          "columns 158..397 from the left (-64, 176, 416, 656; only the left side clipped), the whole bar last (896)");
     Check(At<int>(0xf139bc) == 0 && At<int>(0xf139b8) == 1920, "the game's clip back afterwards");
     At<int>(aModeW) = 1024;
     At<int>(aModeH) = 768;
@@ -2116,9 +2175,9 @@ void SidebarFiller()
     At<int>(aPitch) = 1920 * 2;
     At<int>(aDdWidth) = 1920;
     At<int>(aDdHeight2) = 1080;
-    Res<Tick_fn>("ui_set_sidebar_position")(); // 1678
+    Res<Tick_fn>("ui_set_sidebar_position")(); // 1734: against the right edge
     Res<Tick_fn>("sidebar_draw")();
-    const int x = 1678, pictureY = 1080 - 168;
+    const int x = 1734, pictureY = 1080 - 168;
     Check(g_cityLayout.sidebars == 1 && PixelAt(x + 50, pictureY) == 600 && PixelAt(x + 185, 1079) == 767,
           "1920x1080: the backdrop's rows 600..767 (frame, picture) moved to the bottom (912..1079)");
     Check(PixelAt(x, 600) == 640 && PixelAt(x + 10, 659) == 699 && PixelAt(x + 3, 660) == 640 &&
@@ -2127,15 +2186,24 @@ void SidebarFiller()
     const int inset = 0x1e4 + 0x4000;
     Check(DrawsOf(inset + 0, x + 11, 600) == 1 && DrawsOf(inset + 6, x + 186 - 16, 600) == 1 &&
               DrawsOf(inset + 42, x + 11, pictureY - 16) == 1 && DrawsOf(inset + 48, x + 186 - 16, pictureY - 16) == 1,
-          "the inset panel edge to edge: its four corners at (1689, 600), (1848, 600), (1689, 896), (1848, 896)");
+          "the inset panel edge to edge: its four corners at (1745, 600), (1904, 600), (1745, 896), (1904, 896)");
     Check(DrawsOf(inset + 8, x + 11 + 16, 616) == 1 && DrawsOf(inset + 13, x + 186 - 16, 616) == 1,
           "an inner tile and a right edge tile where the game's inner_panel_draw would put them");
     const int strip = 0x4d2 + 0x4000;
-    Check(DrawsOf(strip, 1864, 0) == 1 && DrawsOf(strip, 1912, 600) == 1,
-          "without the pack: the 800x600 strip right of the sidebar (1864 .. 1920)");
+    Check(DrawsOf(strip, 1920, 0) == 0 && DrawsOf(strip, 1678, 30) == 0,
+          "the sidebar against the right edge: nothing right of it; no viewport yet: no gap filled");
+    At<int>(aCityRight) = 1678; // the city's clip (28 columns) left of the sidebar
+    g_cityLayout.draws = 0;
+    Res<Tick_fn>("sidebar_draw")();
+    Check(DrawsOf(strip, 1678, 30) == 1 && DrawsOf(strip, 1726, 630) == 1 && DrawsOf(strip, 1742, 30) == 0,
+          "smooth scrolling not working: the gap 1678 .. 1734 below the top bar (here the strip, without the pack)");
+    zeus::scroll::StartForTest(true);
+    g_cityLayout.draws = 0;
+    Res<Tick_fn>("sidebar_draw")();
+    Check(DrawsOf(strip, 1678, 30) == 0, "smooth scrolling working: the gap is the city's (not filled)");
     g_cityLayout.draws = 0;
     Res<Units_fn>("sidebar_draw_units")(0x48);
-    Check(g_cityLayout.sidebars == 2 && DrawsOf(inset + 0, x + 11, 600) == 1, "the army's sidebar: the same filler");
+    Check(g_cityLayout.sidebars == 4 && DrawsOf(inset + 0, x + 11, 600) == 1, "the army's sidebar: the same filler");
     g_cityLayout.draws = 0;
     At<unsigned char>(aGameScreen) = 0x14; // the world map
     Res<Tick_fn>("sidebar_draw")();
@@ -2159,8 +2227,8 @@ void SidebarFiller()
     At<int>(aModeH) = 768; // 1920x768: the picture stays, only the right of the sidebar
     At<int>(aDdHeight2) = 768;
     Res<Tick_fn>("sidebar_draw")();
-    Check(PixelAt(x + 50, 600) == 600 && DrawsOf(inset + 0, x + 11, 600) == 0 && DrawsOf(strip, 1864, 0) == 1,
-          "768 high: the picture where the game drew it, no inset panel; the strip on the right");
+    Check(PixelAt(x + 50, 600) == 600 && DrawsOf(inset + 0, x + 11, 600) == 0 && g_cityLayout.draws == 0,
+          "768 high: the picture where the game drew it, no inset panel, nothing on the right");
     At<int>(aModeH) = 790; // 22 rows below 768: no room for the panel's two edges, plain beside the edge
     At<int>(aDdHeight2) = 790;
     At<int>(0xf139b0) = 790; // the game's clip: the screen
@@ -2183,8 +2251,8 @@ void SidebarFiller()
               PixelAt(x + 50, 500) == 500,
           "... its gold edge (11 columns) carried on from its rows 470..529, which stay where the game drew them");
     Check(DrawsOf(inset + 0, x + 11, 600) == 1 && DrawsOf(inset + 48, x + 186 - 16, pictureY - 16) == 1 &&
-              DrawsOf(strip, 1864, 0) == 1,
-          "... the inset panel right of the edge, the city's marble (here the strip) right of the sidebar");
+              DrawsOf(strip, 1920, 0) == 0 && DrawsOf(strip, 1678, 30) == 0,
+          "... the inset panel right of the edge; nothing right of the sidebar, no city gap on the world map");
     At<unsigned char>(aGameScreen) = 0x01;
     g_cityLayout.draws = 0;
     g_fault = "image_draw";
@@ -2311,7 +2379,7 @@ void SetupInfo()
     Thunk(0x5726e0, reinterpret_cast<void *>(&FakeInfoInput));
     Thunk(0x4316f0, reinterpret_cast<void *>(&FakeButtonsDraw));
     ToCity();
-    Res<Tick_fn>("ui_set_sidebar_position")(); // 1678 at 1920x1080
+    Res<Tick_fn>("ui_set_sidebar_position")(); // 1734 at 1920x1080 (against the right edge)
     At<int>(aInfoKind) = 1;
     At<unsigned char>(aInfoPrev) = 0x01;
 }
@@ -2329,16 +2397,16 @@ void InfoWindow()
     At<int>(aMouseY) = 200;
     core::ui::info_window::Set(Mode::Original);
     place();
-    const int shift = (1678 - 838) / 2;
+    const int shift = (1734 - 838) / 2;
     Check(At<int>(aInfoX) == 0xbc + shift && At<int>(aInfoY) == 1080 - 8 - 0x14 * 16,
-          "original: the game's 768 rule at 1080, moved with the city area's centre (608, 752)");
+          "original: the game's 768 rule at 1080, moved with the city area's centre (636, 752)");
     At<int>(aMouseY) = 700;
     place();
     Check(At<int>(aInfoY) == 0x20, "original, the cursor in the lower half: at the top (0x20)");
     core::ui::info_window::Set(Mode::Centered);
     place();
-    Check(At<int>(aInfoX) == (1678 - 464) / 2 && At<int>(aInfoY) == 30 + (1080 - 30 - 320) / 2,
-          "centered: in the middle of the city area (607, 395)");
+    Check(At<int>(aInfoX) == (1734 - 464) / 2 && At<int>(aInfoY) == 30 + (1080 - 30 - 320) / 2,
+          "centered: in the middle of the city area (635, 395)");
     core::ui::info_window::Set(Mode::Cursor);
     At<int>(aMouseY) = 200;
     place();
@@ -2353,7 +2421,7 @@ void InfoWindow()
     At<int>(aMouseY) = 200;
     At<unsigned char>(aInfoPrev) = 0x14;
     place();
-    Check(At<int>(aInfoX) == (1678 - 464) / 2, "opened on the world map: in the middle whatever the setting");
+    Check(At<int>(aInfoX) == (1734 - 464) / 2, "opened on the world map: in the middle whatever the setting");
     At<unsigned char>(aInfoPrev) = 0x01;
     SetBuilding(7, 0x7d);
     place();
@@ -2571,7 +2639,7 @@ void WorldScreen(int w, int h)
     At<int>(aDdHeight2) = h;
     At<int>(aModeW) = w;
     At<int>(aModeH) = h;
-    At<int>(aSidebarX) = 60 * ((w - 186 + 2) / 60) - 2;
+    At<int>(aSidebarX) = w > 1024 ? w - 186 : 838; // against the right edge
     At<int>(aScrollX) = 0;
     At<int>(aScrollY) = 0;
     At<int>(aMapNumber) = 1;
@@ -2603,7 +2671,7 @@ void WorldMap()
     auto hit = Map<Hit_fn>("world_map_hit");
     zeus::world_map::LayoutForTest(true);
 
-    // 2560x1440, sidebar at 2338: the map area is 2338 x 1410 below the top bar. The first frame after the city with
+    // 2560x1440, sidebar at 2374 (against the right edge): the map area is 2374 x 1410 below the top bar. The first frame after the city with
     // background = city: the city left in draw_buffer stays around the map; native: the map in the middle.
     WorldScreen(2560, 1440);
     for (WORD &p : g_wmScreen) {
@@ -2614,14 +2682,14 @@ void WorldMap()
     At<int>(aMapW) = 0; // no map loaded yet: the drawing loads it
     At<int>(aMapH) = 0;
     draw();
-    const int nx = (2338 - 838) / 2, ny = 30 + (1410 - 738) / 2; // 750, 366
+    const int nx = (2374 - 838) / 2, ny = 30 + (1410 - 738) / 2; // 768, 366
     Check(g_wm.draws == 1 && g_wm.drawBuffer != At<BYTE *>(aDrawBuffer) && g_wm.drawHeight == 768,
           "the first map: drawn into our layer with the game's own height 768");
     Check(At<int>(aDdHeight2) == 1440 && At<BYTE *>(aDrawBuffer) == reinterpret_cast<BYTE *>(g_wmScreen.data()),
           "dd_height and draw_buffer back afterwards");
     Check(Wm(nx, ny) == MapPattern(0, 0) && Wm(nx + 837, ny + 737) == MapPattern(837, 737) &&
               Wm(nx + 300, ny + 200) == MapPattern(300, 200),
-          "native: the map pixel for pixel in the middle of the map area (750, 366)");
+          "native: the map pixel for pixel in the middle of the map area (768, 366)");
     Check(Wm(20, 700) == 0x7777 && Wm(2337, 1439) == 0x7777, "background city: the city around the map");
     Check(Wm(2400, 700) == 0x7777 && Wm(100, 10) == 0x7777, "the sidebar and the top bar are not touched");
     Check(g_wm.tops == 1 && g_wm.topBuffer == At<BYTE *>(aDrawBuffer),
@@ -2651,7 +2719,7 @@ void WorldMap()
     WorldScreen(2560, 1440);
     draw();
     const double s = 1410.0 / 738;
-    const int tw = static_cast<int>(838 * s + 0.5), tx = (2338 - tw) / 2, ty = 30;
+    const int tw = static_cast<int>(838 * s + 0.5), tx = (2374 - tw) / 2, ty = 30;
     At<int>(aMouseXw) = tx + static_cast<int>((419 + 0.5) * s);
     At<int>(aMouseYw) = ty + static_cast<int>((369 + 0.5) * s);
     hit(nullptr, nullptr);
@@ -2668,9 +2736,9 @@ void WorldMap()
           "the scaling failed: the real mouse (nothing of ours shown)");
     // 200% at 3840x2160 (fit 288%): each map pixel a 2 x 2 block.
     ms::SetModeForTest(0, 200);
-    WorldScreen(3840, 2160); // sidebar 3598: area 3598 x 2130
+    WorldScreen(3840, 2160); // sidebar 3654: area 3654 x 2130
     draw();
-    const int ix = (3598 - 1676) / 2, iy = 30 + (2130 - 1476) / 2;
+    const int ix = (3654 - 1676) / 2, iy = 30 + (2130 - 1476) / 2;
     Check(Wm(ix + 600, iy + 400) == MapPattern(300, 200) && Wm(ix + 601, iy + 401) == MapPattern(300, 200),
           "scale 200% at 3840x2160: each map pixel a 2 x 2 block");
 
@@ -2703,22 +2771,22 @@ void WorldMap()
     Map<Tick_fn>("campaign_map_background")();
     Check(Wm(20, 700) != 0x7777 && Wm(nx + 300, ny + 200) == MapPattern(300, 200),
           "campaign map: the map in the middle over the blurred map, whatever the background setting");
-    Check(DrawsOf(0x4cf + 0x4000, 2338 - 838, 0) == 1, "campaign map wider than 1024: the top bar ending at the sidebar");
+    Check(DrawsOf(0x4cf + 0x4000, 2374 - 838, 0) == 1, "campaign map wider than 1024: the top bar ending at the sidebar");
     At<int>(aMouseXw) = nx + 300;
     At<int>(aMouseYw) = ny + 200;
     g_cityLayout.draws = 0;
     Map<Tick_fn>("campaign_map_draw")();
     Check(g_wm.campaign == 1 && g_wm.mouseX == 300 && g_wm.mouseY == 230, "campaign map: hover in map coordinates");
     Check(Wm(nx + 100, ny + 100) == 0x0001, "campaign map: the marker shown on the map");
-    Check(Wm(2338 + 5, 5) == 0x0002, "campaign map: the sidebar drawn where it belongs");
+    Check(Wm(2374 + 5, 5) == 0x0002, "campaign map: the sidebar drawn where it belongs");
     const int inset = 0x1e4 + 0x4000;
-    Check(DrawsOf(inset + 0, 2338 + 11, 600) == 1 && Wm(2338 + 50, 1440 - 168) == 600,
+    Check(DrawsOf(inset + 0, 2374 + 11, 600) == 1 && Wm(2374 + 50, 1440 - 168) == 600,
           "campaign map: the sidebar's filler below it (the gold edge's width, the picture at the bottom)");
-    const WORD below = Wm(2338 + 93, 700);
+    const WORD below = Wm(2374 + 93, 700);
     g_wm.noSidebar = true;
     g_cityLayout.draws = 0;
     Map<Tick_fn>("campaign_map_draw")();
-    Check(DrawsOf(inset + 0, 2338 + 11, 600) == 0 && Wm(2338 + 93, 700) == below && Wm(2338 + 50, 1440 - 168) == 600,
+    Check(DrawsOf(inset + 0, 2374 + 11, 600) == 0 && Wm(2374 + 93, 700) == below && Wm(2374 + 50, 1440 - 168) == 600,
           "a frame that does not draw the sidebar: no filler (nothing moved twice), the screen as it was");
     g_wm.noSidebar = false;
     Map<Tick_fn>("campaign_map_click")();
@@ -2825,8 +2893,7 @@ void DisplayScaleSizesScenario()
         At<int>(0xf139bc) = 0;
         Res<Tick_fn>("ui_set_sidebar_position")();
         const int sx = At<int>(aSidebarX);
-        check(sx + 186 <= w && (w <= 1024 ? sx == 838 : w - (sx + 186) < 60 && sx >= 838),
-              "the sidebar inside the screen, less than 60 px right of it");
+        check(w <= 1024 ? sx == 838 : sx + 186 == w, "the sidebar against the right edge (the game's 838 at 1024)");
         Res<Tick_fn>("city_viewport_narrow")();
         check(g_res.cols >= 14 && g_res.cols <= 220 && g_res.rows <= 427 && (g_res.cols + 0) * 60 <= sx + 2 &&
                   At<int>(aClipBottom) >= h && At<int>(aClipBottom) < h + 15,
@@ -2916,6 +2983,455 @@ void DisplayScaleSizesScenario()
     Check(!LogContainsSince(logFrom, "switched off"), "no feature switched off at any size");
 }
 
+// ---------------------------------------------------------------------------------------------
+// Smooth scrolling's picture (games/zeus/scroll with the core's core/scroll/picture)
+
+constexpr DWORD fScreenToGrid = 0x44a460, fMouseToGrid = 0x44a270, fScreenToGridRaw = 0x433590,
+                fGridToScreen = 0x56bf20, fCityWidth = 0x44a7c0, fDragStart = 0x433380, fDragDraw = 0x433400,
+                fDragFinish = 0x433700, fCityRender2 = 0x44a930;
+constexpr DWORD aOriginXz = 0x7d3be8, aOriginYz = 0x7d3be4, aColsZ = 0x7d3bbc, aRowsZ = 0x7d3bb8,
+                aClipRightZ = 0x7d3b90, aMouseMode = 0xf2a6d9;
+constexpr WORD kBackSentinel = 0x0f0f;
+
+// What the game's conversions saw (origin, viewport, arguments, the mouse).
+struct ConvSeen {
+    int calls = 0, ox = 0, oy = 0, cols = 0, rows = 0, x = 0, y = 0, third = 0;
+} g_conv, g_mouseConv;
+int g_dragDraws = 0, g_dragSeen[2] = {}, g_portraits = 0, g_portraitTile = -1, g_portraitXy[2] = {};
+
+void SeeOrigin(ConvSeen &s)
+{
+    ++s.calls;
+    s.ox = At<int>(aOriginXz);
+    s.oy = At<int>(aOriginYz);
+    s.cols = At<int>(aColsZ);
+    s.rows = At<int>(aRowsZ);
+}
+
+int __cdecl FakeScreenToGridZ(int x, int y, int third)
+{
+    SeeOrigin(g_conv);
+    g_conv.x = x;
+    g_conv.y = y;
+    g_conv.third = third;
+    if (Fires("screen_to_grid")) {
+        Fault();
+    }
+    return 1234;
+}
+
+// As mouse_to_grid 0x44a270: no tile (0) outside origin + viewport, else a tile.
+int __cdecl FakeMouseToGridZ()
+{
+    SeeOrigin(g_mouseConv);
+    const int x = At<int>(aMouseX), y = At<int>(aMouseY);
+    g_mouseConv.x = x;
+    g_mouseConv.y = y;
+    if (x < g_mouseConv.ox || x >= g_mouseConv.ox + 60 * g_mouseConv.cols || y < g_mouseConv.oy ||
+        y >= g_mouseConv.oy + 15 * g_mouseConv.rows) {
+        return 0;
+    }
+    return 1234;
+}
+
+int __cdecl FakeScreenToGridRawZ(int x, int y, int)
+{
+    SeeOrigin(g_conv);
+    g_conv.x = x;
+    g_conv.y = y;
+    return 4321;
+}
+
+void __cdecl FakeGridToScreenZ(int, int, int *x, int *y) // the origin (as the game's for the view's first tile)
+{
+    *x = At<int>(aOriginXz);
+    *y = At<int>(aOriginYz);
+}
+
+int __cdecl FakeCityWidthZ()
+{
+    return 60 * At<int>(aColsZ);
+}
+
+void __fastcall FakeDragNothing(int *) {}
+
+void __fastcall FakeDragDrawZ(int *drag)
+{
+    ++g_dragDraws;
+    g_dragSeen[0] = drag[2];
+    g_dragSeen[1] = drag[3];
+    if (Fires("drag_draw")) {
+        Fault();
+    }
+}
+
+template <typename F> F Scr(const char *name)
+{
+    int n;
+    const zeus::Detour *d = zeus::scroll::Detours(&n);
+    return Detour<F>(d, n, name);
+}
+
+using Mouse_fn = int(__cdecl *)();
+using S2g_fn = int(__cdecl *)(int, int, int);
+using G2s_fn = void(__cdecl *)(int, int, int *, int *);
+using DragZ_fn = void(__fastcall *)(int *);
+using Render2_fn = void(__cdecl *)(int, int, int, int);
+
+// The figure portrait (city_render_2): asks for the cursor tile and a tile's position while it draws.
+void __cdecl FakeCityRender2(int, int, int, int)
+{
+    ++g_portraits;
+    g_portraitTile = Scr<Mouse_fn>("mouse_to_grid")();
+    Scr<G2s_fn>("grid_to_screen")(1, 2, &g_portraitXy[0], &g_portraitXy[1]);
+}
+
+std::vector<WORD> g_back;
+
+WORD Back(int x, int y)
+{
+    return reinterpret_cast<WORD *>(At<BYTE *>(aDrawBuffer))[y * (At<int>(aPitch) / 2) + x];
+}
+
+void BackBuffer(int w, int h)
+{
+    g_back.assign(static_cast<size_t>(w) * (h + 64), kBackSentinel);
+    At<BYTE *>(aDrawBuffer) = reinterpret_cast<BYTE *>(g_back.data());
+    At<int>(aPitch) = w * 2;
+    At<int>(aDdWidth) = w;
+    At<int>(aDdHeight2) = h;
+}
+
+void PictureFakes()
+{
+    Thunk(fScreenToGrid, reinterpret_cast<void *>(&FakeScreenToGridZ));
+    Thunk(fMouseToGrid, reinterpret_cast<void *>(&FakeMouseToGridZ));
+    Thunk(fScreenToGridRaw, reinterpret_cast<void *>(&FakeScreenToGridRawZ));
+    Thunk(fGridToScreen, reinterpret_cast<void *>(&FakeGridToScreenZ));
+    Thunk(fCityWidth, reinterpret_cast<void *>(&FakeCityWidthZ));
+    Thunk(fDragStart, reinterpret_cast<void *>(&FakeDragNothing));
+    Thunk(fDragDraw, reinterpret_cast<void *>(&FakeDragDrawZ));
+    Thunk(fDragFinish, reinterpret_cast<void *>(&FakeDragNothing));
+    Thunk(fCityRender2, reinterpret_cast<void *>(&FakeCityRender2));
+}
+
+// A 1920x1080 city with our layout: 28 columns x 71 half rows from (0, 30) (clip (0,30)-(1678,1080)), the sidebar
+// against the right edge at 1734, the city seen to it and to the bottom; smooth scrolling attached and on.
+void SetupPicture()
+{
+    PictureFakes();
+    BackBuffer(1920, 1080);
+    FakeViewportInit(0xe4, 0xe4, 0, 30, 28, 71, 58, 30);
+    At<int>(aSidebarX) = 1920 - 186;
+    zeus::scroll::StartForTest(true);
+    zeus::scroll::SetCityExtent(1920 - 186, 1080);
+}
+
+bool ViewportIsGame()
+{
+    return At<int>(aOriginXz) == 0 && At<int>(aOriginYz) == 30 && At<int>(aColsZ) == 28 && At<int>(aRowsZ) == 71 &&
+           At<int>(aClipRightZ) == 1678 && At<int>(aClipBottom) == 1080;
+}
+
+void RenderOk()
+{
+    SetupPicture();
+    zeus::scroll::SetRemainderForTest(5, 6);
+    BYTE *back = At<BYTE *>(aDrawBuffer);
+    g_pic.marks[0] = {1700 + 5, 500 + 6, 0x1111}; // in the gap left of the sidebar
+    g_pic.marks[1] = {100 + 5, 1079 + 6, 0x2222}; // the screen's last row
+    g_pic.markCount = 2;
+    At<int>(aMouseX) = 500;
+    At<int>(aMouseY) = 500;
+    g_pic.mouse = Scr<Mouse_fn>("mouse_to_grid");
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    g_pic.mouse = nullptr;
+    Check(g_calls.draws == 1 && g_pic.buffer != back, "while the game draws: draw_buffer is our city buffer");
+    Check(g_pic.clipR == 1678 + 120 && g_pic.clipB == 1080 + 30 && g_pic.cols == 30 && g_pic.rows == 73,
+          "while the game draws: the clip 2 columns (the remainder and the 56 px gap to the sidebar) and a row pair "
+          "larger, the viewport +2 / +2");
+    Check(g_mouseConv.ox == -5 && g_mouseConv.oy == 24 && g_mouseConv.cols == 30 && g_pic.mouseTile == 1234,
+          "a conversion while the game draws: the origin moved by the remainder, the viewport not made larger again");
+    Check(At<BYTE *>(aDrawBuffer) == back && ViewportIsGame(), "afterwards: draw_buffer, clip and viewport the game's");
+    Check(Back(1700, 500) == 0x1111 && Back(100, 1079) == 0x2222,
+          "shown with the remainder: drawn at (1705, 506) and (105, 1085), on the screen at (1700, 500) in the gap and "
+          "(100, 1079) on the last row");
+    Check(Back(1734, 500) == kBackSentinel && Back(100, 1080) == kBackSentinel && Back(5, 29) == kBackSentinel,
+          "nothing written on the sidebar, below the screen or on the top bar");
+    const int r = Scr<S2g_fn>("screen_to_grid")(10, 50, 77);
+    Check(r == 1234 && g_conv.ox == -5 && g_conv.oy == 24 && g_conv.cols == 29 && g_conv.rows == 73 &&
+              g_conv.third == 77,
+          "screen_to_grid: the origin moved, the viewport a column and a row pair larger, the third argument passed on");
+    Check(ViewportIsGame(), "afterwards: origin and viewport the game's");
+    Check(Scr<Int_fn>("city_view_width_px")() == 1734, "the Game paused banner: the city's width up to the sidebar");
+    int left, top, right, bottom;
+    const char *why = nullptr;
+    Check(zeus::scroll::DrawnCity(&left, &top, &right, &bottom, &why) && left == 0 && top == 30 && right == 1734 &&
+              bottom == 1080,
+          "the menus' background: the city as shown (0, 30) .. (1734, 1080)");
+    Check(LogContains("scroll: the city is shown past its clip to (1734,1080): 56 px on the right"),
+          "log: the city shown past its clip");
+    Check(zeus::scroll::Working(), "smooth scrolling still on");
+}
+
+// A fault while the game draws into our buffer, in a frame whose drawing counts: the half drawing before the
+// fault is the frame's counting one; the drawing again never counts.
+void RenderFault()
+{
+    SetupPicture();
+    if (!zeus::timing::PrepareForTest()) {
+        Check(false, "the copy buffer");
+        return;
+    }
+    Timing<Frame_fn>("game_frame")(); // the first frame: its drawing counts
+    const Drawn before = ReadDrawn();
+    zeus::scroll::SetRemainderForTest(5, 6);
+    BYTE *back = At<BYTE *>(aDrawBuffer);
+    g_fault = "city_render";
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(!zeus::scroll::Working(), "fault while the game draws into our buffer: smooth scrolling off");
+    Check(At<BYTE *>(aDrawBuffer) == back && ViewportIsGame(), "draw_buffer, clip and viewport put back");
+    Check(g_calls.draws == 2 && g_pic.buffer == back && g_pic.clipR == 1678 && g_pic.cols == 28,
+          "the city drawn again the game's own way (its buffer, its clip)");
+    Check(g_calls.drawFlagsZero, "the drawing again: anim_due all 0 (an extra drawing never counts)");
+    const Drawn after = ReadDrawn();
+    Check(after.tile == before.tile + 1 && after.counter == before.counter + 1,
+          "the half drawing before the fault counts (the frame's counting one), the drawing again put back");
+    Check(DueIsFrame(&At<unsigned char>(aAnimDue)), "the frame's own anim_due back");
+    int px, py;
+    zeus::scroll::Remainder(&px, &py);
+    Check(px == 0 && py == 0, "the view snaps to its whole tile (remainder 0)");
+    Check(LogContains("feature \"smooth scrolling (games/zeus/scroll)\" switched off") &&
+              LogContains("6 changed value(s) put back") && LogContains("smooth scrolling is off after an error"),
+          "log: switched off, the 6 changed values put back (draw_buffer, the clip's right and bottom, the viewport, the drawing flag)");
+    Sleep(60);
+    Timing<Frame_fn>("game_frame")(); // the next counting frame
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(g_calls.draws == 3 && g_pic.buffer == back && ReadDrawn().tile == after.tile + 1,
+          "afterwards: drawn the game's way, and a counting frame counts (not an extra drawing)");
+    Check(zeus::timing::DrawnWorking() && !zeus::scroll::SetSmooth(true),
+          "drawn-frame animations still on; smooth scrolling cannot be switched on again");
+}
+
+// The same in a frame whose drawing does not count: the outer drawing puts everything back, both halves.
+void RenderFaultUncounted()
+{
+    SetupPicture();
+    if (!zeus::timing::PrepareForTest()) {
+        Check(false, "the copy buffer");
+        return;
+    }
+    CountingThenNot();
+    const Drawn counted = ReadDrawn();
+    zeus::scroll::SetRemainderForTest(5, 6);
+    g_fault = "city_render";
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(!zeus::scroll::Working() && g_calls.draws == 3 && g_calls.drawFlagsZero,
+          "fault: off, drawn again (anim_due all 0, as the whole frame's drawings)");
+    Check(Same(ReadDrawn(), counted), "the half drawing and the drawing again both put back (the frame does not count)");
+    Check(DueIsFrame(&At<unsigned char>(aAnimDue)) && ViewportIsGame(), "the frame's anim_due and the viewport back");
+    Check(zeus::timing::DrawnWorking(), "drawn-frame animations still on");
+}
+
+void ConvertFault()
+{
+    SetupPicture();
+    zeus::scroll::SetRemainderForTest(5, 6);
+    g_fault = "screen_to_grid";
+    const int r = Scr<S2g_fn>("screen_to_grid")(10, 50, 0);
+    Check(!zeus::scroll::Working(), "fault in screen_to_grid with the origin moved: smooth scrolling off");
+    Check(ViewportIsGame(), "origin and viewport put back");
+    Check(r == 1234 && g_conv.calls == 2 && g_conv.ox == 0 && g_conv.oy == 30,
+          "converted again the game's own way, its result returned");
+    BYTE *back = At<BYTE *>(aDrawBuffer);
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(g_calls.draws == 1 && g_pic.buffer == back && g_pic.clipR == 1678, "city_render passes through");
+}
+
+void DragFault()
+{
+    SetupPicture();
+    int drag[16] = {0, 0, 300, 400}; // the game's drag structure (0x7818b0) reaches +0x30
+    zeus::scroll::SetRemainderForTest(0, 0);
+    Scr<DragZ_fn>("drag_select_start")(drag);
+    zeus::scroll::SetRemainderForTest(7, 4);
+    Scr<DragZ_fn>("drag_select_draw")(drag);
+    Check(g_dragDraws == 1 && g_dragSeen[0] == 293 && g_dragSeen[1] == 396 && drag[2] == 300 && drag[3] == 400,
+          "drag: the start corner moved by the remainder for the call only");
+    At<int>(aViewX) = 2; // two columns scrolled since the start: the game moves the corner 2 x 58, a column is 60
+    zeus::scroll::SetRemainderForTest(7, 4);
+    Scr<DragZ_fn>("drag_select_draw")(drag);
+    Check(g_dragSeen[0] == 300 - 7 - 4 && drag[2] == 300, "... and 2 px per column scrolled");
+    g_fault = "drag_draw";
+    Scr<DragZ_fn>("drag_select_draw")(drag);
+    Check(!zeus::scroll::Working() && drag[2] == 300 && drag[3] == 400, "fault: the start corner put back");
+    Check(g_dragDraws == 4 && g_dragSeen[0] == 300 && g_dragSeen[1] == 400, "drawn again the game's own way");
+    Scr<DragZ_fn>("drag_select_finish")(drag);
+    Check(drag[2] == 300, "afterwards the game's own (finish passes through)");
+}
+
+// Clicks and the cursor on the sidebar or the top bar never reach the city (Yongle's rc2_city_input), the drag
+// selection's mouse kept to the city as shown, positions worked out outside the drawing moved with the city.
+void CityInput()
+{
+    SetupPicture();
+    zeus::scroll::SetRemainderForTest(5, 6);
+    auto mouse = Scr<Mouse_fn>("mouse_to_grid");
+    At<int>(aMouseX) = 1750; // on the sidebar (the viewport moved and made larger reaches 1735)
+    At<int>(aMouseY) = 500;
+    Check(mouse() == 0 && g_mouseConv.calls == 0, "the cursor on the sidebar: no tile (the game not asked)");
+    At<int>(aMouseX) = 500;
+    At<int>(aMouseY) = 25; // on the top bar (the origin moved up by 6 reaches 24)
+    Check(mouse() == 0 && g_mouseConv.calls == 0, "the cursor on the top bar: no tile");
+    At<int>(aMouseX) = 1700; // in the gap left of the sidebar: the city is shown there
+    At<int>(aMouseY) = 500;
+    Check(mouse() == 1234 && g_mouseConv.calls == 1 && g_mouseConv.ox == -5 && g_mouseConv.cols == 29,
+          "the cursor in the gap: a tile, the origin moved and the viewport larger");
+    Check(Scr<S2g_fn>("screen_to_grid")(1750, 500, 0) == 0 && g_conv.calls == 0, "screen_to_grid on the sidebar: 0");
+    int sx = 0, sy = 0;
+    Scr<G2s_fn>("grid_to_screen")(1, 2, &sx, &sy);
+    Check(sx == -5 && sy == 24 && ViewportIsGame(), "grid_to_screen outside the drawing: moved with the city");
+    zeus::scroll::SetRemainderForTest(0, 0);
+    At<int>(aMouseX) = 1750;
+    Check(mouse() == 0 && g_mouseConv.calls == 1, "no remainder, our layout: the sidebar is still no tile");
+    // The gap at rest: drawn by the city, but the game is asked with its own viewport (the conversions are moved and
+    // made larger only with a remainder), so it is no tile -- as in Yongle (a decision for later,
+    // kept for now). Checked so that a change of it is deliberate.
+    At<int>(aMouseX) = 1700;
+    Check(mouse() == 0 && g_mouseConv.cols == 28, "the gap at rest: no tile (the game's own viewport; as Yongle)");
+    // A drag selection pressed on the city: the mouse kept to the city as shown for the corner's tile.
+    zeus::scroll::SetRemainderForTest(5, 6);
+    int drag[16] = {};
+    At<int>(aMouseX) = 500;
+    At<int>(aMouseY) = 500;
+    Scr<DragZ_fn>("drag_select_start")(drag);
+    Check(drag[11] == 8 + 2 && drag[12] == 8 + 2, "a drag from the city: the smallest frame 8 px (+ 2, as the game's)");
+    At<unsigned char>(aMouseMode) = 0x4d;
+    At<int>(aMouseX) = 1850; // dragged onto the sidebar
+    At<int>(aMouseY) = 600;
+    Check(mouse() == 1234 && g_mouseConv.x == 1733 && g_mouseConv.y == 600 && At<int>(aMouseX) == 1850,
+          "dragged onto the sidebar: the game sees the mouse at the city's edge (1733), the real mouse afterwards");
+    int sideDrag[16] = {};
+    At<unsigned char>(aMouseMode) = 0;
+    Scr<DragZ_fn>("drag_select_start")(sideDrag); // pressed on the sidebar
+    Check(sideDrag[11] == 4 && sideDrag[12] == 4, "a drag from the sidebar: the game's own smallest frame");
+    Check(zeus::scroll::Working(), "smooth scrolling still on");
+}
+
+// The layout gives the extent: the sidebar against the right edge, the city drawn up to it and to the screen's bottom
+// (also with smooth_scroll off); a clip past the screen's bottom (an uneven height) shown to the bottom only; the
+// game's own sizes: the clip only.
+void CityExtent()
+{
+    SetupResolution();
+    PictureFakes();
+    ToCity();
+    BackBuffer(1920, 1080);
+    zeus::scroll::StartForTest(true);
+    Res<Tick_fn>("ui_set_sidebar_position")();
+    Res<Tick_fn>("city_viewport_narrow")();
+    int left, top, right, bottom;
+    const char *why = nullptr;
+    Check(At<int>(aSidebarX) == 1734 && zeus::scroll::DrawnCity(&left, &top, &right, &bottom, &why) && left == 0 &&
+              top == 30 && right == 1734 && bottom == 1080,
+          "1920x1080: the sidebar at 1734, the city seen to it and to the screen's bottom");
+    zeus::scroll::SetRemainderForTest(0, 0);
+    g_pic.marks[0] = {1720, 500, 0x3333};
+    g_pic.markCount = 1;
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(Back(1720, 500) == 0x3333 && Back(1734, 500) == kBackSentinel,
+          "no remainder: the gap 1678 .. 1734 drawn by the city, the sidebar untouched");
+    Check(zeus::scroll::SetSmooth(false), "smooth_scroll off");
+    g_pic.marks[0].v = 0x4444;
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(Back(1720, 500) == 0x4444, "smooth_scroll off: the city still drawn to the sidebar");
+    zeus::scroll::SetSmooth(true);
+    At<int>(aModeH) = 1013; // a window of an uneven height: the clip 7 rows past the screen's bottom
+    BackBuffer(1920, 1013);
+    Res<Tick_fn>("city_viewport_narrow")();
+    Check(At<int>(aClipBottom) == 1020 && zeus::scroll::DrawnCity(&left, &top, &right, &bottom, &why) &&
+              bottom == 1013,
+          "1920x1013: the clip at 1020, the city shown to 1013");
+    zeus::scroll::SetRemainderForTest(5, 6);
+    g_pic.marks[0] = {100 + 5, 1012 + 6, 0x5555};
+    g_pic.marks[1] = {100 + 5, 1013 + 6, 0x6666};
+    g_pic.markCount = 2;
+    const int draws = g_calls.draws;
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(g_calls.draws == draws + 1 && g_pic.buffer != At<BYTE *>(aDrawBuffer) && g_pic.clipB == 1020 + 30,
+          "with a remainder: drawn into our buffer although the clip passes the screen (one row pair more)");
+    Check(Back(100, 1012) == 0x5555 && Back(100, 1013) == kBackSentinel,
+          "the screen's last row from the city, nothing written below the screen");
+    At<int>(aModeW) = 1024; // the game's own size: the clip only
+    At<int>(aModeH) = 768;
+    Res<Tick_fn>("ui_set_sidebar_position")();
+    Res<Tick_fn>("city_viewport_narrow")();
+    BackBuffer(1024, 768);
+    zeus::scroll::DrawnCity(&left, &top, &right, &bottom, &why);
+    const int clipR = At<int>(aClipRightZ) < 1024 ? At<int>(aClipRightZ) : 1024;
+    Check(right == clipR && bottom == 765 && Scr<Int_fn>("city_view_width_px")() == 60 * At<int>(aColsZ),
+          "1024x768: the game's layout, the city to its clip (no extent), the game's banner width");
+    Check(zeus::scroll::Working(), "smooth scrolling still on");
+}
+
+// The figure portrait (city_render_2) with a remainder: its conversions are the game's own (no origin moved), the
+// remainder back afterwards.
+void FigurePortrait()
+{
+    SetupPicture();
+    zeus::scroll::SetRemainderForTest(5, 6);
+    At<int>(aMouseX) = 500;
+    At<int>(aMouseY) = 500;
+    Timing<Render2_fn>("city_render_2")(0, 0, 0, 0);
+    Check(g_portraits == 1 && g_portraitTile == 1234 && g_mouseConv.ox == 0 && g_mouseConv.oy == 30 &&
+              g_mouseConv.cols == 28,
+          "while the portrait draws: mouse_to_grid sees the game's origin and viewport");
+    Check(g_portraitXy[0] == 0 && g_portraitXy[1] == 30, "... and grid_to_screen gives the game's position");
+    int px, py;
+    zeus::scroll::Remainder(&px, &py);
+    Check(px == 5 && py == 6 && ViewportIsGame(), "afterwards: the remainder (5, 6) back, the viewport the game's");
+    int sx = 0, sy = 0;
+    Scr<G2s_fn>("grid_to_screen")(1, 2, &sx, &sy);
+    Check(sx == -5 && sy == 24, "and conversions outside it moved again");
+    Check(zeus::scroll::Working(), "smooth scrolling still on");
+}
+
+int g_steps = 0;
+void __cdecl FakeNothingStep(int)
+{
+    ++g_steps;
+}
+
+// Attach (the install flow): the sites are not the game's here, so nothing is installed and the log says which; the
+// game's own drawing and scrolling then. view_scroll_step's detour counts the game's own steps for the rate log.
+void ScrollAttach()
+{
+    PictureFakes();
+    BackBuffer(1920, 1080);
+    FakeViewportInit(0xe4, 0xe4, 0, 30, 28, 71, 58, 30);
+    Check(!zeus::scroll::Attach(true) && !zeus::scroll::Working(), "Attach where the sites do not match: false, off");
+    Check(LogContains("zeus: scroll_get_direction at 0x50b7b0 does not match; smooth scrolling not installed"),
+          "log: the first site that does not match");
+    BYTE *back = At<BYTE *>(aDrawBuffer);
+    Timing<Render_fn>("city_render")(0, 0, 0);
+    Check(g_calls.draws == 1 && g_pic.buffer == back && g_pic.clipR == 1678, "not installed: the game's own drawing");
+    zeus::scroll::StartForTest(false); // installed, smooth off: the game's own steps counted
+    char stats[256];
+    zeus::scroll::TakeStats(stats, sizeof(stats));
+    using Step_fn = void(__cdecl *)(int);
+    Thunk(0x51cad0, reinterpret_cast<void *>(&FakeNothingStep));
+    auto step = Scr<Step_fn>("view_scroll_step");
+    step(1); // right and up
+    step(2); // right
+    step(8); // none
+    At<int>(aEdgeScrolling) = 1;
+    zeus::scroll::OnFrame(100);
+    zeus::scroll::TakeStats(stats, sizeof(stats));
+    Check(std::strstr(stats, "x 1200 px/s, y 600 px/s, 2 steps") != nullptr && g_steps == 3,
+          "view_scroll_step: the game's own steps counted (2 with a direction: 120 px across, 60 px down in 100 ms), "
+          "each passed to the game");
+}
+
 const Scenario kScenarios[] = {
     {"pace_ok", &PaceOk},
     {"pace_fault", &PaceFault},
@@ -2956,6 +3472,15 @@ const Scenario kScenarios[] = {
     {"notice_boxes", &NoticeBoxes},
     {"scroll_ok", &ScrollOk},
     {"direction_fault", &DirectionFault},
+    {"render_ok", &RenderOk},
+    {"render_fault", &RenderFault},
+    {"render_fault_uncounted", &RenderFaultUncounted},
+    {"convert_fault", &ConvertFault},
+    {"drag_fault", &DragFault},
+    {"city_input", &CityInput},
+    {"city_extent", &CityExtent},
+    {"figure_portrait", &FigurePortrait},
+    {"scroll_attach", &ScrollAttach},
 };
 
 } // namespace

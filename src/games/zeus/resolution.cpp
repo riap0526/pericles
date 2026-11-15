@@ -14,10 +14,12 @@
 //   screen_mode_size 0x50bcc0 (__cdecl mode; ret): mode 3's size is ours (the core's OnModeSize);
 //   config_load 0x5c44c0 (no arguments; eax; ret): a Zeus.inf with mode 1 or 2 (800x600 is the game's default) starts
 //                       in mode 3, a value the original reads too;
-//   ui_set_sidebar_position 0x58e280 (no arguments; ret): the sidebar starts where the city's clip ends with the
-//                       sidebar open (60 x columns - 2: 478, 598, 838 at the game's three widths), as many columns as
-//                       leave room for its 186 px; up to 59 px right of it stay empty (a later step fills them). The
-//                       game sets nothing for any other width;
+//   ui_set_sidebar_position 0x58e280 (no arguments; ret): wider than 1024 the sidebar is against the screen's right
+//                       edge (earlier builds: where the city's clip ends, 60 x columns - 2, with up to 59 px of marble
+//                       right of it). The city's clip stays on the tile grid (whole columns, NarrowColumns); the gap
+//                       between it and the sidebar is drawn by smooth scrolling's picture (games/zeus/scroll, the
+//                       extent), and filled with the marble when that is not working. The game sets nothing for any
+//                       width but 640, 800 and 1024;
 //   city_viewport_set_640 0x51cba0 and 0x51cc00 (no arguments; ret; screen_after_mode_change picks one by 0x10dff60):
 //                       the city viewport (viewport_init 0x449e50) for any size, with formulas that give the game's
 //                       own columns and half rows at 640, 800 and 1024; the game uses 8 x 31 for any other width.
@@ -68,6 +70,7 @@
 #include "core/settings/settings.h"
 #include "core/ui/info_window.h"
 #include "games/zeus/diag.h"
+#include "games/zeus/scroll.h"
 
 #include <cstring>
 #include <cwchar>
@@ -120,6 +123,7 @@ const Var<char> kRedraw{0xf2a6ce};
 const Var<int> kSidebarX{0x10dff34};
 const Var<int> kSidebarX2{0x10dff30};
 const Var<int> kCityClipBottom{0x7d3b88}; // viewport_init: (half rows - 1) x 15 + 30
+const Var<int> kCityClipRight{0x7d3b90};  // viewport_init: 60 x columns - 2
 const Var<int> kMapColMin{0xfa05b4}; // view_clamp 0x51cd60's limits (as Emperor's order)
 const Var<int> kMapColMax{0xfa05b0};
 const Var<int> kMapRowMin{0xfa05ac};
@@ -211,11 +215,30 @@ int NarrowColumns(int w)
     return (w - kSidebarWidth + 2) / 60;
 }
 
+// Where the city is seen to beyond its clip (smooth scrolling's picture, games/zeus/scroll SetCityExtent), after
+// the sidebar or the viewport changed: with our layout the sidebar's left edge (the screen's right edge without a
+// sidebar: city_viewport_set_640, which the game does not use) and the screen's bottom; the game's own layouts and our
+// fallback: just the clip (0).
+bool g_wideViewport = false; // the last viewport was the one without a sidebar
+
+bool OurLayout(int w, int h)
+{
+    return !(StandardSize(w, h) || w < 1024) && core::diag::Enabled(g_layout);
+}
+
+void UpdateCityExtent()
+{
+    const int w = *kModeWidth, h = *kModeHeight;
+    const bool ours = OurLayout(w, h);
+    zeus::scroll::SetCityExtent(ours ? (g_wideViewport ? w : *kSidebarX) : 0, ours ? h : 0);
+}
+
 void __cdecl SidebarPos_detour()
 {
     const int w = *kModeWidth;
     if (w <= 1024) {
         Original(o_SidebarPos, kSidebarPos)();
+        UpdateCityExtent();
         return;
     }
     core::diag::Restore r;
@@ -223,15 +246,17 @@ void __cdecl SidebarPos_detour()
             g_layout,
             [](void *p) {
                 auto &r = *static_cast<core::diag::Restore *>(p);
-                r.Set(kSidebarX.ptr(), 60 * NarrowColumns(*kModeWidth) - 2);
+                r.Set(kSidebarX.ptr(), *kModeWidth - kSidebarWidth);
                 r.Set(kSidebarX2.ptr(), *kSidebarX + kSidebarX2Offset);
                 r.Forget();
             },
             &r, &r)) {
+        UpdateCityExtent();
         return;
     }
     *kSidebarX = kMinW - kSidebarWidth;
     *kSidebarX2 = kMinW - kSidebarWidth + kSidebarX2Offset;
+    UpdateCityExtent(); // off after the error: the clip only
     LayoutFallBack("the sidebar position could not be set");
 }
 
@@ -283,11 +308,15 @@ int Rows(int h)
     return (h - kTopBar + 14) / 15 + 1;
 }
 
-// After a viewport (ours or the game's): the spare rows the city may draw into (the canary's allowance): the clip's
-// overshoot. The city is shown only to its clip (shown bottom 0: no smooth scrolling drawing past it).
-void SpareRows()
+// After a viewport (ours or the game's): the extent and the spare rows the city may draw into (the canary's
+// allowance): the clip's overshoot (with our layout the city is shown down to the screen's bottom, which the clip
+// already reaches).
+void AfterViewport(bool wide)
 {
-    core::display::ApplySpareRows("zeus: resolution: ", *kCityClipBottom, 0, 15, *kModeHeight);
+    g_wideViewport = wide;
+    UpdateCityExtent();
+    const int h = *kModeHeight;
+    core::display::ApplySpareRows("zeus: resolution: ", *kCityClipBottom, OurLayout(*kModeWidth, h) ? h : 0, 15, h);
 }
 
 // Our layout, with the city's clip reaching the screen's bottom (or past it): the bottom strip is not blanked and the
@@ -308,7 +337,7 @@ void __cdecl ViewportWide_detour()
     else {
         Viewport({w / 60, Rows(h)}, {17, 50});
     }
-    SpareRows();
+    AfterViewport(true);
 }
 
 // 640, 800, 1024 -> 8, 10, 14 columns (left of the sidebar; the game's own below 1024).
@@ -321,7 +350,7 @@ void __cdecl ViewportNarrow_detour()
     else {
         Viewport({NarrowColumns(w), Rows(h)}, {14, 50});
     }
-    SpareRows();
+    AfterViewport(false);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -458,8 +487,9 @@ void __cdecl MessagePanel_detour()
 //   - rows 600 .. bottom - 168: the backdrop's left edge (columns 0..6, its rows 640..699 repeated) and, right of it,
 //     an inset panel of the game's own tiles (group 0x84: inner_panel_draw 0x59f2a0's 7 x 7 set of 16 px tiles) edge
 //     to edge, for later information and the minimap; less than 32 rows: the plain marble;
-// and wider than the 1024 layout, right of the sidebar (up to 59 px; gone when the sidebar is against the right edge
-// later): the backdrop's plain marble (entry 1232, x 50..185, y 30..419), mirrored tiles. The marble is read from the
+// and right of the sidebar (the sidebar is now against the right edge, so nothing at our sizes), and on the city
+// screens, while smooth scrolling is not working, between the city's clip and the sidebar (up to 59 px): the
+// backdrop's plain marble (entry 1232, x 50..185, y 30..419), mirrored tiles. The marble is read from the
 // player's own DATA\Zeus_Interface.sg3 in memory only (core/assets/sg3); when it cannot be read, the 800x600 strip
 // (entry 1234, 16x600) is drawn whole with image_draw instead.
 // The world map's sidebar (world_map_sidebars 0x597e50, and the campaign map's, games/zeus/world_map) the same
@@ -622,7 +652,12 @@ void DrawFiller(core::diag::Restore &r, const Edge &edge)
     if (s.w < w || s.h < h || x <= 0 || x + kSidebarWidth > w) {
         return;
     }
-    Plain(s, RECT{x + kSidebarWidth, 0, w, h}, r); // right of the sidebar
+    Plain(s, RECT{x + kSidebarWidth, 0, w, h}, r); // right of the sidebar (nothing now: against the edge)
+    // Left of the city's sidebar, between the city's clip and the sidebar: drawn by smooth scrolling's picture;
+    // marble only when that is not working (else this would show for a frame under the city on every redraw).
+    if (&edge == &kCityEdge && !zeus::scroll::Working() && *kCityClipRight > 0 && *kCityClipRight < x) {
+        Plain(s, RECT{*kCityClipRight, kTopBar, x, h}, r);
+    }
     if (h <= kBackdropH) {
         return;
     }

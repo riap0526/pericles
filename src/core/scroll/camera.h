@@ -11,8 +11,8 @@
 // same on every computer, in columns a second the same in every game (the original game's own timing
 // made 100% far too fast to use once the camera is not held back by frames).
 //
-// Showing the remainder (drawing the city off the tile grid, converting clicks) is the game layer's: it reads the
-// remainder here. Without that, the camera still moves by time, the city shown on whole tiles.
+// Showing the remainder (drawing the city off the tile grid, converting clicks) is core/scroll/picture's, which reads
+// the remainder here; the game layer hooks the functions it needs.
 //
 // Failure (our features never end the game): a frame of the camera runs under core/diag's guard with the camera,
 // view_scrolling and the key flags in its Restore list. On an exception they are put back, the feature (the game

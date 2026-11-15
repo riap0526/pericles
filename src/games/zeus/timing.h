@@ -15,7 +15,8 @@
 //                            animation flags of the game's time (games/zeus/anim_clock.h).
 //   city_render    0x44a830, 0x44a930  the city drawing: drawn on every frame, but only one drawing every 50 ms counts
 //                            for the animations that move on each drawing; after the others the tile animation bytes,
-//                            buildings, one figure field and the drawing counters are put back (timing.cpp).
+//                            buildings, one figure field and the drawing counters are put back (timing.cpp). The
+//                            drawing itself goes through smooth scrolling's picture (games/zeus/scroll) inside that.
 #pragma once
 
 #include "games/zeus/site.h"
@@ -33,6 +34,12 @@ unsigned FrameNumber();
 
 // Whether city_render is hooked (Attach): the menus' city background is taken there (games/zeus/fullscreen).
 bool CityDrawingHooked();
+
+// For games/zeus/scroll (smooth scrolling's picture): the game's own city_render, as the drawing of the frame (inside
+// city_render's detour, which keeps the drawn-frame state), and as an extra drawing that never counts (after smooth
+// scrolling's drawing was abandoned: its animations and counters are put back even in a counting frame).
+void DrawCityOriginal(int x, int y, int z);
+void DrawCityNotCounting(int x, int y, int z);
 
 // Offline tests only (src/games/zeus/test_restore.cpp): the detours above by site name; the copy buffer of the
 // drawn-frame animations without the site checks of Attach; whether each feature is still on.

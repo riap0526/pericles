@@ -26,6 +26,7 @@
 #include "core/log.h"
 #include "core/settings/settings.h"
 #include "games/zeus/site.h"
+#include "games/zeus/scroll.h"
 #include "games/zeus/timing.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -45,7 +46,7 @@ const Var<int> kScreenMode{0xf2a770};
 const Var<unsigned char> kGameScreen{0xf2a6dd};
 const Var<unsigned char *> kDrawBuffer{0xf9c100}; // draw_buffer
 const Var<int> kPitch{0xf2a698};                  // dd_pitch
-const Var<int> kWidth{0xf2a6a0}, kHeight{0xf2a69c}; // dd_width, dd_height
+const Var<int> kWidth{0xf2a6a0}; // dd_width
 const Var<int> kCityLeft{0x7d3b94}, kCityTop{0x7d3b8c}, kCityRight{0x7d3b90}, kCityBottom{0x7d3b88};
 
 constexpr wchar_t kInterfacePack[] = L"DATA\\Zeus_Interface.sg3"; // next to Zeus.exe
@@ -214,15 +215,20 @@ void CityDrawn()
         framed::NoteCitySkipped("editor_mode is not 0 (an editor)", *kCityLeft, *kCityTop, *kCityRight, *kCityBottom);
         return;
     }
-    const int pitch = *kPitch, width = *kWidth, height = *kHeight;
-    int right = *kCityRight, bottom = *kCityBottom;
-    right = right < width ? right : width;
-    bottom = bottom < height ? bottom : height;
-    if (pitch < width * 2) {
-        framed::NoteCitySkipped("the pitch is smaller than the width", *kCityLeft, *kCityTop, right, bottom);
+    // The city as shown (smooth scrolling's picture): from the clip's top left to the sidebar and the screen's
+    // bottom, never past the screen.
+    const int pitch = *kPitch, width = *kWidth;
+    int left, top, right, bottom;
+    const char *why = nullptr;
+    if (!zeus::scroll::DrawnCity(&left, &top, &right, &bottom, &why)) {
+        framed::NoteCitySkipped(why, left, top, right, bottom);
         return;
     }
-    framed::KeepCity(*kDrawBuffer, pitch, *kCityLeft, *kCityTop, right, bottom);
+    if (pitch < width * 2) {
+        framed::NoteCitySkipped("the pitch is smaller than the width", left, top, right, bottom);
+        return;
+    }
+    framed::KeepCity(*kDrawBuffer, pitch, left, top, right, bottom);
 }
 
 void WhilePaused()

@@ -325,6 +325,7 @@ void __cdecl GameFrame_detour()
         std::snprintf(why, sizeof(why), " (report #%d)", report);
         LogRates(why);
         char state[256];
+        zeus::scroll::SaveCityBuffer(report);
         zeus::diag::Describe(state, sizeof(state));
         core_log("report #%d: %s", report, state);
         zeus::diag::CensusForReport();
@@ -574,6 +575,7 @@ void DecideCountingFrame()
 }
 
 struct RenderSwap {
+    bool force = false;  // a drawing that never counts (the extra drawing after an abandoned one)
     unsigned char frame[zeus::anim::kTimers];
     bool flags = false;  // anim_due replaced (put back after)
     bool copied = false; // the regions copied (put back after a drawing that does not count)
@@ -588,7 +590,7 @@ void RenderBefore(void *p)
     RenderSwap &s = *static_cast<RenderSwap *>(p);
     unsigned char *due = At<unsigned char>(kAnimDue);
     std::memcpy(s.frame, due, sizeof(s.frame));
-    if (!g_countingFrame) {
+    if (!g_countingFrame || s.force) {
         unsigned char *dst = g_drawnCopy;
         s.buildings = g_buildingsUsed;
         for (const Region &r : kDrawnState) {
@@ -604,7 +606,12 @@ void RenderBefore(void *p)
             s.random = true;
         }
     }
-    std::memcpy(due, g_renderFlags, sizeof(g_renderFlags));
+    if (s.force) {
+        std::memset(due, 0, sizeof(g_renderFlags)); // nothing advances (as during any drawing that does not count)
+    }
+    else {
+        std::memcpy(due, g_renderFlags, sizeof(g_renderFlags));
+    }
     s.flags = true;
 }
 
@@ -634,10 +641,16 @@ void RenderAfter(void *p)
 
 // True when this was an outermost drawing that counts (shown with the game's own state kept; the city kept for
 // the menus' background is taken only from those).
-template <typename F> bool WithDrawnState(F draw)
+// force: a drawing that never counts -- the extra city_render after smooth
+// scrolling's drawing was abandoned, inside the outer drawing of the frame. Inside a counting drawing it is put back on
+// its own (the outer one copied nothing, so the copy buffer is free); inside a drawing that does not count the outer
+// one puts everything back at its end (the copy buffer holds the outer one's copy and must not be touched).
+template <typename F> bool WithDrawnState(F draw, bool force = false)
 {
     RenderSwap s;
+    s.force = force;
     const bool outer = g_renderDepth == 0;
+    const bool own = outer || (force && g_countingFrame); // this drawing does its own put-back (if active)
     // [debug] state_check (state_check.h): the game's memory before anything of ours or the drawing's, once a second
     // around a drawing that does not count. Not timed: only while checking.
     const bool want = g_renderDepth == 0 && g_drawnCopy && core::diag::Enabled(g_drawnFeature) && !g_countingFrame &&
@@ -646,7 +659,7 @@ template <typename F> bool WithDrawnState(F draw)
         zeus::state_check::Before();
     }
     std::int64_t t = perf::Now();
-    const bool active = g_renderDepth == 0 && g_drawnCopy && core::diag::Enabled(g_drawnFeature) &&
+    const bool active = own && g_drawnCopy && core::diag::Enabled(g_drawnFeature) &&
                         core::diag::Guarded(g_drawnFeature, &RenderBefore, &s);
     perf::Add(kPutBackPhase, perf::Now() - t);
     const bool check = want && active && s.copied;
@@ -678,17 +691,28 @@ template <typename F> bool WithDrawnState(F draw)
     return outer && (!active || !s.copied);
 }
 
+// The drawing goes through smooth scrolling's picture (games/zeus/scroll, core/scroll/picture), inside the
+// drawn-frame state: the picture's own guard catches a fault of its drawing and puts its changes back, and the
+// put-back here still runs after it. The picture calls DrawCityOriginal for the
+// drawing and DrawCityNotCounting for the extra one after an abandoned drawing.
 void __cdecl CityRender_detour(int x, int y, int z)
 {
     zeus::diag::CityRender(x, y, z); // a log line when the city viewport changes (reads only)
-    if (WithDrawnState([&] { Original(o_CityRender, kCityRender)(x, y, z); })) {
+    if (WithDrawnState([&] { zeus::scroll::DrawCity(x, y, z); })) {
         zeus::fullscreen::CityDrawn(); // the city on screen, kept every few seconds for the menus' background
     }
 }
 
+// The figure portrait of the information window (figure_portrait_draw 0x572f50, a 5 x 15 viewport with the view moved
+// to the figure): drawn as the game draws it, without smooth scrolling's remainder.
 void __cdecl CityRender2_detour(int x, int y, int z, int w)
 {
-    WithDrawnState([&] { Original(o_CityRender2, kCityRender2)(x, y, z, w); });
+    WithDrawnState([&] {
+        core::diag::Restore r;
+        zeus::scroll::PortraitDrawing(r);
+        Original(o_CityRender2, kCityRender2)(x, y, z, w);
+        r.Undo();
+    });
 }
 
 void TakeDrawnCounts(long *counted, long *reverted)
@@ -836,6 +860,16 @@ unsigned FrameNumber()
 bool CityDrawingHooked()
 {
     return g_cityRenderHooked;
+}
+
+void DrawCityOriginal(int x, int y, int z)
+{
+    Original(o_CityRender, kCityRender)(x, y, z);
+}
+
+void DrawCityNotCounting(int x, int y, int z)
+{
+    WithDrawnState([&] { Original(o_CityRender, kCityRender)(x, y, z); }, true);
 }
 
 bool PrepareForTest()

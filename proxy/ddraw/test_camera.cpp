@@ -4,7 +4,8 @@
 // view_y (view_y even), a map edge stops that axis on a whole tile, no remainder at the right and bottom limits,
 // someone else moving the view starts again on a whole tile, once per game frame, edge scrolling at the game's own
 // speed (Augustus's table), an arrow key held from its flag until released, speed 0 does not move, the game's own
-// steps counted and the rate log's text, and a fault in view_clamp: the camera, view_scrolling and the key flags put
+// steps counted and the rate log's text, the speed from rest after our panel was closed (Resume), the game layer's
+// check of its call sites (CallsTarget), and a fault in view_clamp: the camera, view_scrolling and the key flags put
 // back, the feature off, the game layer's fallback called, the game's own scrolling afterwards. The scenarios run in
 // order in one process (the fault last: a feature switched off stays off); about 2 s (the camera runs on real time).
 #include "core/diag/guard.h"
@@ -258,6 +259,53 @@ void CountsAndOff()
     Check(camera::SetSmooth(kGame, true), "switched on again");
 }
 
+// After our panel was closed (Resume): the speed starts again from rest, as at the first frame at the edge.
+void ResumeFromRest()
+{
+    M(kViewX) = 50;
+    M(kViewY) = 100;
+    camera::SetRemainderForTest(kGame, 0, 0);
+    M(kCursorX) = 1023;
+    auto oneFrame = [] { // the pixels one frame moves along x
+        int px0, py0, px, py;
+        camera::Remainder(&px0, &py0);
+        const int start = M(kViewX) * (M(kTileW) + 2) + px0;
+        Frame();
+        camera::Remainder(&px, &py);
+        return M(kViewX) * (M(kTileW) + 2) + px - start;
+    };
+    RunX(300); // at cruise speed (12 px per 16.67 ms at 50%)
+    Sleep(40);
+    const int cruise = oneFrame();
+    camera::Resume();
+    Sleep(40);
+    const int resumed = oneFrame();
+    char what[160];
+    std::snprintf(what, sizeof(what), "after Resume the speed starts from rest: %d px in the first frame (%d px at "
+                                      "cruise speed after the same 40 ms)",
+                  resumed, cruise);
+    Check(cruise >= 20 && resumed * 2 < cruise, what);
+    Middle();
+    RunX(400);
+}
+
+// The game layer's check of its city call sites (each must follow "call <scroll_get_direction>").
+void CallSites()
+{
+    static BYTE code[16] = {};
+    const core::site::Site target{"scroll_get_direction", 0x50b7b0, {}};
+    const DWORD at = reinterpret_cast<DWORD>(code);
+    code[0] = 0xe8; // call target, returning to at + 5
+    *reinterpret_cast<DWORD *>(code + 1) = target.address - (at + 5);
+    code[5] = 0x90;
+    code[6] = 0xe8; // call target + 0x10, returning to at + 11
+    *reinterpret_cast<DWORD *>(code + 7) = target.address + 0x10 - (at + 11);
+    const DWORD good[] = {at + 5};
+    const DWORD bad[] = {at + 5, at + 11};
+    Check(camera::CallsTarget("test", good, 1, target), "CallsTarget: a call of the target before the return address");
+    Check(!camera::CallsTarget("test", bad, 2, target), "CallsTarget: a call of another function: false (logged)");
+}
+
 void ClampFault()
 {
     M(kViewX) = 50;
@@ -317,6 +365,8 @@ int main()
     EdgeScrolling();
     Keys();
     CountsAndOff();
+    ResumeFromRest();
+    CallSites();
     ClampFault();
     std::printf("RESULT: %s (%d failure(s))\n", g_failures ? "FAIL" : "PASS", g_failures);
     return g_failures ? 1 : 0;

@@ -175,7 +175,8 @@ extern "C" void zeus_attach(void)
         zeus::world_map::AttachLayout();
     }
     zeus::notice::Attach(); // our messages in the game's notice boxes
-    // Smooth scrolling's camera (the city still drawn on whole tiles); gameplay.smooth_scroll from the panel.
+    // Smooth scrolling (the camera and the city drawn with its pixel remainder; after timing's city_render hook);
+    // gameplay.smooth_scroll from the panel.
     if (zeus::scroll::Attach(core_config_get()->smooth_scroll != 0)) {
         core::settings::OnChange(core::settings::Find("gameplay", "smooth_scroll"), &ApplySmooth);
     }
