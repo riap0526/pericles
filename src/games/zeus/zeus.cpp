@@ -15,6 +15,7 @@
 #include "games/zeus/diag.h"
 #include "games/zeus/fullscreen.h"
 #include "games/zeus/intro.h"
+#include "games/zeus/sound.h"
 #include "games/zeus/notice.h"
 #include "games/zeus/resolution.h"
 #include "games/zeus/scroll.h"
@@ -159,6 +160,7 @@ extern "C" void zeus_attach(void)
     zeus::diag::Attach();   // state line, panel sections, game end, layout logs
     zeus::state_check::Attach(); // [debug] state_check: drawings that do not count leave the save data as it was
     zeus::intro::Attach();       // [ui] intro_movie (before game_main reaches the movie)
+    zeus::sound::Attach();       // the game's 3D sounds off (their provider stopped the city ~220 ms)
     // The allies' flags at the original's pace; the map drawn with the game's own height (without it the map
     // reads past its picture on a screen higher than 768, so the logical resolution needs it).
     const bool mapHeight = zeus::world_map::Attach();

@@ -43,6 +43,12 @@
 //   intro_mismatch      Attach (a smoke test asks for the skip) where the sites' bytes are not the game's: nothing
 //                           installed, the log says which site, the movie plays
 //
+// The game's 3D sounds (games/zeus/sound):
+//   sound_3d_off            sound_init: the switch (Zeus.inf's on) is 0 before the game's sound opens, logged; already
+//                           off: left 0, logged as such
+//   sound_3d_fault          the switch cannot be written (a fault in the guard): off, logged, the game's sound opens
+//                           with the switch as it was
+//
 // The framed front-end screens (games/zeus/fullscreen with the core's core/display/framed_screens and
 // core/display/resolution_switch; without the player's interface pack, so no background is composed):
 //   framed_screens              the main menu framed whole at the city's scale, a loading picture by its 800x600, the same
@@ -157,6 +163,7 @@
 #include "games/zeus/fullscreen.h"
 #include "core/ui/notice.h"
 #include "games/zeus/intro.h"
+#include "games/zeus/sound.h"
 #include "games/zeus/notice.h"
 #include "games/zeus/resolution.h"
 #include "games/zeus/scroll.h"
@@ -1778,6 +1785,58 @@ void IntroMismatch()
     Check(GameMainIntro(&player, "Binks\\zeus_intro.bik", 112, 84) == 1 && g_bink.opens == 1 && g_bink.x == 112 &&
               g_bink.y == 84,
           "the movie plays: game_main's call opens it");
+}
+
+// The game's 3D sounds (games/zeus/sound)
+
+constexpr DWORD fSoundInit = 0x5a3990, aSounds3d = 0xf2aa98;
+
+struct SoundInit {
+    int calls = 0;
+    int switchSeen = -1; // sounds_3d_on when the game's sound_init ran
+} g_soundInit;
+
+void __cdecl FakeSoundInit()
+{
+    ++g_soundInit.calls;
+    g_soundInit.switchSeen = At<int>(aSounds3d);
+}
+
+using SoundInit_fn = void(__cdecl *)();
+
+SoundInit_fn SoundDetour()
+{
+    int n;
+    const zeus::Detour *d = zeus::sound::Detours(&n);
+    return reinterpret_cast<SoundInit_fn>(d[0].detour);
+}
+
+void Sound3dOff()
+{
+    Thunk(fSoundInit, reinterpret_cast<const void *>(&FakeSoundInit));
+    At<int>(aSounds3d) = 1; // as config_load leaves it with Zeus.inf's "on"
+    SoundDetour()();
+    Check(g_soundInit.calls == 1 && g_soundInit.switchSeen == 0 && At<int>(aSounds3d) == 0,
+          "on: the switch is 0 before the game's sound opens (the game's sound_init still runs)");
+    Check(LogContains("sound: the game's 3D sounds turned off for this run (Zeus.inf had them on)"), "log: turned off");
+    SoundDetour()();
+    Check(g_soundInit.calls == 2 && g_soundInit.switchSeen == 0 && At<int>(aSounds3d) == 0, "already off: left 0");
+    Check(LogContains("sound: the game's 3D sounds are off (as in Zeus.inf)"), "log: already off");
+}
+
+void Sound3dFault()
+{
+    Thunk(fSoundInit, reinterpret_cast<const void *>(&FakeSoundInit));
+    At<int>(aSounds3d) = 1;
+    DWORD old;
+    VirtualProtect(reinterpret_cast<void *>((aSounds3d & ~0xfffu) + g_imageShift), 0x1000, PAGE_READONLY, &old);
+    SoundDetour()(); // writing the switch faults inside the guard
+    VirtualProtect(reinterpret_cast<void *>((aSounds3d & ~0xfffu) + g_imageShift), 0x1000, old, &old);
+    Check(g_soundInit.calls == 1 && g_soundInit.switchSeen == 1 && At<int>(aSounds3d) == 1,
+          "a fault: the game's sound opens with the switch as Zeus.inf had it");
+    Check(LogContains("feature \"3D sounds off (games/zeus/sound)\" switched off"), "log: the feature off");
+    SoundDetour()();
+    Check(g_soundInit.calls == 2 && At<int>(aSounds3d) == 1, "afterwards: the switch is not touched");
 }
 
 // --- The smoke test's actions (games/zeus/smoke). cheat_run is __cdecl (one argument [esp+4], returns al,
@@ -4324,6 +4383,8 @@ const Scenario kScenarios[] = {
     {"intro_skip", &IntroSkip},
     {"intro_fault", &IntroFault},
     {"intro_mismatch", &IntroMismatch},
+    {"sound_3d_off", &Sound3dOff},
+    {"sound_3d_fault", &Sound3dFault},
     {"framed_screens", &FramedScreens},
     {"framed_setting", &FramedSetting},
     {"framed_fault", &FramedFault},
