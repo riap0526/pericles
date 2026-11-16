@@ -94,18 +94,119 @@ int ShownEdge(int ext, int clip, int screen)
     return edge < screen ? edge : screen;
 }
 
-// Moves the origin by the remainder for one conversion call (screen-to-grid also gets a viewport one column and a
-// row pair larger, unless city_render has made it larger already); mouse: the game's mouse as the buffer pixel it
-// shows (zoomed, mouse_to_grid). Every change goes into r.
+// The grid clip's right edge (viewport_init's: right = left + cols x (tile width + 2) - 2).
+int GridRight(const PictureGame &g)
+{
+    return *g.vars.clipLeft + *g.vars.widthTiles * ColPx(g) - 2;
+}
+
+// The city is shown past the grid clip on the right (our layout's extent, at 100%).
+bool PastClip(const PictureGame &g)
+{
+    if (g_extRight <= 0) {
+        return false;
+    }
+    const int right = GridRight(g);
+    return ShownEdge(g_extRight, right, Width(g)) > right;
+}
+
+// The east and south edges (camera.h SetEdgeOffsets): the original's edge
+// (the grid clip's right / bottom edge: the view's whole columns / half rows, where the original's city ends at the
+// game's limit) less where our city ends, in the game's pixels. 100%: the extent past the grid clip, or the grid clip
+// past the screen (negative: the camera stops before the game's limit). Zoomed: the view's columns / half rows less the
+// size of the buffer that is shown (the zoom's own BufferSize, which the zoomed drawing shows; positive: the camera
+// goes past the game's limit, into the column / row pair the zoomed drawing draws besides). The game's own layout (no
+// extent): 0.
+int EastOffset(const PictureGame &g)
+{
+    if (g_extRight <= 0) {
+        return 0;
+    }
+    const int right = GridRight(g);
+    if (g.zoomPercent() != 100) {
+        int bufW = 0, bufH = 0;
+        g.zoomBufferSize(&bufW, &bufH);
+        return bufW > 0 ? right - (*g.vars.clipLeft + bufW) : 0;
+    }
+    return right - ShownEdge(g_extRight, right, Width(g));
+}
+
+int SouthOffset(const PictureGame &g)
+{
+    if (g_extBottom <= 0) {
+        return 0;
+    }
+    const PictureVars &v = g.vars;
+    const int bottom = *v.clipTop + (*v.heightRows - 1) * HalfH(g);
+    if (g.zoomPercent() != 100) {
+        int bufW = 0, bufH = 0;
+        g.zoomBufferSize(&bufW, &bufH);
+        return bufH > 0 ? bottom - (*v.clipTop + bufH) : 0;
+    }
+    return bottom - ShownEdge(g_extBottom, bottom, *v.ddHeight);
+}
+
+// How much larger a conversion's viewport is made (BeginShift): as many columns as the remainder and the city shown
+// past the grid clip need together (at least one), and as many row pairs (two half rows each) below. One was not
+// enough with a large remainder and the gap left of the sidebar.
+int GrowCols(const PictureGame &g)
+{
+    const int colPx = ColPx(g), right = GridRight(g);
+    const int past = g_extRight > 0 ? ShownEdge(g_extRight, right, Width(g)) - right : 0;
+    const int n = (RemX() + (past > 0 ? past : 0) + colPx - 1) / colPx;
+    return n > 1 ? n : 1;
+}
+
+int GrowRows(const PictureGame &g)
+{
+    const PictureVars &v = g.vars;
+    const int rowPx = 2 * HalfH(g), bottom = *v.clipTop + (*v.heightRows - 1) * HalfH(g);
+    const int past = g_extBottom > 0 ? ShownEdge(g_extBottom, bottom, *v.ddHeight) - bottom : 0;
+    const int n = rowPx > 0 ? (RemY() + (past > 0 ? past : 0) + rowPx - 1) / rowPx : 1;
+    return 2 * (n > 1 ? n : 1);
+}
+
+// Before the game draws the city: the camera kept to the original's east and south edges (camera::KeepEdges; also with
+// smooth scrolling off). city_render's view is the game's view_x / view_y when it is called by the game's city drawing:
+// moved with it.
+void KeepEdgesBeforeDrawing(const PictureGame &g, int *vx, int *vy)
+{
+    UpdateEdges(g);
+    if (!core::diag::Enabled(FeatureOf(g)) || g_inRender) {
+        return;
+    }
+    struct Ctx {
+        const PictureGame *g;
+        core::diag::Restore r;
+    } c{&g, {}};
+    const int beforeX = *g.camera->vars.viewX, beforeY = *g.camera->vars.viewY;
+    if (!core::diag::Guarded(
+            FeatureOf(g), [](void *p) { camera::KeepEdges(*static_cast<Ctx *>(p)->g->camera, static_cast<Ctx *>(p)->r); },
+            &c, &c.r)) {
+        FallBack(g);
+        return;
+    }
+    if (*vx == beforeX) {
+        *vx = *g.camera->vars.viewX;
+    }
+    if (*vy == beforeY) {
+        *vy = *g.camera->vars.viewY;
+    }
+}
+
+// Moves the origin by the remainder for one conversion call (screen-to-grid also gets a viewport larger by what the
+// remainder and the city shown past the clip need, GrowCols / GrowRows, unless city_render has made it larger
+// already); mouse: the game's mouse as the buffer pixel it shows (zoomed, mouse_to_grid). Every change goes into r.
 void BeginShift(const PictureGame &g, core::diag::Restore &r, bool grow, bool mouse)
 {
     const PictureVars &v = g.vars;
+    const int cols = grow && !g_inRender ? GrowCols(g) : 0, rows = grow && !g_inRender ? GrowRows(g) : 0;
     r.Set(&g_depth, 1);
     r.Set(v.originX.ptr(), *v.originX - RemX());
     r.Set(v.originY.ptr(), *v.originY - RemY());
     if (grow && !g_inRender) {
-        r.Set(v.widthTiles.ptr(), *v.widthTiles + 1);
-        r.Set(v.heightRows.ptr(), *v.heightRows + 2);
+        r.Set(v.widthTiles.ptr(), *v.widthTiles + cols);
+        r.Set(v.heightRows.ptr(), *v.heightRows + rows);
     }
     ZoomMap m;
     if (mouse && !g_bufferMode && ZoomNow(g, &m)) {
@@ -149,7 +250,9 @@ bool OffShownCity(const PictureGame &g, int x, int y)
 // the guarded call was abandoned.
 void Converted(const PictureGame &g, bool grow, void (*call)(void *), void *ctx, bool mouse = false)
 {
-    if (!Shifts(g)) {
+    // With no remainder the viewport is still made larger when the city is shown past the grid clip: the gap left of
+    // the sidebar is outside the game's viewport, which has no tile there otherwise.
+    if (!Shifts(g) && !(grow && g_depth == 0 && core::diag::Enabled(FeatureOf(g)) && PastClip(g))) {
         call(ctx);
         return;
     }
@@ -512,6 +615,7 @@ void DrawCity(const PictureGame &g, int vx, int vy, int orientation)
 
 void CityRender(const PictureGame &g, int vx, int vy, int orientation)
 {
+    KeepEdgesBeforeDrawing(g, &vx, &vy);
     struct Ctx {
         const PictureGame *g;
         RenderCall c;
@@ -700,6 +804,12 @@ void DragAdjusted(const PictureGame &g, int *drag, void (*original)(int *), bool
     }
     FallBack(g);
     original(drag);
+}
+
+void UpdateEdges(const PictureGame &g)
+{
+    camera::SetEdgeOffsets(EastOffset(g), SouthOffset(g), *g.vars.widthTiles * 4096 + *g.vars.heightRows,
+                           g.vars.heightRows.ptr());
 }
 
 void SetCityExtent(int right, int bottom)

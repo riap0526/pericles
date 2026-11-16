@@ -449,6 +449,11 @@ void CameraStep()
     const bool smooth = camera::Smooth();
     picture::ZoomMap a{}, b{};
     const bool before = Factors(&a);
+    // The view before the step's layout: Relayout clamps it to the new layout's limits at once (whole tiles), and the
+    // anchor's shift below would move it a second time -- at the east and south edges, whose limits move with the
+    // layout, the view then left the edge. The shift is applied to this view instead,
+    // and the camera clamps once.
+    const int viewX = *cam.vars.viewX, viewY = *cam.vars.viewY;
     if (!Advance(smooth)) {
         return;
     }
@@ -457,11 +462,14 @@ void CameraStep()
         g_zoomShiftX += core::display::ZoomAnchorShift(g_anchorX, a.left, a.fx, b.fx);
         g_zoomShiftY += core::display::ZoomAnchorShift(g_anchorY, a.top, a.fy, b.fy);
     }
+    // The east and south lines for the new layout before the camera moves: a step that
+    // shrinks the city at the east or south edge keeps it pinned there, as the west and north edges are.
+    picture::UpdateEdges(*g_game->picture);
     if (smooth) {
         const int dx = static_cast<int>(std::lround(g_zoomShiftX)), dy = static_cast<int>(std::lround(g_zoomShiftY));
         g_zoomShiftX -= dx;
         g_zoomShiftY -= dy;
-        camera::Move(cam, dx, dy);
+        camera::MoveFrom(cam, viewX, viewY, dx, dy);
     }
     else { // the game's whole tiles: view_x by columns, view_y by row pairs
         const int colPx = *cam.vars.tileWidth + 2, rowPx = 2 * *cam.vars.tileHalfHeight;
@@ -470,9 +478,10 @@ void CameraStep()
         g_zoomShiftX -= tx * colPx;
         g_zoomShiftY -= ty * rowPx;
         camera::ClearRemainder();
-        *cam.vars.viewX += tx;
-        *cam.vars.viewY += 2 * ty;
+        *cam.vars.viewX = viewX + tx;
+        *cam.vars.viewY = viewY + 2 * ty;
         cam.clampView(); // through the game layer's hook, as the camera clamps
+        camera::SnapEdges(cam); // at the game's limit: on the east / south line
     }
     if (!Animating()) {
         g_zoomShiftX = g_zoomShiftY = 0;

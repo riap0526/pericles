@@ -148,6 +148,10 @@ int CityWidth(const PictureGame &g, int (*original)());
 void DragStart(const PictureGame &g, int *drag, void (*original)(int *drag));
 void DragAdjusted(const PictureGame &g, int *drag, void (*original)(int *drag), bool draw);
 
+// The camera's east and south lines (camera.h SetEdgeOffsets) worked out for the layout as it is now: before each
+// drawing, and from the zoom's step after its layout and before it moves the camera.
+void UpdateEdges(const PictureGame &g);
+
 // ---------------------------------------------------------------------------------------------
 // From the game layer
 

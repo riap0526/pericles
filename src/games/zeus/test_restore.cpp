@@ -127,6 +127,8 @@
 //   city_extent               the layout's extent: the sidebar at the right edge, the gap drawn by the city (also with
 //                           smooth_scroll off), a clip past the screen's bottom shown to the bottom only; 1024x768 the
 //                           clip only
+//   east_edge            the view at the game's east limit is pulled back to the original's east edge (the column
+//                           before, 56 px of it unshown at 1920x1080), the game drawing that view; also with smooth_scroll off
 //   figure_portrait             the figure portrait (city_render_2): the game's own conversions, the remainder back after it
 //   scroll_attach        Attach where the sites do not match: nothing installed (logged), the game's own drawing;
 //                           view_scroll_step's detour counts the game's own steps
@@ -171,6 +173,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -516,13 +519,16 @@ struct PicSeen {
     int markCount = 0;
     int (*mouse)() = nullptr; // asked for the cursor tile while drawing (as the drawing's markers do)
     int mouseTile = -1;
+    int vx = -1, vy = -1; // the view city_render was given
 } g_pic;
 
 // As the city drawing: one tile animation byte, a building's field, a figure's field and the drawing counters
 // move on by one.
-void __cdecl FakeCityRender(int, int, int)
+void __cdecl FakeCityRender(int vx, int vy, int)
 {
     ++g_calls.draws;
+    g_pic.vx = vx;
+    g_pic.vy = vy;
     g_pic.buffer = At<BYTE *>(0xf9c100);
     g_pic.clipR = At<int>(0x7d3b90);
     g_pic.clipB = At<int>(0x7d3b88);
@@ -3167,6 +3173,7 @@ void PictureFakes()
     Thunk(fDragDraw, reinterpret_cast<void *>(&FakeDragDrawZ));
     Thunk(fDragFinish, reinterpret_cast<void *>(&FakeDragNothing));
     Thunk(fCityRender2, reinterpret_cast<void *>(&FakeCityRender2));
+    Thunk(fViewClamp, reinterpret_cast<void *>(&FakeViewClamp)); // the east edge asks the game's limit (camera.h)
 }
 
 // A 1920x1080 city with our layout: 28 columns x 71 half rows from (0, 30) (clip (0,30)-(1678,1080)), the sidebar
@@ -3213,9 +3220,10 @@ void RenderOk()
     Check(Back(1734, 500) == kBackSentinel && Back(100, 1080) == kBackSentinel && Back(5, 29) == kBackSentinel,
           "nothing written on the sidebar, below the screen or on the top bar");
     const int r = Scr<S2g_fn>("screen_to_grid")(10, 50, 77);
-    Check(r == 1234 && g_conv.ox == -5 && g_conv.oy == 24 && g_conv.cols == 29 && g_conv.rows == 73 &&
+    Check(r == 1234 && g_conv.ox == -5 && g_conv.oy == 24 && g_conv.cols == 30 && g_conv.rows == 73 &&
               g_conv.third == 77,
-          "screen_to_grid: the origin moved, the viewport a column and a row pair larger, the third argument passed on");
+          "screen_to_grid: the origin moved, the viewport 2 columns (5 + the 56 px gap) and a row pair larger, the "
+          "third argument passed on");
     Check(ViewportIsGame(), "afterwards: origin and viewport the game's");
     Check(Scr<Int_fn>("city_view_width_px")() == 1734, "the Game paused banner: the city's width up to the sidebar");
     int left, top, right, bottom;
@@ -3339,7 +3347,7 @@ void CityInput()
     Check(mouse() == 0 && g_mouseConv.calls == 0, "the cursor on the top bar: no tile");
     At<int>(aMouseX) = 1700; // in the gap left of the sidebar: the city is shown there
     At<int>(aMouseY) = 500;
-    Check(mouse() == 1234 && g_mouseConv.calls == 1 && g_mouseConv.ox == -5 && g_mouseConv.cols == 29,
+    Check(mouse() == 1234 && g_mouseConv.calls == 1 && g_mouseConv.ox == -5 && g_mouseConv.cols == 30,
           "the cursor in the gap: a tile, the origin moved and the viewport larger");
     Check(Scr<S2g_fn>("screen_to_grid")(1750, 500, 0) == 0 && g_conv.calls == 0, "screen_to_grid on the sidebar: 0");
     int sx = 0, sy = 0;
@@ -3348,11 +3356,11 @@ void CityInput()
     zeus::scroll::SetRemainderForTest(0, 0);
     At<int>(aMouseX) = 1750;
     Check(mouse() == 0 && g_mouseConv.calls == 1, "no remainder, our layout: the sidebar is still no tile");
-    // The gap at rest: drawn by the city, but the game is asked with its own viewport (the conversions are moved and
-    // made larger only with a remainder), so it is no tile -- as in Yongle (a decision for later,
-    // kept for now). Checked so that a change of it is deliberate.
+    // The gap at rest: the city is shown past the grid clip, so the viewport is made larger without a remainder too
+    // (before, the game's own viewport said no tile there).
     At<int>(aMouseX) = 1700;
-    Check(mouse() == 0 && g_mouseConv.cols == 28, "the gap at rest: no tile (the game's own viewport; as Yongle)");
+    Check(mouse() == 1234 && g_mouseConv.ox == 0 && g_mouseConv.cols == 29,
+          "the gap at rest: a tile (the viewport a column larger, the origin not moved)");
     // A drag selection pressed on the city: the mouse kept to the city as shown for the corner's tile.
     zeus::scroll::SetRemainderForTest(5, 6);
     int drag[16] = {};
@@ -3426,6 +3434,40 @@ void CityExtent()
     Check(right == clipR && bottom == 765 && Scr<Int_fn>("city_view_width_px")() == 60 * At<int>(aColsZ),
           "1024x768: the game's layout, the city to its clip (no extent), the game's banner width");
     Check(zeus::scroll::Working(), "smooth scrolling still on");
+}
+
+// The east edge: 1920x1080, the clip at 1678 (the original's east edge at the
+// game's limit), the city shown to 1734 (56 px past it), so the camera stops 56 px before the game's east limit (the
+// fake view_clamp's 200): view_x 199 with a remainder of 60 - 56 = 4.
+void EastEdge()
+{
+    SetupPicture();
+    At<int>(aViewX) = 200; // the game's east limit (a minimap click, say)
+    At<int>(aViewY) = 100;
+    zeus::scroll::SetRemainderForTest(0, 0);
+    g_pic.marks[0] = {1700 + 4, 500, 0x7777};
+    g_pic.markCount = 1;
+    Timing<Render_fn>("city_render")(200, 100, 0);
+    int px, py;
+    zeus::scroll::Remainder(&px, &py);
+    Check(At<int>(aViewX) == 199 && At<int>(aViewY) == 100 && px == 4 && py == 0,
+          "at the game's east limit: the view pulled back to column 199 with a 4 px remainder");
+    Check(g_pic.vx == 199 && g_pic.vy == 100, "the game draws the view as pulled back");
+    Check(Back(1700, 500) == 0x7777, "shown with the remainder (drawn at 1704, on the screen at 1700)");
+    Timing<Render_fn>("city_render")(199, 100, 0);
+    zeus::scroll::Remainder(&px, &py);
+    Check(At<int>(aViewX) == 199 && px == 4 && g_pic.vx == 199, "the next frame: unchanged");
+    At<int>(aViewX) = 150;
+    zeus::scroll::SetRemainderForTest(0, 0);
+    Timing<Render_fn>("city_render")(150, 100, 0);
+    zeus::scroll::Remainder(&px, &py);
+    Check(At<int>(aViewX) == 150 && px == 0 && g_pic.vx == 150, "inside the map: nothing changed");
+    Check(zeus::scroll::SetSmooth(false), "smooth_scroll off");
+    At<int>(aViewX) = 200; // the game's own whole-tile step to its limit
+    Timing<Render_fn>("city_render")(200, 100, 0);
+    zeus::scroll::Remainder(&px, &py);
+    Check(At<int>(aViewX) == 199 && px == 4 && g_pic.vx == 199, "smooth_scroll off: pulled back the same way");
+    Check(zeus::scroll::Working(), "smooth scrolling (the feature) still on");
 }
 
 // The figure portrait (city_render_2) with a remainder: its conversions are the game's own (no origin moved), the
@@ -3723,6 +3765,111 @@ void ZoomLayoutScenario()
     Check(LogContains("map range 60 x 100 (the clamp holds 93 half rows)"),
           "Zeus's clamp: the map's half rows less the margin (3) and 4");
     Check(LogContains("zoom: the bottom margin for direction 0 is 3 half row(s)"), "log: the bottom margin");
+    Check(zeus::scroll::Working(), "smooth scrolling still on");
+}
+
+// The east edge zoomed: the zoomed city ends cols x 60 - 2 - bufW px short of the
+// original's east edge, so a view put at the game's limit (the fake view_clamp's 200) goes that far past it; scrolling
+// east stops there too.
+void ZoomEastEdge()
+{
+    SetupZoom();
+    WheelTo(-240); // 150%
+    zeus::scroll::SetSmooth(true);
+    int bufW = 0, bufH = 0;
+    core::scroll::zoom::BufferSize(&bufW, &bufH);
+    const int cols = At<int>(aColsZ), viewY = At<int>(aViewY), e = cols * 60 - 2 - bufW;
+    At<int>(aViewX) = 200; // a minimap click at the east edge
+    zeus::scroll::SetRemainderForTest(0, 0);
+    Timing<Render_fn>("city_render")(200, viewY, 0);
+    int px, py;
+    zeus::scroll::Remainder(&px, &py);
+    Check(core::scroll::zoom::Percent() == 150 && e > 0 && e < 60 && At<int>(aViewX) == 200 && px == e &&
+              g_pic.vx == 200,
+          "150%, at the game's east limit: the remainder put on the original's east edge (past the limit)");
+    Timing<Render_fn>("city_render")(200, viewY, 0);
+    zeus::scroll::Remainder(&px, &py);
+    Check(At<int>(aViewX) == 200 && px == e, "the next frame: kept there");
+    // A zoom step there (smooth scrolling off: whole tiles, one step): the new layout's line at once, before drawing.
+    zeus::scroll::SetSmooth(false);
+    WheelTo(120); // 125%
+    core::scroll::zoom::BufferSize(&bufW, &bufH);
+    const int e125 = At<int>(aColsZ) * 60 - 2 - bufW;
+    zeus::scroll::Remainder(&px, &py);
+    Check(core::scroll::zoom::Percent() == 125 && e125 > 0 && e125 < 60 && e125 != e && At<int>(aViewX) == 200 &&
+              px == e125,
+          "a zoom step at the east edge: on the new layout's line right after the step");
+    Check(zeus::scroll::Working() && core::scroll::zoom::Percent() == 125, "smooth scrolling and the zoom still on");
+}
+
+// As Zeus's view_clamp: the largest view is the map's range less the view (view_clamp 0x51cd60: view_x at most
+// 0xfa05b0 - columns, view_y at most 0xfa05a8 - margin - 4 - half rows, even), so a zoom step's layout moves the limits.
+void __cdecl FakeViewClampLayout()
+{
+    ++g_scroll.clamps;
+    volatile int &x = At<int>(aViewX), &y = At<int>(aViewY);
+    const int maxX = At<int>(aMapColMax) - At<int>(aColsZ);
+    const int maxY = (At<int>(aMapRowMax) - At<unsigned char>(aBottomMargin) - 4 - At<int>(aRowsZ)) & ~1;
+    x = x < At<int>(aMapColMin) ? At<int>(aMapColMin) : x > maxX ? maxX : x;
+    y = y < At<int>(aMapRowMin) ? At<int>(aMapRowMin) : y > maxY ? maxY : y;
+    y = y & ~1;
+}
+
+// The camera's position against the east / south lines for the layout as it is:
+// the original's edges, the game's limit + (the view's columns / half rows less the zoomed buffer shown). South: the
+// map's limit before the clamp makes it even (view_y in half rows of 15 px; the position counts view_y x 15).
+bool OnCornerLines(int *dx, int *dy)
+{
+    int bufW = 0, bufH = 0;
+    core::scroll::zoom::BufferSize(&bufW, &bufH);
+    const int cols = At<int>(aColsZ), rows = At<int>(aRowsZ);
+    const int maxX = At<int>(aMapColMax) - cols;
+    const int maxY = At<int>(aMapRowMax) - At<unsigned char>(aBottomMargin) - 4 - rows; // not made even
+    const int limX = maxX * 60 + (cols * 60 - 2 - bufW), limY = maxY * 15 + ((rows - 1) * 15 - bufH);
+    int px, py;
+    zeus::scroll::Remainder(&px, &py);
+    *dx = At<int>(aViewX) * 60 + px - limX;
+    *dy = At<int>(aViewY) / 2 * 30 + py - limY;
+    return *dx == 0 && *dy == 0;
+}
+
+// Zooming out at the south-east corner, smooth: every step of the zoom's movement
+// keeps the camera on the new layout's east and south lines (pinned there, as the west and north edges are), not
+// moved away from them by the game's clamp and the anchor's shift both.
+void ZoomCorner()
+{
+    SetupZoom();
+    Thunk(fViewClamp, reinterpret_cast<void *>(&FakeViewClampLayout));
+    WheelTo(240); // 50% (whole tiles: at once)
+    zeus::scroll::SetSmooth(true);
+    At<int>(aViewX) = 10000; // far past the south-east corner: the drawing puts it on the lines
+    At<int>(aViewY) = 10000;
+    zeus::scroll::SetRemainderForTest(0, 0);
+    Timing<Render_fn>("city_render")(10000, 10000, 0);
+    int dx = 0, dy = 0;
+    Check(core::scroll::zoom::Percent() == 50 && OnCornerLines(&dx, &dy), "50% at the south-east corner: on the lines");
+    Wheel(-120, 1000, 600); // one notch out, the cursor in the middle of the city
+    int steps = 0, off = 0, worstX = 0, worstY = 0;
+    for (int i = 0; i < 400 && core::scroll::zoom::CameraMoving(); ++i) {
+        core::scroll::zoom::CameraStep();
+        ++steps;
+        if (!OnCornerLines(&dx, &dy)) {
+            int px, py;
+            zeus::scroll::Remainder(&px, &py);
+            std::printf("    step %d: view %d x %d, view_y %d remainder %d, off %d, %d px\n", steps, At<int>(aColsZ),
+                        At<int>(aRowsZ), At<int>(aViewY), py, dx, dy);
+            ++off;
+            worstX = std::abs(dx) > std::abs(worstX) ? dx : worstX;
+            worstY = std::abs(dy) > std::abs(worstY) ? dy : worstY;
+        }
+        Sleep(2);
+    }
+    char what[160];
+    std::snprintf(what, sizeof(what),
+                  "zooming out at the corner: on the east and south lines after every step (%d steps, %d off, worst "
+                  "%d, %d px)",
+                  steps, off, worstX, worstY);
+    Check(steps > 1 && off == 0 && core::scroll::zoom::Percent() == 75, what);
     Check(zeus::scroll::Working(), "smooth scrolling still on");
 }
 
@@ -4204,12 +4351,15 @@ const Scenario kScenarios[] = {
     {"drag_fault", &DragFault},
     {"city_input", &CityInput},
     {"city_extent", &CityExtent},
+    {"east_edge", &EastEdge},
     {"figure_portrait", &FigurePortrait},
     {"scroll_attach", &ScrollAttach},
     {"notice_prefix", &NoticePrefix},
     {"zoom_wheel", &ZoomWheel},
     {"zoom_layout", &ZoomLayoutScenario},
     {"zoom_render", &ZoomRender},
+    {"zoom_east_edge", &ZoomEastEdge},
+    {"zoom_corner", &ZoomCorner},
     {"zoom_fault", &ZoomFault},
     {"city_picture", &CityPicture},
     {"city_picture_wait", &CityPictureWait},

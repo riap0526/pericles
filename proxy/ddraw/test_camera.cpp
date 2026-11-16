@@ -169,6 +169,115 @@ void Edges()
     Check(px == 0 && py == 0, "the view moved by someone else: whole tile again");
 }
 
+// The east and south edges (camera.h SetEdgeOffsets / KeepEdges / SnapEdges):
+// 5.6): each limit is the game's limit + the offset: negative stops before it (on the column / row pair before),
+// positive goes past it (a remainder on the limit's column / row pair); a view at the game's limit is put on the line
+// after a jump (someone else moved it there), not after the camera's own movement.
+void EastEdge()
+{
+    const int colPx = M(kTileW) + 2, rowPx = 2 * M(kTileHalfH);
+    int px, py;
+    camera::SetEdgeOffsets(-8, 0, 1);
+    M(kViewX) = 90;
+    M(kViewY) = 100;
+    camera::SetRemainderForTest(kGame, 0, 0);
+    for (int i = 0; i < 40; ++i) {
+        camera::Move(kGame, 37, 0);
+    }
+    camera::Remainder(&px, &py);
+    Check(M(kViewX) == kMaxX - 1 && px == colPx - 8, "east -8, moving east: stops 8 px before the game's limit");
+    camera::Move(kGame, -10, 0);
+    camera::Remainder(&px, &py);
+    Check(M(kViewX) == kMaxX - 1 && px == colPx - 18, "west again from there: moves freely");
+    M(kViewX) = kMaxX; // someone else (a minimap click): the game's limit on a whole tile
+    core::diag::Restore r;
+    Check(camera::KeepEdges(kGame, r), "KeepEdges at the game's limit: the view moved");
+    camera::Remainder(&px, &py);
+    Check(M(kViewX) == kMaxX - 1 && px == colPx - 8, "KeepEdges: back to the line, the column before");
+    r.Undo();
+    camera::Remainder(&px, &py);
+    Check(M(kViewX) == kMaxX && px == 0, "its Restore puts the view and the remainder back");
+    M(kViewX) = 50;
+    camera::SyncView(kGame);
+    core::diag::Restore r2;
+    Check(!camera::KeepEdges(kGame, r2) && M(kViewX) == 50, "KeepEdges inside the map: nothing changed");
+    // A positive offset (a zoomed city narrower than the original's): past the game's limit with a remainder.
+    camera::SetEdgeOffsets(29, 0, 2);
+    M(kViewX) = 90;
+    camera::SetRemainderForTest(kGame, 0, 0);
+    for (int i = 0; i < 40; ++i) {
+        camera::Move(kGame, 37, 0);
+    }
+    camera::Remainder(&px, &py);
+    Check(M(kViewX) == kMaxX && px == 29, "east +29, moving east: stops 29 px past the game's limit");
+    camera::Move(kGame, -10, 0);
+    camera::Remainder(&px, &py);
+    Check(M(kViewX) == kMaxX && px == 19, "west from there: moves freely (not put back on the line)");
+    core::diag::Restore r3;
+    Check(!camera::KeepEdges(kGame, r3), "KeepEdges without a jump: the camera's own position kept");
+    camera::SetEdgeOffsets(40, 0, 3); // a zoom step that moves the line further: no jump to it
+    core::diag::Restore r3b;
+    Check(!camera::KeepEdges(kGame, r3b), "a new line further out: the camera's own position kept (no jump)");
+    camera::SetEdgeOffsets(12, 0, 4); // a zoom step that moves the line back past the camera: pinned on it
+    camera::Move(kGame, 1, 0);
+    camera::Remainder(&px, &py);
+    Check(M(kViewX) == kMaxX && px == 12, "a new line behind the camera: the zoom step's move keeps it on the line");
+    camera::SetEdgeOffsets(29, 0, 2);
+    M(kViewX) = kMaxX - 3; // someone else, then the game's whole-tile step to its limit
+    camera::SyncView(kGame);
+    M(kViewX) = kMaxX;
+    core::diag::Restore r4;
+    Check(camera::KeepEdges(kGame, r4), "a jump to the game's limit: put on the line");
+    camera::Remainder(&px, &py);
+    Check(M(kViewX) == kMaxX && px == 29, "on the line: the limit's column, remainder 29");
+    // The zoom's whole-tile step (smooth scrolling off): at the game's limit, onto the line.
+    camera::SetRemainderForTest(kGame, 0, 0);
+    camera::SnapEdges(kGame);
+    camera::Remainder(&px, &py);
+    Check(M(kViewX) == kMaxX && px == 29, "SnapEdges at the game's limit: on the line");
+    // The south edge: the same in row pairs (view_y in half rows, even).
+    camera::SetEdgeOffsets(0, 14, 5);
+    M(kViewX) = 50;
+    M(kViewY) = 180;
+    camera::SetRemainderForTest(kGame, 0, 0);
+    for (int i = 0; i < 40; ++i) {
+        camera::Move(kGame, 0, 23);
+    }
+    camera::Remainder(&px, &py);
+    Check(M(kViewY) == kMaxY && py == 14, "south +14, moving south: stops 14 px past the game's limit");
+    camera::Move(kGame, 0, -4);
+    camera::Remainder(&px, &py);
+    Check(M(kViewY) == kMaxY && py == 10, "north from there: moves freely");
+    camera::SetEdgeOffsets(0, -10, 6);
+    M(kViewY) = kMaxY; // someone else
+    core::diag::Restore r5;
+    Check(camera::KeepEdges(kGame, r5), "south -10 at the game's limit: moved");
+    camera::Remainder(&px, &py);
+    Check(M(kViewY) == kMaxY - 2 && py == rowPx - 10 && (M(kViewY) & 1) == 0,
+          "south -10: the row pair before the limit (view_y even), 10 px of it unshown");
+    camera::SetEdgeOffsets(0, 14, 5);
+    M(kViewY) = kMaxY - 6;
+    camera::SyncView(kGame);
+    M(kViewY) = kMaxY;
+    core::diag::Restore r6;
+    Check(camera::KeepEdges(kGame, r6), "a jump to the south limit: put on the line");
+    camera::Remainder(&px, &py);
+    Check(M(kViewY) == kMaxY && py == 14, "on the south line: remainder 14");
+    // No offsets: the game's own limits, as before.
+    camera::SetEdgeOffsets(0, 0, 7);
+    M(kViewX) = kMaxX;
+    M(kViewY) = kMaxY;
+    camera::SetRemainderForTest(kGame, 0, 0);
+    core::diag::Restore r7;
+    Check(!camera::KeepEdges(kGame, r7) && M(kViewX) == kMaxX && M(kViewY) == kMaxY, "offsets 0: the game's limits");
+    camera::Move(kGame, 10, 7);
+    camera::Remainder(&px, &py);
+    Check(M(kViewX) == kMaxX && px == 0 && M(kViewY) == kMaxY && py == 0,
+          "offsets 0: moving east and south stops on the game's limits as before");
+    M(kViewY) = 100;
+    camera::SetRemainderForTest(kGame, 0, 0);
+}
+
 void EdgeScrolling()
 {
     M(kViewX) = 10;
@@ -362,6 +471,7 @@ int main()
     camera::Start(kGame, true);
     Moves();
     Edges();
+    EastEdge();
     EdgeScrolling();
     Keys();
     CountsAndOff();

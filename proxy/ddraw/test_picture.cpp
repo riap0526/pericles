@@ -316,8 +316,9 @@ void Conversions()
     camera::SetRemainderForTest(kCamera, 5, 6);
     g_conv = {};
     Check(picture::ScreenToGrid(kGame, 10, 50, 0, &FakeScreenToGrid) == 7 && g_conv.ox == -5 && g_conv.oy == 24 &&
-              g_conv.cols == 29 && g_conv.rows == 73 && ViewportIsGame(28, 71),
-          "screen_to_grid: the origin moved, the viewport a column and a row pair larger, for the call only");
+              g_conv.cols == 30 && g_conv.rows == 73 && ViewportIsGame(28, 71),
+          "screen_to_grid: the origin moved, the viewport 2 columns (5 + the 56 px gap) and a row pair larger, for "
+          "the call only");
     g_conv = {};
     Check(picture::ScreenToGrid(kGame, 1750, 500, 0, &FakeScreenToGrid) == 0 && g_conv.calls == 0,
           "a point on the sidebar: no tile, the game not asked");
@@ -325,7 +326,15 @@ void Conversions()
           "a point on the top bar: no tile");
     Check(picture::ScreenToGrid(kGame, 1700, 500, 0, &FakeScreenToGrid) == 7 && g_conv.calls == 1,
           "a point in the gap: a tile (with a remainder)");
-    Check(picture::ScreenToGridRaw(kGame, 10, 50, 0, &FakeScreenToGrid) == 7 && g_conv.ox == -5 && g_conv.cols == 29,
+    // A large remainder and the gap together pass one column (52 + 56 > 60): the viewport is made larger by as many
+    // columns as they need, so the gap's last pixel is a tile too.
+    camera::SetRemainderForTest(kCamera, 52, 0);
+    g_conv = {};
+    Check(picture::ScreenToGrid(kGame, 1733, 500, 0, &FakeScreenToGrid) == 7 && g_conv.cols == 30 &&
+              ViewportIsGame(28, 71),
+          "a large remainder: the gap's last pixel (1733) a tile, the viewport 2 columns larger for the call");
+    camera::SetRemainderForTest(kCamera, 5, 6);
+    Check(picture::ScreenToGridRaw(kGame, 10, 50, 0, &FakeScreenToGrid) == 7 && g_conv.ox == -5 && g_conv.cols == 30,
           "screen_to_grid_unbounded: moved the same way");
     int sx = 0, sy = 0;
     picture::GridToScreen(kGame, 0x403333, 1, 2, &sx, &sy, &FakeGridToScreen);
@@ -334,8 +343,9 @@ void Conversions()
     g_conv = {};
     M(kMouseX) = 1700;
     M(kMouseY) = 500;
-    Check(picture::MouseToGrid(kGame, 0, &FakeMouseToGrid) == 0 && g_conv.cols == 28,
-          "the gap at rest: the game's own viewport, no tile (as in Yongle)");
+    Check(picture::MouseToGrid(kGame, 0, &FakeMouseToGrid) == 7 && g_conv.ox == 0 && g_conv.cols == 29 &&
+              ViewportIsGame(28, 71),
+          "the gap at rest: a tile (the viewport a column larger, the origin not moved)");
 }
 
 void Drag()

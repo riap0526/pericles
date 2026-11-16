@@ -26,6 +26,19 @@ DragTake g_dragTake = nullptr;
 DragLoop g_dragLoop = nullptr;
 bool g_dragFrame = false; // this frame's view was moved by a drag (the game's own step gets no direction)
 int g_edge = 1;           // edge scrolling: pixels from the screen's edge
+// The east and south edges (SetEdgeOffsets): each one's offset from the game's limit, px (may be negative).
+int g_edgeE = 0, g_edgeS = 0, g_edgeLayout = 0;
+volatile int *g_edgeHalfRows = nullptr; // the view's half rows, which the game's clamp reads (SetEdgeOffsets)
+bool g_viewJumped = true; // SyncView saw someone else move the view (KeepEdges puts it on the lines if at the limits)
+// The game's limits as last asked (Limits calls the game's clamp: asked again only when the view, the layout or an
+// offset changed, not every frame -- Zeus's clamp asks for a full redraw in the editor when it changes the view).
+struct EdgeCache {
+    bool known = false;
+    int viewX = 0, viewY = 0, layout = 0, e = 0, s = 0;
+    int maxX = 0, maxY = 0;
+    bool beforeX = false, beforeY = false; // the clamp takes the column / row pair before its limit
+    bool halfY = false; // the clamp's south limit was made even: half a row short of the map's (see Edges)
+} g_lim;
 
 // Statistics for the rate log
 double g_scrollingMs = 0;          // time with view_scrolling set
@@ -63,6 +76,103 @@ void Limits(const CameraGame &g, int *maxX, int *maxY)
     *maxY = *v.viewY;
     *v.viewX = sx;
     *v.viewY = sy;
+}
+
+int Clip(int e, int step)
+{
+    return e <= -step ? -(step - 1) : e >= step ? step - 1 : e;
+}
+
+// The east and south edges (SetEdgeOffsets). Positions in px: x = view_x x column + remainder, y = view_y / 2 x row
+// pair + remainder (view_y counts half rows and stays even). Each axis' largest position = the game's limit there +
+// its offset; a negative offset needs the column (row pair) before the game's limit, which the game's clamp must take
+// (a map no larger than the view: it does not, and the limit is the game's). False before the city has a layout.
+// r: the view saved before the game's clamp is asked (it writes the view while asked).
+// The south limit is made even by the game's clamp (view_y stays even): with an odd difference between the map's
+// limit and the view's half rows, the limit it gives is half a row short of the map's, and a zoom step that changes
+// the view's half rows by one moved the line half a row (Zeus's view_clamp 0x51cd60 ends "view_y & 0xfffe";
+// seen in its decompiled code and in a test's log). The clamp reads the view's half rows: asked again with one half row less, its limit
+// is two half rows larger exactly when the first was made even -- then the line is the map's, half a row further.
+struct EdgeLimits {
+    int colPx, rowPx; // one view_x step, one view_y step (two half rows)
+    int maxX, maxY;   // the game's limits
+    int limX, limY;   // the camera's largest positions
+};
+
+bool Edges(const CameraGame &g, core::diag::Restore *r, EdgeLimits *l)
+{
+    const CameraVars &v = g.vars;
+    l->colPx = *v.tileWidth + 2;
+    l->rowPx = 2 * *v.tileHalfHeight;
+    if (l->colPx <= 2 || l->rowPx <= 0) {
+        return false;
+    }
+    const int e = Clip(g_edgeE, l->colPx), s = Clip(g_edgeS, l->rowPx);
+    if (r) {
+        r->Save(v.viewX.ptr());
+        r->Save(v.viewY.ptr());
+    }
+    if (!g_lim.known || *v.viewX != g_lim.viewX || *v.viewY != g_lim.viewY || g_edgeLayout != g_lim.layout ||
+        e != g_lim.e || s != g_lim.s) {
+        Limits(g, &g_lim.maxX, &g_lim.maxY);
+        const int sx = *v.viewX, sy = *v.viewY;
+        g_lim.halfY = false;
+        if (g_edgeHalfRows && *g_edgeHalfRows > 1) {
+            if (r) {
+                r->Save(g_edgeHalfRows);
+            }
+            const int rows = *g_edgeHalfRows;
+            *g_edgeHalfRows = rows - 1;
+            int maxX2, maxY2;
+            Limits(g, &maxX2, &maxY2);
+            *g_edgeHalfRows = rows;
+            g_lim.halfY = maxY2 == g_lim.maxY + 2;
+        }
+        g_lim.beforeX = g_lim.beforeY = false;
+        if (e < 0) {
+            *v.viewX = g_lim.maxX - 1;
+            g.clampView();
+            g_lim.beforeX = *v.viewX == g_lim.maxX - 1;
+            *v.viewX = sx;
+            *v.viewY = sy;
+        }
+        if ((g_lim.halfY ? l->rowPx / 2 : 0) + s < 0) {
+            *v.viewY = g_lim.maxY - 2;
+            g.clampView();
+            g_lim.beforeY = *v.viewY == g_lim.maxY - 2;
+            *v.viewX = sx;
+            *v.viewY = sy;
+        }
+        g_lim.known = true;
+        g_lim.viewX = sx;
+        g_lim.viewY = sy;
+        g_lim.layout = g_edgeLayout;
+        g_lim.e = e;
+        g_lim.s = s;
+    }
+    l->maxX = g_lim.maxX;
+    l->maxY = g_lim.maxY;
+    l->limX = g_lim.maxX * l->colPx + (e < 0 && !g_lim.beforeX ? 0 : e);
+    const int half = g_lim.halfY ? l->rowPx / 2 : 0;
+    l->limY = g_lim.maxY / 2 * l->rowPx + (half + s < 0 && !g_lim.beforeY ? 0 : half + s);
+    return true;
+}
+
+// A position in px as whole steps and remainder.
+void SplitPos(int pos, int step, int *whole, int *rem)
+{
+    *whole = pos >= 0 ? pos / step : -((-pos + step - 1) / step);
+    *rem = pos - *whole * step;
+}
+
+int PosX(const CameraGame &g, const EdgeLimits &l)
+{
+    return *g.vars.viewX * l.colPx + g_px;
+}
+
+int PosY(const CameraGame &g, const EdgeLimits &l)
+{
+    return *g.vars.viewY / 2 * l.rowPx + g_py;
 }
 
 // A held arrow key: the game sets its flag on WM_KEYDOWN (only where it allows keyboard scrolling) and its own
@@ -318,6 +428,7 @@ void SyncView(const CameraGame &g)
     const int vx = *g.vars.viewX, vy = *g.vars.viewY;
     if (!g_haveLast || vx != g_lastViewX || vy != g_lastViewY) {
         g_px = g_py = 0;
+        g_viewJumped = true;
         g_scroller.Reset();
         g_lastViewX = vx;
         g_lastViewY = vy;
@@ -325,11 +436,31 @@ void SyncView(const CameraGame &g)
     }
 }
 
+namespace {
+
+void MoveBy(const CameraGame &g, int dx, int dy);
+
+} // namespace
+
 void Move(const CameraGame &g, int dx, int dy)
 {
     if (dx == 0 && dy == 0) {
         return;
     }
+    MoveBy(g, dx, dy);
+}
+
+void MoveFrom(const CameraGame &g, int vx, int vy, int dx, int dy)
+{
+    *g.vars.viewX = vx;
+    *g.vars.viewY = vy;
+    MoveBy(g, dx, dy); // also with no movement: the view is clamped once (the zoom's layout may have moved the limits)
+}
+
+namespace {
+
+void MoveBy(const CameraGame &g, int dx, int dy)
+{
     const CameraVars &v = g.vars;
     const int colPx = *v.tileWidth + 2;      // one view_x step
     const int rowPx = 2 * *v.tileHalfHeight; // one view_y step of two half rows (view_y stays even)
@@ -348,14 +479,27 @@ void Move(const CameraGame &g, int dx, int dy)
     *v.viewX = vx;
     *v.viewY = vy;
     g.clampView();
-    if (*v.viewX != vx) { g_px = 0; g_scroller.ResetX(); } // hit a map edge: stop there on a whole tile
-    if (*v.viewY != vy) { g_py = 0; g_scroller.ResetY(); }
-    if (g_px != 0 || g_py != 0) {
-        int maxX, maxY;
-        Limits(g, &maxX, &maxY);
-        // At the right/bottom limit a remainder would show what lies beyond the map.
-        if (*v.viewX >= maxX && g_px != 0) { g_px = 0; g_scroller.ResetX(); }
-        if (*v.viewY >= maxY && g_py != 0) { g_py = 0; g_scroller.ResetY(); }
+    const bool eastHit = *v.viewX < vx, southHit = *v.viewY < vy;
+    if (*v.viewX > vx) { g_px = 0; g_scroller.ResetX(); } // hit the west edge: stop there on a whole tile
+    if (*v.viewY > vy) { g_py = 0; g_scroller.ResetY(); } // the north edge
+    // The east and south edges (SetEdgeOffsets; the frame's r has the view): at most the game's limit + the offset,
+    // also when the game's clamp stopped the view.
+    EdgeLimits l;
+    if (Edges(g, nullptr, &l)) {
+        if (eastHit || PosX(g, l) > l.limX) {
+            int ex, epx;
+            SplitPos(l.limX, colPx, &ex, &epx);
+            *v.viewX = ex;
+            g_px = epx;
+            g_scroller.ResetX();
+        }
+        if (southHit || PosY(g, l) > l.limY) {
+            int ey, epy;
+            SplitPos(l.limY, rowPx, &ey, &epy);
+            *v.viewY = 2 * ey;
+            g_py = epy;
+            g_scroller.ResetY();
+        }
     }
     if (moved) {
         // The game decays the ambient sound weights once per scroll step (one step = colPx either way, diagonals
@@ -376,10 +520,84 @@ void Move(const CameraGame &g, int dx, int dy)
     g_lastViewY = *v.viewY;
 }
 
+} // namespace
+
 void NoteView(const CameraGame &g)
 {
     g_lastViewX = *g.vars.viewX;
     g_lastViewY = *g.vars.viewY;
+}
+
+void SetEdgeOffsets(int east, int south, int layout, volatile int *halfRows)
+{
+    g_edgeE = east;
+    g_edgeS = south;
+    g_edgeLayout = layout;
+    g_edgeHalfRows = halfRows;
+}
+
+namespace {
+
+// Each axis: past its line, back to it; at the game's limit and onto (the view got there some other way than the
+// camera's own movement), onto the line. Changes into r when given, else straight.
+bool PutOnEdges(const CameraGame &g, core::diag::Restore *r, bool onto)
+{
+    const CameraVars &v = g.vars;
+    EdgeLimits l;
+    if (!Edges(g, r, &l)) {
+        return false;
+    }
+    bool moved = false;
+    const int posX = PosX(g, l), posY = PosY(g, l);
+    if (posX > l.limX || (onto && posX < l.limX && *v.viewX == l.maxX)) {
+        int vx, px;
+        SplitPos(l.limX, l.colPx, &vx, &px);
+        if (r) {
+            r->Set(v.viewX.ptr(), vx);
+            r->Set(&g_px, px);
+        }
+        else {
+            *v.viewX = vx;
+            g_px = px;
+        }
+        g_scroller.ResetX();
+        moved = true;
+    }
+    if (posY > l.limY || (onto && posY < l.limY && *v.viewY == l.maxY)) {
+        int vy, py;
+        SplitPos(l.limY, l.rowPx, &vy, &py);
+        if (r) {
+            r->Set(v.viewY.ptr(), 2 * vy);
+            r->Set(&g_py, py);
+        }
+        else {
+            *v.viewY = 2 * vy;
+            g_py = py;
+        }
+        g_scroller.ResetY();
+        moved = true;
+    }
+    if (moved) {
+        NoteView(g);
+    }
+    return moved;
+}
+
+} // namespace
+
+bool KeepEdges(const CameraGame &g, core::diag::Restore &r)
+{
+    SyncView(g); // the view moved by someone else: from its whole tile
+    const bool jumped = g_viewJumped;
+    g_viewJumped = false;
+    // At the game's limit after someone else moved the view there (a minimap click, a game loaded, the game's own
+    // whole-tile step): onto the line, so the city ends on the original's edge however the view got there.
+    return PutOnEdges(g, &r, jumped);
+}
+
+void SnapEdges(const CameraGame &g)
+{
+    PutOnEdges(g, nullptr, true);
 }
 
 void Remainder(int *px, int *py)

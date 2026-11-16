@@ -133,8 +133,34 @@ void SyncView(const CameraGame &g);
 // stops that axis on a whole tile).
 void Move(const CameraGame &g, int dx, int dy);
 
+// The zoom's step: the view put back where it was before the step's layout (the
+// layout's own clamp may have moved it already), then moved by (dx, dy) and clamped once, as Move does -- also with no
+// movement. One clamp, so the east and south edges stay pinned as the west and north ones do.
+void MoveFrom(const CameraGame &g, int vx, int vy, int dx, int dy);
+
 // The view as it is now is the camera's (not "someone else", SyncView), e.g. after the game layer's zoom step.
 void NoteView(const CameraGame &g);
+
+// The east and south edges of the map. The game's clamp works in whole
+// columns and row pairs: at its east (south) limit the original's city, a whole number of them, ends on the original's
+// east (south) edge -- the map's jag lies beyond it. Ours is not a whole number of them (the gap left of the sidebar at
+// 100%, the zoomed city's size), so the camera's limit there is a line instead: the game's limit + px
+// (core/scroll/picture works it out as the original's edge less where our city ends; negative: stop before the game's
+// limit, positive: go past it with a remainder), as Akhenaten's camera limit is a fixed line less the shown size. West
+// and north need nothing: our city starts where the original's does.
+// SetEdgeOffsets: from the picture before each frame's drawing and from the zoom's step after its layout (layout: a
+// key of the view's size -- the game's limits depend on it). Move keeps the camera at most on the lines (a zoom step
+// that shrinks the city at the east edge keeps it pinned there, as the west edge is). KeepEdges: from the picture
+// before the game draws (also with smooth scrolling off): SyncView first; a view past a line goes back to it, and a
+// view at the game's limit after someone else moved it there (a minimap click, a game loaded, the game's own
+// whole-tile step) is put on the line. The view and the remainders it changes go into r (put back if the guarded call
+// faults; kept otherwise). True when it moved the view. SnapEdges: the zoom's whole-tile step (smooth scrolling off):
+// a view at the game's limit put on the line.
+// halfRows: the view's half rows, which the game's clamp reads (camera.cpp Edges asks the clamp once more with one
+// less, to find the half row its even south limit leaves out); nullptr: not asked.
+void SetEdgeOffsets(int east, int south, int layout, volatile int *halfRows = nullptr);
+bool KeepEdges(const CameraGame &g, core::diag::Restore &r);
+void SnapEdges(const CameraGame &g);
 
 // The pixel remainder.
 void Remainder(int *px, int *py);
