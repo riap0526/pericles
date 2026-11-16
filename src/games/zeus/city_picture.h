@@ -1,4 +1,4 @@
-// The city and minimap pictures in Zeus. F10 saves the whole city the
+// city_picture: the city and minimap pictures in Zeus. F10 saves the whole city the
 // player can scroll to as one PNG at the game's own size, without the interface; Shift+F10 the minimap of the whole
 // map. The pictures are the core's (core/capture/city_picture, shared with Yongle); this file gives it Zeus's
 // variables, the drawing (inside timing's drawing that never counts) and the player's city.

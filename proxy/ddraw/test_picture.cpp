@@ -1,7 +1,7 @@
 // Offline test of core/scroll/picture (not the game): smooth scrolling's picture on a fake game -- its variables in an
 // array of ours (through core::site::g_imageShift, as test_camera does), a fake city drawing that records what it sees
 // and draws marks into draw_buffer, fake conversions with the games' bounds (no tile outside origin + viewport), no
-// zoom. Checked offline: the drawing into our buffer with the grid clip made larger by
+// zoom. Checked: the drawing into our buffer with the grid clip made larger by
 // the remainder and the extent, shown offset into the gap left of the sidebar and on the last row, nothing on the
 // sidebar or below the screen; a clip past the screen's bottom shown to the bottom only; the drawing plain without a
 // remainder or an extent; conversions moved and made larger (not again while drawing), points outside the city as
@@ -327,7 +327,7 @@ void Conversions()
     Check(picture::ScreenToGrid(kGame, 1700, 500, 0, &FakeScreenToGrid) == 7 && g_conv.calls == 1,
           "a point in the gap: a tile (with a remainder)");
     // A large remainder and the gap together pass one column (52 + 56 > 60): the viewport is made larger by as many
-    // columns as they need, so the gap's last pixel is a tile too.
+    // columns as they need, so the gap's last pixel is a tile too (seen in testing).
     camera::SetRemainderForTest(kCamera, 52, 0);
     g_conv = {};
     Check(picture::ScreenToGrid(kGame, 1733, 500, 0, &FakeScreenToGrid) == 7 && g_conv.cols == 30 &&

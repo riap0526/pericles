@@ -1,5 +1,5 @@
 // city_picture (city_picture.h). Zeus.exe 2.1.4.0, SHA256 382bcd28...0a57; the evidence is the game's
-// the game's decompilation and disassembly (the addresses below).
+// decompilation and disassembly (the addresses below) and testing.
 //
 // The city: the same 13 variables as Yongle's (Zeus's viewport_init has the same ones), the overlay 0xfa05f0 and the
 // building preview 0xda2fa8 at 0, the debug markers 0x160ac80 at 0. Each strip is one drawing of the game's own

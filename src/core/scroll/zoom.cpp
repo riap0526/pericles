@@ -1,5 +1,5 @@
 // The city's zoom (zoom.h). Moved from Yongle's layer (games/emperor/zoom.cpp and the zoom's part of
-// games/emperor/scroll.cpp) for Zeus's zoom; the behavior is Yongle's, except that a scaling
+// games/emperor/scroll.cpp) for Zeus; the behavior is Yongle's, except that a scaling
 // that fails now switches the zoom off (logged) instead of leaving the last frame's city without a word.
 #include "core/scroll/zoom.h"
 

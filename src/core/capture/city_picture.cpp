@@ -1,5 +1,5 @@
 // See city_picture.h. Moved from Yongle's games/emperor/city_picture.cpp (0.2.0) so Zeus has the same city picture
-// the game's addresses stay in each game layer.
+// too; the game's addresses stay in each game layer.
 //
 // Changed from Yongle's: the guard covers one strip (or one minimap
 // drawing) at a time, inside the game layer's aroundDrawing (Zeus's drawing that never counts is outside our guard, so
