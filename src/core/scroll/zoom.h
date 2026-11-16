@@ -66,6 +66,10 @@ void RegisterSettings();
 // From the game layer's Attach once its hooks are in: the mouse filter (the wheel, the middle button) and the log line.
 void Install(const ZoomGame &g);
 
+// The zoom's mouse filter (the wheel, a middle press over the city): true when it took the message. Installed as
+// core::display's filter by Install; core/scroll/drag's filter, once installed, passes on what it does not take.
+bool Mouse(UINT message, WPARAM wparam, int x, int y);
+
 // From the game layer's view_clamp detour, before the game's own: a new map, another bottom margin or a view larger
 // than the map gets the view laid out again first, so the view is never clamped (and then drawn) larger than the map.
 void OnViewClamp();

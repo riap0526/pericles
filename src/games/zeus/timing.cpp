@@ -18,6 +18,7 @@
 #include "core/settings/settings.h"
 #include "core/sim/pace.h"
 #include "core/sim/panel_pause.h"
+#include "core/scroll/drag.h"
 #include "core/ui/panel.h"
 #include "core/ui/settings_view.h"
 #include "games/zeus/anim_clock.h"
@@ -255,6 +256,7 @@ bool OwnWindowOpen()
 
 void Paused(bool)
 {
+    core::scroll::drag::End("our panel opened"); // the cursor shown again before the panel takes the mouse
     LogRates(" (panel opened: game paused)");
 }
 

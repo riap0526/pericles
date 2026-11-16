@@ -59,6 +59,7 @@ macro(game_add_tests)
         src/core/ui/info_window.cpp
         src/games/zeus/smoke.cpp src/games/zeus/notice.cpp src/core/ui/notice.cpp src/core/ui/notice_text.cpp
         src/games/zeus/scroll.cpp src/core/scroll/camera.cpp src/core/scroll/picture.cpp
+        src/core/scroll/drag.cpp src/core/scroll/drag_system.cpp
         src/games/zeus/zoom.cpp src/core/scroll/zoom.cpp src/core/platform/parallel.cpp
         src/core/display/city_zoom.cpp
         src/games/zeus/city_picture.cpp src/core/capture/city_picture.cpp src/core/capture/big_picture.cpp

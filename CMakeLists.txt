@@ -117,6 +117,8 @@ set(CORE_SOURCES
     src/core/ddraw/surface_memory.cpp
     src/core/scroll/smooth_scroll.cpp
     src/core/scroll/camera.cpp
+    src/core/scroll/drag.cpp
+    src/core/scroll/drag_system.cpp
     src/core/scroll/picture.cpp
     src/core/scroll/zoom.cpp
     src/core/ui/panel.cpp
@@ -212,6 +214,14 @@ add_executable(test_camera proxy/ddraw/test_camera.cpp src/core/scroll/camera.cp
 target_include_directories(test_camera PRIVATE src)
 target_link_options(test_camera PRIVATE -static)
 target_link_libraries(test_camera PRIVATE augustus_core winmm)
+
+# Offline test of core/scroll/drag: middle-button drag scrolling on a fake game and a fake system
+# (shared by both games).
+add_executable(test_drag proxy/ddraw/test_drag.cpp src/core/scroll/drag.cpp src/core/scroll/camera.cpp
+    src/core/scroll/smooth_scroll.cpp src/core/diag/guard.cpp src/core/log.cpp)
+target_include_directories(test_drag PRIVATE src)
+target_link_options(test_drag PRIVATE -static)
+target_link_libraries(test_drag PRIVATE augustus_core winmm)
 
 # Offline test of core/scroll/picture: smooth scrolling's picture on a fake game.
 add_executable(test_picture proxy/ddraw/test_picture.cpp src/core/scroll/picture.cpp src/core/scroll/camera.cpp

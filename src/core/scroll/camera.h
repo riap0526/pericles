@@ -90,6 +90,25 @@ bool SetSmooth(const CameraGame &g, bool smooth);
 // step does nothing); false: the detour calls the game's own. Once per game frame; guarded.
 bool CityDirection(const CameraGame &g);
 
+// Drag scrolling (core/scroll/drag, which installs these): take is asked once per camera frame, with or without smooth
+// scrolling, for the movement of a drag (game pixels; whole tiles when smooth is off) and returns true while dragging
+// (the edges and the arrow keys do not scroll then, and the game's own step is told "no direction"); loop runs from
+// OnLoop. Both nullptr: no drag scrolling (the offline tests of the camera alone).
+using DragTake = bool (*)(const CameraGame &g, bool smooth, int *dx, int *dy);
+using DragLoop = void (*)();
+void SetDrag(DragTake take, DragLoop loop);
+
+// Edge scrolling: the cursor this many pixels (the game's, as the game reads the cursor) or less from the screen's
+// edge scrolls (gameplay.edge_scroll_width; with smooth scrolling off through GameDirection). 0: the edges do not
+// scroll at all (the arrow keys and a drag still do).
+void SetEdgeWidth(int px);
+
+// The game's own direction at a city call site (CityDirection said false: smooth scrolling off, or switched off after
+// an error): runs call (the game's scroll_get_direction) with the game's cursor seen through the edge width -- within
+// it counts as on the edge, and with width 0 the cursor is kept a pixel off the edges -- then puts the cursor back, so
+// the game's whole-tile scrolling follows gameplay.edge_scroll_width too. Width 1 changes nothing (the game's own).
+int GameDirection(const CameraGame &g, int (*call)());
+
 // From the game's view_scroll_step detour (both modes): counts the game's own steps for the rate log.
 void CountStep(const CameraGame &g, int dir);
 

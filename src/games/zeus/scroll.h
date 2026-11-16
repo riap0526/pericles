@@ -19,6 +19,10 @@ namespace zeus::scroll {
 // are counted; the setting can be switched on from the panel.
 bool Attach(bool smooth);
 
+// Drag scrolling (core/scroll/drag): the middle button drags the city, also in the editors' city. After the zoom's
+// Attach (the drag's mouse filter passes the rest on to the zoom's). Only with Attach's hooks installed.
+void AttachDrag();
+
 // The setting changed while running (game thread; the game is paused by our panel then). False when it cannot be
 // switched on: the feature was switched off after an error.
 bool SetSmooth(bool smooth);

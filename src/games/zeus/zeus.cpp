@@ -193,6 +193,7 @@ extern "C" void zeus_attach(void)
         else {
             core_log("zoom: not installed (our layout is not): the city stays at 100%%");
         }
+        zeus::scroll::AttachDrag(); // middle-button drag scrolling; after the zoom (its filter passes on to it)
     }
     else {
         core_log("zoom: not installed (smooth scrolling's hooks are not): the city stays at 100%%");

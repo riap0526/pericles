@@ -242,6 +242,11 @@ void SetMouseFilter(bool (*filter)(UINT, WPARAM, int, int))
 {
     g_mouseFilter = filter;
 }
+// Drag scrolling: no game window here (the drag's own offline test is test_drag).
+void HideCursor(bool) {}
+HWND GameWindow() { return nullptr; }
+struct Placement;
+bool ModePlacement(Placement *) { return false; }
 } // namespace core::display
 
 namespace core::diag::autorun { // the smoke test is not started here (its own test: test_autorun)

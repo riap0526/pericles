@@ -23,6 +23,7 @@
 #include "core/diag/guard.h"
 #include "core/log.h"
 #include "core/scroll/camera.h"
+#include "core/scroll/drag.h"
 #include "core/scroll/picture.h"
 #include "core/scroll/zoom.h"
 #include "games/zeus/timing.h"
@@ -179,9 +180,12 @@ Line_fn o_Line;
 
 int __cdecl GetDirection_detour()
 {
-    if (camera::IsCall(__builtin_return_address(0), kCityScrollCalls, kCityScrollCallCount) &&
-        camera::CityDirection(kCamera)) {
-        return 8; // view_scroll_step(8) does nothing: the camera has been moved already
+    if (camera::IsCall(__builtin_return_address(0), kCityScrollCalls, kCityScrollCallCount)) {
+        if (camera::CityDirection(kCamera)) {
+            return 8; // view_scroll_step(8) does nothing: the camera has been moved already
+        }
+        // The game's own steps, its edge test through gameplay.edge_scroll_width.
+        return camera::GameDirection(kCamera, [] { return Original(o_GetDirection, kScrollGetDirection)(); });
     }
     return Original(o_GetDirection, kScrollGetDirection)();
 }
@@ -390,6 +394,36 @@ void StartForTest(bool smooth)
 {
     g_attached = true;
     camera::Start(kCamera, smooth);
+}
+
+namespace {
+
+const Var<unsigned char> kGameScreen{0xf2a6dd};
+
+// Drag scrolling: the city screens of the zoom (0x01, 0x20, 0x48) and the editors' city
+// too (the adventure editor edits a city on 0x01 with editor_mode 1; 0x58 is the editor's city
+// screen). Both reach the hooked scroll_get_direction call (0x514e6b, 0x514d82; jump table 0x51670c
+// of screen_handle_input).
+bool DragScreen()
+{
+    const unsigned char s = *kGameScreen;
+    return s == 0x01 || s == 0x20 || s == 0x48 || s == 0x58;
+}
+
+const core::scroll::drag::DragGame kDrag{
+    "zeus",
+    &DragScreen,
+    [](int x, int y) { return picture::OnCity(kPicture, x, y); },
+    [] { return *kMouseMode == kMouseModeDragSelect; },
+    &Working,
+    &core::scroll::zoom::Mouse,
+};
+
+} // namespace
+
+void AttachDrag()
+{
+    core::scroll::drag::Install(kDrag, core::scroll::drag::RealSystem());
 }
 
 void SetRemainderForTest(int px, int py)

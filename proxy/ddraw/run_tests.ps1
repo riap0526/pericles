@@ -17,6 +17,8 @@
 #   test_scroll core/scroll: cruise speed, easing, stop (no DLL; ~4 s)
 #   test_camera core/scroll/camera: smooth scrolling's camera on a fake game (carries, edges, speed, keys, a fault)
 #               (no DLL; writes test_camera.log; ~2 s)
+#   test_drag   core/scroll/drag: middle-button drag scrolling on a fake game and system (click, drag, scales,
+#               whole tiles, buttons, ends, the setting, the edge width, a fault) (no DLL; writes test_drag.log)
 #   test_picture core/scroll/picture: smooth scrolling's picture on a fake game (the buffer, the extent, a clip past
 #               the bottom, conversions, the drag, a fault) (no DLL; writes test_picture.log)
 #   test_zoom   core/scroll/zoom: the city's zoom on a fake game (the wheel, the middle button, the map's limit,
@@ -101,6 +103,7 @@ Run 'test_ini' 'emulated' @()
 Run 'test_settings' 'emulated' @()
 Run 'test_scroll' 'emulated' @()
 Run 'test_camera' 'emulated' @()
+Run 'test_drag' 'emulated' @()
 Run 'test_picture' 'emulated' @()
 Run 'test_zoom' 'emulated' @()
 Run 'test_logical' 'emulated' @()

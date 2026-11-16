@@ -83,6 +83,8 @@ struct core_config {
     unsigned panel_key2_vk, panel_key2_mods;
     unsigned screenshot_key2_vk, screenshot_key2_mods;
     unsigned report_key2_vk, report_key2_mods;
+    int drag_scroll;           /* nonzero: drag the city with the middle mouse button (core/scroll/drag.h) */
+    int edge_scroll_width;     /* edge scrolling: pixels from the screen's edge, 0..20 (0: none; with smooth scrolling) */
 };
 
 #define CORE_WINDOW_CENTER (-2147483647 - 1)

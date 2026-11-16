@@ -307,6 +307,11 @@ void RegisterSettings()
     core::settings::OnChange(i, &ApplyShrink);
 }
 
+bool Mouse(UINT message, WPARAM wparam, int x, int y)
+{
+    return MouseFilter(message, wparam, x, y);
+}
+
 void Install(const ZoomGame &g)
 {
     g_game = &g;

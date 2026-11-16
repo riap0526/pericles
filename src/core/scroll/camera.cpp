@@ -22,6 +22,10 @@ int g_sinceDecayPx = 0; // movement since the last sound step
 bool g_smooth = false;
 SmoothScroll g_scroller;
 int g_lastFrame = -1;
+DragTake g_dragTake = nullptr;
+DragLoop g_dragLoop = nullptr;
+bool g_dragFrame = false; // this frame's view was moved by a drag (the game's own step gets no direction)
+int g_edge = 1;           // edge scrolling: pixels from the screen's edge
 
 // Statistics for the rate log
 double g_scrollingMs = 0;          // time with view_scrolling set
@@ -90,10 +94,10 @@ void SmoothFrame(const CameraGame &g)
     const CameraVars &v = g.vars;
     const int x = *v.cursorX, y = *v.cursorY;
     const bool keyLeft = g_left.Poll(g), keyRight = g_right.Poll(g), keyUp = g_up.Poll(g), keyDown = g_down.Poll(g);
-    const bool left = keyLeft || x < 1;
-    const bool right = keyRight || x >= *v.desktopWidth - 1;
-    const bool up = keyUp || y < 1;
-    const bool down = keyDown || y >= *v.desktopHeight - 1;
+    const bool left = keyLeft || x < g_edge;
+    const bool right = keyRight || x >= *v.desktopWidth - g_edge;
+    const bool up = keyUp || y < g_edge;
+    const bool down = keyDown || y >= *v.desktopHeight - g_edge;
     int dirX = (right ? 1 : 0) - (left ? 1 : 0);
     int dirY = (down ? 1 : 0) - (up ? 1 : 0);
     *v.viewScrolling = (left || right || up || down) ? 1 : 0; // as scroll_get_direction: the simulation pauses
@@ -139,6 +143,21 @@ void Frame(FrameCall &c)
     SyncView(g);
     if (g.zoomMoving()) {
         g.zoomFrame();
+    }
+    int dx = 0, dy = 0;
+    const bool wasDrag = g_dragFrame;
+    g_dragFrame = g_dragTake && g_dragTake(g, g_smooth, &dx, &dy);
+    if (wasDrag && !g_dragFrame && !g_smooth) {
+        *v.viewScrolling = 0; // the drag set it; without smooth scrolling nothing of ours writes it again
+    }
+    if (g_dragFrame) {
+        // A drag: the mouse moves the view; the edges and the arrow keys wait (the speed from rest afterwards).
+        g_scroller.Reset();
+        *v.viewScrolling = (dx != 0 || dy != 0) ? 1 : 0; // as edge scrolling: the simulation setting decides
+        g_movedX += std::abs(dx);
+        g_movedY += std::abs(dy);
+        Move(g, dx, dy);
+        return;
     }
     if (g_smooth) {
         SmoothFrame(g);
@@ -187,13 +206,14 @@ bool SetSmooth(const CameraGame &g, bool smooth)
 
 bool CityDirection(const CameraGame &g)
 {
-    if (!(g_smooth || g.zoomMoving()) || !core::diag::Enabled(*g.feature)) {
+    if (!(g_smooth || g.zoomMoving() || g_dragTake) || !core::diag::Enabled(*g.feature)) {
         return false;
     }
     FrameCall c{&g, {}};
     if (core::diag::Guarded(*g.feature, [](void *p) { Frame(*static_cast<FrameCall *>(p)); }, &c, &c.r)) {
-        return g_smooth; // smooth: the camera has been moved already
+        return g_smooth || g_dragFrame; // the camera has been moved already (smooth, or by a drag)
     }
+    g_dragFrame = false;
     FallBack(g);
     return false;
 }
@@ -212,8 +232,44 @@ void CountStep(const CameraGame &g, int dir)
     }
 }
 
+int GameDirection(const CameraGame &g, int (*call)())
+{
+    const CameraVars &v = g.vars;
+    const int x = *v.cursorX, y = *v.cursorY, w = *v.desktopWidth, h = *v.desktopHeight;
+    if (g_edge == 1 || w < 3 || h < 3) {
+        return call(); // the game's own 1 px
+    }
+    // The game's test: x <= 0 or x >= width - 1 (y the same).
+    auto seen = [](int c, int size) {
+        if (g_edge == 0) {
+            return c < 1 ? 1 : c > size - 2 ? size - 2 : c; // never on an edge
+        }
+        return c < g_edge ? 0 : c >= size - g_edge ? size - 1 : c;
+    };
+    *v.cursorX = seen(x, w);
+    *v.cursorY = seen(y, h);
+    const int dir = call();
+    *v.cursorX = x;
+    *v.cursorY = y;
+    return dir;
+}
+
+void SetDrag(DragTake take, DragLoop loop)
+{
+    g_dragTake = take;
+    g_dragLoop = loop;
+}
+
+void SetEdgeWidth(int px)
+{
+    g_edge = px < 0 ? 0 : px; // 0: no edge scrolling (x < 0 and x >= width never hold)
+}
+
 void OnLoop(const CameraGame &g, double ms)
 {
+    if (g_dragLoop) {
+        g_dragLoop();
+    }
     if (*g.vars.viewScrolling) {
         g_scrollingMs += ms;
     }
