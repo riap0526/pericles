@@ -19,6 +19,7 @@
 #include "core/sim/pace.h"
 #include "core/sim/panel_pause.h"
 #include "core/scroll/drag.h"
+#include "core/sound/sound.h"
 #include "core/ui/panel.h"
 #include "core/ui/settings_view.h"
 #include "games/zeus/anim_clock.h"
@@ -257,11 +258,13 @@ bool OwnWindowOpen()
 void Paused(bool)
 {
     core::scroll::drag::End("our panel opened"); // the cursor shown again before the panel takes the mouse
+    core::sound::SetQuiet(true); // no new ambient sound meanwhile (frames are drawn while the panel asks "Keep?")
     LogRates(" (panel opened: game paused)");
 }
 
 void Resumed()
 {
+    core::sound::SetQuiet(false);
     core_log("zeus: panel closed: game resumed");
     ResetWindow();
     g_nextFrameMs = 0;
@@ -293,6 +296,9 @@ void __cdecl GameFrame_detour()
     if (!FrameDue()) {
         return;
     }
+    // Sounds paused while away go on (the safety net), the ambient sounds' N follows the passes per second (only
+    // the passes that run game_frame), the 10 s counts.
+    core::sound::OnLoop();
     ++g_frames;
     ++g_frameNumber;
     const double frameStart = NowMs();

@@ -125,6 +125,7 @@ extern "C" void zeus_register_settings(void)
     zeus::zoom::RegisterSettings();        // [video] city_zoom, city_zoom_shrink (the core's, as Yongle's)
     zeus::world_map::RegisterSettings();   // [video] world_map, world_map_scale, world_map_background
     zeus::city_picture::RegisterSettings(); // [ui] city_picture_key, minimap_picture_key, minimap_picture_scale
+    zeus::sound::RegisterSettings(); // [audio] master_volume, master_sound, background_sound, ambient_sounds
     // The settings file this version ships: an older file gets its descriptions.
     core::settings::SetTemplate(zeus::kIniTemplate);
 }
@@ -160,7 +161,9 @@ extern "C" void zeus_attach(void)
     zeus::diag::Attach();   // state line, panel sections, game end, layout logs
     zeus::state_check::Attach(); // [debug] state_check: drawings that do not count leave the save data as it was
     zeus::intro::Attach();       // [ui] intro_movie (before game_main reaches the movie)
-    zeus::sound::Attach();       // the game's 3D sounds off (their provider stopped the city ~220 ms)
+    // The game's 3D sounds off (their provider stopped the city ~220 ms); the core's sound (master
+    // volume, paused while switched away, ambient sounds per second, pan limit, quiet under our windows).
+    zeus::sound::Attach();
     // The allies' flags at the original's pace; the map drawn with the game's own height (without it the map
     // reads past its picture on a screen higher than 768, so the logical resolution needs it).
     const bool mapHeight = zeus::world_map::Attach();

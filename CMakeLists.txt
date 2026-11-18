@@ -121,6 +121,9 @@ set(CORE_SOURCES
     src/core/scroll/drag_system.cpp
     src/core/scroll/picture.cpp
     src/core/scroll/zoom.cpp
+    src/core/sound/master_volume.cpp
+    src/core/sound/sound.cpp
+    src/core/sound/ambient_rate.cpp
     src/core/ui/panel.cpp
     src/core/ui/hotkey.cpp
     src/core/options/window.cpp
@@ -214,6 +217,22 @@ add_executable(test_camera proxy/ddraw/test_camera.cpp src/core/scroll/camera.cp
 target_include_directories(test_camera PRIVATE src)
 target_link_options(test_camera PRIVATE -static)
 target_link_libraries(test_camera PRIVATE augustus_core winmm)
+
+# Offline test of core/sound/ambient_rate: the ambient sounds' N for a rate per second (written for Yongle; in the core
+# since Pericles uses it too).
+add_executable(test_ambient proxy/ddraw/test_ambient.cpp src/core/sound/ambient_rate.cpp)
+target_include_directories(test_ambient PRIVATE src)
+target_link_options(test_ambient PRIVATE -static)
+
+# Offline test of core/sound: the master volume and the pause while switched away on fake Miles functions and a fake
+# game.
+add_executable(test_sound proxy/ddraw/test_sound.cpp src/core/sound/sound.cpp src/core/sound/master_volume.cpp
+    src/core/sound/ambient_rate.cpp src/core/config.cpp src/core/log.cpp src/core/diag/guard.cpp
+    src/core/platform/files.cpp src/core/hook/hook.cpp
+    src/core/settings/settings.cpp src/core/settings/ini_text.cpp src/core/ui/hotkey.cpp src/core/game.cpp)
+target_include_directories(test_sound PRIVATE src)
+target_link_options(test_sound PRIVATE -static)
+target_link_libraries(test_sound PRIVATE minhook)
 
 # Offline test of core/scroll/drag: middle-button drag scrolling on a fake game and a fake system
 # (shared by both games).

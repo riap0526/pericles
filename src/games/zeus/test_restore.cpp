@@ -49,6 +49,14 @@
 //   sound_3d_fault          the switch cannot be written (a fault in the guard): off, logged, the game's sound opens
 //                           with the switch as it was
 //
+// The core's sound on Zeus's sound manager (games/zeus/sound, core/sound):
+//   sound_pause          WM_KILLFOCUS and WM_ACTIVATE minimized (the game's call sites): the playing stream and
+//                           voice paused instead of the game's sound_stop_all; focus back: they go on, the time away
+//                           added to the timed music's start; game_main's call: the game's own stop
+//   sound_3d_on          the game's 3D sounds on: the game's own stop (its looping 3D voices are not paused)
+//   sound_fault          reading the sound manager faults: the game's own stop, the pause off, then always the game's
+//   sound_ambient_pan    ambient_sound_random: none while quiet; sound_play: pan 128 becomes 127
+//
 // The framed front-end screens (games/zeus/fullscreen with the core's core/display/framed_screens and
 // core/display/resolution_switch; without the player's interface pack, so no background is composed):
 //   framed_screens              the main menu framed whole at the city's scale, a loading picture by its 800x600, the same
@@ -164,6 +172,7 @@
 #include "core/ui/notice.h"
 #include "games/zeus/intro.h"
 #include "games/zeus/sound.h"
+#include "core/sound/sound.h"
 #include "games/zeus/notice.h"
 #include "games/zeus/resolution.h"
 #include "games/zeus/scroll.h"
@@ -257,6 +266,12 @@ void HideCursor(bool) {}
 HWND GameWindow() { return nullptr; }
 struct Placement;
 bool ModePlacement(Placement *) { return false; }
+// core/sound: the focus handler (the pause's "focus back"), kept for the sound scenarios to call.
+void (*g_focusHandler)() = nullptr;
+void SetFocusHandler(void (*handler)())
+{
+    g_focusHandler = handler;
+}
 } // namespace core::display
 
 namespace core::diag::autorun { // the smoke test is not started here (its own test: test_autorun)
@@ -1837,6 +1852,166 @@ void Sound3dFault()
     Check(LogContains("feature \"3D sounds off (games/zeus/sound)\" switched off"), "log: the feature off");
     SoundDetour()();
     Check(g_soundInit.calls == 2 && At<int>(aSounds3d) == 1, "afterwards: the switch is not touched");
+}
+
+// The core's sound on Zeus's sound manager (games/zeus/sound, core/sound). The call sites are the game's
+// own (CallSite), so the detour sees the return addresses of game_wndproc and game_main.
+constexpr DWORD fStopAll = 0x5a1330, fAmbient = 0x5a4790, fPlay = 0x5c80b0, aManager = 0xf9bea0, aMusic = 0xf97000,
+                cKillFocus = 0x5c4bbd, cMinimized = 0x5c4be7, cGameEnd = 0x5c399f;
+
+struct SoundFakes {
+    int stopAlls = 0, ambients = 0, lastPan = -1;
+    int status[32] = {}; // fake Miles: a handle is an index
+    void *voices[2] = {};
+} g_snd;
+
+void __cdecl FakeStopAll()
+{
+    ++g_snd.stopAlls;
+}
+void __cdecl FakeAmbient()
+{
+    ++g_snd.ambients;
+}
+int __fastcall FakePlay(void *, void *, void *request)
+{
+    g_snd.lastPan = static_cast<int *>(request)[3];
+    return 0;
+}
+int H(void *h)
+{
+    return static_cast<int>(reinterpret_cast<intptr_t>(h));
+}
+void __stdcall MilesPauseStream(void *h, int onoff)
+{
+    g_snd.status[H(h)] = onoff ? 16 : core::sound::kPlaying;
+}
+int __stdcall MilesStatus(void *h)
+{
+    return g_snd.status[H(h)];
+}
+void __stdcall MilesStop(void *h)
+{
+    g_snd.status[H(h)] = core::sound::kStopped;
+}
+void __stdcall MilesResume(void *h)
+{
+    g_snd.status[H(h)] = core::sound::kPlaying;
+}
+
+template <typename F> F SoundAt(const char *name)
+{
+    int n;
+    const zeus::Detour *d = zeus::sound::Detours(&n);
+    for (int i = 0; i < n; ++i) {
+        if (std::strcmp(d[i].site->name, name) == 0) {
+            return reinterpret_cast<F>(d[i].detour);
+        }
+    }
+    return nullptr;
+}
+
+using Void_fn = void(__cdecl *)();
+
+// The game's sound manager as Zeus keeps it: stream 0 (music) playing, stream 2 open and done, two voices (one
+// playing); music for a while (mode 1) started at 1000.
+void SetupSound()
+{
+    static const core::sound::Miles miles{&MilesPauseStream, &MilesStatus, &MilesStatus, &MilesStop, &MilesResume};
+    core::sound::SetMilesForTest(&miles);
+    zeus::sound::AttachForTest();
+    Thunk(fStopAll, reinterpret_cast<const void *>(&FakeStopAll));
+    Thunk(fAmbient, reinterpret_cast<const void *>(&FakeAmbient));
+    Thunk(fPlay, reinterpret_cast<const void *>(&FakePlay));
+    const void *stopAll = reinterpret_cast<const void *>(SoundAt<Void_fn>("sound_stop_all"));
+    CallSite(cKillFocus, stopAll);
+    CallSite(cMinimized, stopAll);
+    CallSite(cGameEnd, stopAll);
+    At<BYTE>(aManager + 0x84) = 0;
+    At<DWORD>(aManager + 0x2c) = 1;
+    At<DWORD>(aManager + 0x34) = 2;
+    g_snd.status[1] = core::sound::kPlaying;
+    g_snd.status[2] = 2;
+    g_snd.voices[0] = reinterpret_cast<void *>(10);
+    g_snd.voices[1] = reinterpret_cast<void *>(11);
+    g_snd.status[10] = core::sound::kPlaying;
+    g_snd.status[11] = 2;
+    At<int>(aManager + 0x3c) = 2;
+    At<DWORD>(aManager + 0xd8) = reinterpret_cast<DWORD>(g_snd.voices);
+    At<int>(aSounds3d) = 0;
+    At<int>(aMusic + 0x4e40) = 1;
+    At<DWORD>(aMusic + 0x4e8c) = 1000;
+}
+
+void CallFrom(DWORD site)
+{
+    reinterpret_cast<Void_fn>(site + g_imageShift)();
+}
+
+void SoundPause()
+{
+    SetupSound();
+    CallFrom(cKillFocus);
+    Check(g_snd.stopAlls == 0, "WM_KILLFOCUS: paused instead of the game's sound_stop_all");
+    Check(g_snd.status[1] == 16 && g_snd.status[2] == 2, "... the playing stream paused, the done one left");
+    Check(g_snd.status[10] == core::sound::kStopped && g_snd.status[11] == 2, "... the playing voice stopped");
+    Check(LogContains("sound: switched away: 1 stream(s) and 1 sound(s) paused"), "log: paused");
+    Sleep(20);
+    Check(core::display::g_focusHandler != nullptr, "the focus handler is the core's sound");
+    core::display::g_focusHandler();
+    Check(g_snd.status[1] == core::sound::kPlaying && g_snd.status[10] == core::sound::kPlaying,
+          "focus back: the stream and the voice go on");
+    Check(At<DWORD>(aMusic + 0x4e8c) > 1000, "... the time away is added to the timed music's start (mode 1)");
+    CallFrom(cMinimized);
+    Check(g_snd.stopAlls == 0 && g_snd.status[1] == 16, "WM_ACTIVATE minimized: paused too");
+    core::display::g_focusHandler();
+    CallFrom(cGameEnd);
+    Check(g_snd.stopAlls == 1 && g_snd.status[1] == core::sound::kPlaying, "game_main's call: the game's own stop");
+}
+
+void Sound3dOn()
+{
+    SetupSound();
+    At<int>(aSounds3d) = 1; // turned on in the game's sound options: its looping 3D voices cannot be paused by us
+    CallFrom(cKillFocus);
+    Check(g_snd.stopAlls == 1 && g_snd.status[1] == core::sound::kPlaying, "3D sounds on: the game's own stop");
+    Check(LogContains("the game plays sounds that cannot wait"), "log: why");
+}
+
+void SoundFault()
+{
+    SetupSound();
+    DWORD old;
+    VirtualProtect(reinterpret_cast<void *>((aManager & ~0xfffu) + g_imageShift), 0x1000, PAGE_NOACCESS, &old);
+    CallFrom(cKillFocus); // reading the sound manager faults inside the guard
+    VirtualProtect(reinterpret_cast<void *>((aManager & ~0xfffu) + g_imageShift), 0x1000, old, &old);
+    Check(g_snd.stopAlls == 1, "a fault while pausing: the game's own stop");
+    Check(LogContains("feature \"sound paused while switched away (core/sound)\" switched off"), "log: the feature off");
+    CallFrom(cKillFocus);
+    Check(g_snd.stopAlls == 2 && g_snd.status[1] == core::sound::kPlaying, "afterwards: the game's own stop");
+}
+
+void SoundAmbientPan()
+{
+    SetupSound();
+    const Void_fn ambient = SoundAt<Void_fn>("ambient_sound_random");
+    using Play_fn = int(__fastcall *)(void *, void *, void *);
+    const Play_fn play = SoundAt<Play_fn>("sound_play");
+    ambient();
+    Check(g_snd.ambients == 1, "ambient_sound_random: the game's");
+    core::sound::SetQuiet(true);
+    ambient();
+    Check(g_snd.ambients == 1, "our window open (quiet): no new ambient sound");
+    core::sound::SetQuiet(false);
+    ambient();
+    Check(g_snd.ambients == 2, "closed: the game's again");
+    int request[13] = {};
+    request[3] = 128;
+    play(reinterpret_cast<void *>(aManager + g_imageShift), nullptr, request);
+    Check(g_snd.lastPan == 127, "sound_play with pan 128 (the right edge): the game gets 127");
+    request[3] = 40;
+    play(reinterpret_cast<void *>(aManager + g_imageShift), nullptr, request);
+    Check(g_snd.lastPan == 40, "pan 40: as it was");
 }
 
 // --- The smoke test's actions (games/zeus/smoke). cheat_run is __cdecl (one argument [esp+4], returns al,
@@ -4385,6 +4560,10 @@ const Scenario kScenarios[] = {
     {"intro_mismatch", &IntroMismatch},
     {"sound_3d_off", &Sound3dOff},
     {"sound_3d_fault", &Sound3dFault},
+    {"sound_pause", &SoundPause},
+    {"sound_3d_on", &Sound3dOn},
+    {"sound_fault", &SoundFault},
+    {"sound_ambient_pan", &SoundAmbientPan},
     {"framed_screens", &FramedScreens},
     {"framed_setting", &FramedSetting},
     {"framed_fault", &FramedFault},

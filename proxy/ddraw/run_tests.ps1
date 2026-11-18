@@ -19,6 +19,10 @@
 #               (no DLL; writes test_camera.log; ~2 s)
 #   test_drag   core/scroll/drag: middle-button drag scrolling on a fake game and system (click, drag, scales,
 #               whole tiles, buttons, ends, the setting, the edge width, a fault) (no DLL; writes test_drag.log)
+#   test_ambient core/sound/ambient_rate: the ambient sounds' N for a rate per second, R -> original -> R (no DLL)
+#   test_sound  core/sound: the master volume and the pause while switched away on fake Miles functions and a fake
+#               game (scaled, read back, live handles only; paused, same handle, timed music, a fault) (no DLL;
+#               writes test_sound.log; ~1 s)
 #   test_picture core/scroll/picture: smooth scrolling's picture on a fake game (the buffer, the extent, a clip past
 #               the bottom, conversions, the drag, a fault) (no DLL; writes test_picture.log)
 #   test_zoom   core/scroll/zoom: the city's zoom on a fake game (the wheel, the middle button, the map's limit,
@@ -104,6 +108,8 @@ Run 'test_settings' 'emulated' @()
 Run 'test_scroll' 'emulated' @()
 Run 'test_camera' 'emulated' @()
 Run 'test_drag' 'emulated' @()
+Run 'test_ambient' 'emulated' @()
+Run 'test_sound' 'emulated' @()
 Run 'test_picture' 'emulated' @()
 Run 'test_zoom' 'emulated' @()
 Run 'test_logical' 'emulated' @()
