@@ -50,15 +50,32 @@ void NoOwnPause(bool);
 void NoOwnStop();
 void NoDelay(unsigned long);
 
-// Miles's functions the pause uses (all __stdcall, mss32.dll's exports), so the offline test can give fake ones.
+// Miles's functions the core uses (all __stdcall, mss32.dll's exports), so the offline test can give fake ones. Each
+// user checks the ones it needs (a missing one switches off only that feature).
 struct Miles {
+    // The pause.
     void(__stdcall *pauseStream)(void *stream, int onoff);
     int(__stdcall *streamStatus)(void *stream);
     int(__stdcall *sampleStatus)(void *sample);
     void(__stdcall *stopSample)(void *sample);
     void(__stdcall *resumeSample)(void *sample);
+    // The layer-1 ambient sounds (core/sound/layer1), also sampleStatus, stopSample, resumeSample.
+    void *(__stdcall *allocateSample)(void *driver);
+    void(__stdcall *initSample)(void *sample);
+    int(__stdcall *setSampleFile)(void *sample, const void *image, int block);
+    void(__stdcall *setSampleLoopCount)(void *sample, int count); // 0: for ever
+    void(__stdcall *setSampleVolume)(void *sample, int volume);
+    void(__stdcall *setSamplePan)(void *sample, int pan);
+    void(__stdcall *startSample)(void *sample);
+    void(__stdcall *endSample)(void *sample);
 };
 constexpr int kPlaying = 4, kStopped = 8; // SMP_PLAYING, SMP_STOPPED (a stopped voice resumes where it was)
+
+// mss32.dll's functions (nullptr where it lacks one, all nullptr before it is loaded); the fake ones in the test.
+const Miles &MilesTable();
+
+// One of our windows is open (SetQuiet).
+bool Quiet();
 
 // From the game layer's settings registration: [audio] background_sound, ambient_sounds; [debug] sound_probe.
 void RegisterSettings();

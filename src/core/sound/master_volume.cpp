@@ -60,8 +60,14 @@ SRWLOCK g_lock = SRWLOCK_INIT;
 using Release_fn = void(__stdcall *)(void *handle);
 Release_fn o_ReleaseSample = nullptr, o_Release3D = nullptr, o_CloseStream = nullptr;
 
-int Scaled(int v)
+std::atomic<void *> g_solo{nullptr}; // SetSolo: only this handle is heard
+
+int Scaled(void *h, int v)
 {
+    void *solo = g_solo.load();
+    if (solo && h != solo) {
+        return 0;
+    }
     return (v * Percent() + 50) / 100;
 }
 
@@ -127,7 +133,7 @@ int Unscaled(void *h, int actual)
         }
     }
     ReleaseSRWLockShared(&g_lock);
-    if (asked >= 0 && Scaled(asked) == actual) {
+    if (asked >= 0 && Scaled(h, asked) == actual) {
         return asked;
     }
     const int p = Percent();
@@ -137,17 +143,17 @@ int Unscaled(void *h, int actual)
 void __stdcall SetSample_detour(void *h, int v)
 {
     Remember(h, v, kSample);
-    o_SetSample(h, Scaled(v));
+    o_SetSample(h, Scaled(h, v));
 }
 void __stdcall SetStream_detour(void *h, int v)
 {
     Remember(h, v, kStream);
-    o_SetStream(h, Scaled(v));
+    o_SetStream(h, Scaled(h, v));
 }
 void __stdcall Set3D_detour(void *h, int v)
 {
     Remember(h, v, k3D);
-    o_Set3D(h, Scaled(v));
+    o_Set3D(h, Scaled(h, v));
 }
 int __stdcall GetStream_detour(void *h)
 {
@@ -173,7 +179,7 @@ void Reapply(void *)
             continue;
         }
         const SetVolume_fn set = a.kind == kSample ? o_SetSample : a.kind == k3D ? o_Set3D : o_SetStream;
-        set(a.handle, Scaled(a.volume));
+        set(a.handle, Scaled(a.handle, a.volume));
         ++count;
     }
     core_log("master volume: %d%% (%s); %d sound(s) set again", g_percent.load(), g_on.load() ? "on" : "off",
@@ -217,6 +223,15 @@ void RegisterSettings()
         Changed(initial);
         return true;
     });
+}
+
+void SetSolo(void *handle)
+{
+    if (g_solo.exchange(handle) == handle) {
+        return;
+    }
+    core_log("master volume: %s", handle ? "only the layer-1 sounds heard (debug)" : "all sounds heard again");
+    Changed(false);
 }
 
 bool Attach(const VolumeGame &g)

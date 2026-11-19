@@ -27,6 +27,11 @@ void RegisterSettings(); // start-up, before the settings are loaded: [audio] ma
 // is installed (logged) and the game's volumes stay as they are. False: not installed.
 bool Attach(const VolumeGame &g);
 
+// For testing (the layer-1 sounds' [debug] setting): while handle is not nullptr, every other sound and stream is
+// given volume 0 (the game reads back what it asked for; its own volumes are not touched); nullptr: all again. Every
+// live handle is set again at once. Game thread.
+void SetSolo(void *handle);
+
 // The eight Miles functions (all __stdcall), so the offline test can give fake ones.
 struct MilesVolume {
     void(__stdcall *setSample)(void *handle, int volume);

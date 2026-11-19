@@ -5,6 +5,7 @@
 #include "core/log.h"
 #include "core/settings/settings.h"
 #include "core/sound/ambient_rate.h"
+#include "core/sound/layer1.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -43,30 +44,18 @@ struct Paused {
     bool timedMusic = false;
 } g_paused;
 
+bool g_milesLoaded = false;
+
+template <typename F>
+void Load(HMODULE mss, F &f, const char *name)
+{
+    f = reinterpret_cast<F>(GetProcAddress(mss, name));
+}
+
 bool MilesFunctions()
 {
-    if (g_testMiles) {
-        g_miles = *g_testMiles;
-        return true;
-    }
-    if (g_miles.pauseStream) {
-        return true;
-    }
-    HMODULE mss = GetModuleHandleA("mss32.dll");
-    if (!mss) {
-        return false;
-    }
-    Miles m{};
-    m.pauseStream = reinterpret_cast<decltype(m.pauseStream)>(GetProcAddress(mss, "_AIL_pause_stream@8"));
-    m.streamStatus = reinterpret_cast<decltype(m.streamStatus)>(GetProcAddress(mss, "_AIL_stream_status@4"));
-    m.sampleStatus = reinterpret_cast<decltype(m.sampleStatus)>(GetProcAddress(mss, "_AIL_sample_status@4"));
-    m.stopSample = reinterpret_cast<decltype(m.stopSample)>(GetProcAddress(mss, "_AIL_stop_sample@4"));
-    m.resumeSample = reinterpret_cast<decltype(m.resumeSample)>(GetProcAddress(mss, "_AIL_resume_sample@4"));
-    if (!m.pauseStream || !m.streamStatus || !m.sampleStatus || !m.stopSample || !m.resumeSample) {
-        return false;
-    }
-    g_miles = m;
-    return true;
+    const Miles &m = MilesTable();
+    return m.pauseStream && m.streamStatus && m.sampleStatus && m.stopSample && m.resumeSample;
 }
 
 int Streams()
@@ -109,6 +98,7 @@ void Pause(void *result)
         }
     }
     g_game->ownPause(true);
+    layer1::Pause(true);
     p.on = true;
     p.since = GetTickCount();
     p.timedMusic = g_game->timedMusic();
@@ -136,6 +126,7 @@ void Resume(void *why)
         }
     }
     g_game->ownPause(false);
+    layer1::Pause(false);
     const DWORD away = GetTickCount() - p.since;
     if (p.timedMusic && g_game->timedMusic()) {
         g_game->delayTimedMusic(away); // music for a while: the pause does not count
@@ -211,6 +202,42 @@ const char *const kAmbientLabels[] = {"original (1 in 300 main-loop passes, as t
                                       "0.75 (three in 4 seconds)", "1.0 (one each second)"};
 
 } // namespace
+
+const Miles &MilesTable()
+{
+    if (g_testMiles) {
+        g_miles = *g_testMiles;
+        return g_miles;
+    }
+    if (g_milesLoaded) {
+        return g_miles;
+    }
+    HMODULE mss = GetModuleHandleA("mss32.dll");
+    if (!mss) {
+        return g_miles; // all nullptr: not loaded yet
+    }
+    Miles &m = g_miles;
+    Load(mss, m.pauseStream, "_AIL_pause_stream@8");
+    Load(mss, m.streamStatus, "_AIL_stream_status@4");
+    Load(mss, m.sampleStatus, "_AIL_sample_status@4");
+    Load(mss, m.stopSample, "_AIL_stop_sample@4");
+    Load(mss, m.resumeSample, "_AIL_resume_sample@4");
+    Load(mss, m.allocateSample, "_AIL_allocate_sample_handle@4");
+    Load(mss, m.initSample, "_AIL_init_sample@4");
+    Load(mss, m.setSampleFile, "_AIL_set_sample_file@12");
+    Load(mss, m.setSampleLoopCount, "_AIL_set_sample_loop_count@8");
+    Load(mss, m.setSampleVolume, "_AIL_set_sample_volume@8");
+    Load(mss, m.setSamplePan, "_AIL_set_sample_pan@8");
+    Load(mss, m.startSample, "_AIL_start_sample@4");
+    Load(mss, m.endSample, "_AIL_end_sample@4");
+    g_milesLoaded = true;
+    return g_miles;
+}
+
+bool Quiet()
+{
+    return g_quiet;
+}
 
 bool Never()
 {
@@ -295,6 +322,7 @@ bool StopAll(bool switchedAway)
     if (g_game) {
         g_game->ownStop();
     }
+    layer1::Stop();
     return false;
 }
 
@@ -371,6 +399,7 @@ void OnLoop()
             &a);
     }
     LogCounts(now);
+    layer1::OnLoop(now);
 }
 
 void SetMilesForTest(const Miles *m)
@@ -378,6 +407,7 @@ void SetMilesForTest(const Miles *m)
     g_testMiles = m;
     if (!m) {
         g_miles = Miles{};
+        g_milesLoaded = false;
     }
 }
 

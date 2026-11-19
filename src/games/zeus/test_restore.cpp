@@ -2014,6 +2014,42 @@ void SoundAmbientPan()
     Check(g_snd.lastPan == 40, "pan 40: as it was");
 }
 
+// The game's 3D sounds kept off after the sound options' button (0x402110, __cdecl, no arguments) and on
+// every pass; a fault in the layer-1 sounds switches them off and the game goes on.
+constexpr DWORD fButton = 0x402110, aSoundStarted = 0x10e4230;
+
+void __cdecl FakeButton()
+{
+    At<int>(aSounds3d) = 1 - At<int>(aSounds3d); // button 5: the game flips the switch
+}
+
+void Layer1KeepOff()
+{
+    SetupSound();
+    Thunk(fButton, reinterpret_cast<const void *>(&FakeButton));
+    SoundAt<Void_fn>("sound_options_toggle")();
+    Check(At<int>(aSounds3d) == 0, "the 3D sounds button turned them on: put back to off at once");
+    Check(LogContains("the game's 3D sounds turned on (the sound options' button): put back to off"), "log: the button");
+    At<int>(aSounds3d) = 1;
+    zeus::sound::OnLoop();
+    Check(At<int>(aSounds3d) == 0, "found on on a pass: put back to off");
+    Check(LogContains("the game's 3D sounds turned on (found on a pass): put back to off"), "log: the pass");
+}
+
+void Layer1Fault()
+{
+    SetupSound();
+    At<int>(aSoundStarted) = 1;
+    DWORD old;
+    VirtualProtect(reinterpret_cast<void *>((aSoundStarted & ~0xfffu) + g_imageShift), 0x1000, PAGE_NOACCESS, &old);
+    zeus::sound::OnLoop(); // reading whether the game's sound started faults inside the layer-1 guard
+    VirtualProtect(reinterpret_cast<void *>((aSoundStarted & ~0xfffu) + g_imageShift), 0x1000, old, &old);
+    Check(LogContains("feature \"layer-1 ambient sounds (core/sound/layer1)\" switched off"),
+          "a fault in the layer-1 sounds: that feature off");
+    zeus::sound::OnLoop();
+    Check(true, "... and the game's pass goes on");
+}
+
 // --- The smoke test's actions (games/zeus/smoke). cheat_run is __cdecl (one argument [esp+4], returns al,
 // plain ret; the caller cleans): the fake is the same.
 int g_cheatArg = -1;
@@ -4564,6 +4600,8 @@ const Scenario kScenarios[] = {
     {"sound_3d_on", &Sound3dOn},
     {"sound_fault", &SoundFault},
     {"sound_ambient_pan", &SoundAmbientPan},
+    {"layer1_keep_off", &Layer1KeepOff},
+    {"layer1_fault", &Layer1Fault},
     {"framed_screens", &FramedScreens},
     {"framed_setting", &FramedSetting},
     {"framed_fault", &FramedFault},

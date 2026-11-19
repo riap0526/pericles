@@ -19,6 +19,7 @@
 #include "core/sim/pace.h"
 #include "core/sim/panel_pause.h"
 #include "core/scroll/drag.h"
+#include "core/sound/layer1.h"
 #include "core/sound/sound.h"
 #include "core/ui/panel.h"
 #include "core/ui/settings_view.h"
@@ -29,6 +30,7 @@
 #include "games/zeus/scroll.h"
 #include "games/zeus/site.h"
 #include "games/zeus/smoke.h"
+#include "games/zeus/sound.h"
 #include "games/zeus/state_check.h"
 #include "games/zeus/zoom.h"
 
@@ -291,14 +293,15 @@ void __cdecl GameFrame_detour()
     int unused = 0;
     if (core::sim::panel_pause::Loop(kPause, &unused)) {
         zeus::fullscreen::WhilePaused(); // the panel's blur or brightness shows on a menu without game_frame
+        core::sound::layer1::Refresh();  // our nature sounds follow a switch or volume changed meanwhile
         return;
     }
     if (!FrameDue()) {
         return;
     }
     // Sounds paused while away go on (the safety net), the ambient sounds' N follows the passes per second (only
-    // the passes that run game_frame), the 10 s counts.
-    core::sound::OnLoop();
+    // the passes that run game_frame), the 10 s counts; the game's 3D sounds kept off, our layer-1 sounds.
+    zeus::sound::OnLoop();
     ++g_frames;
     ++g_frameNumber;
     const double frameStart = NowMs();

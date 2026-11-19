@@ -124,6 +124,7 @@ set(CORE_SOURCES
     src/core/sound/master_volume.cpp
     src/core/sound/sound.cpp
     src/core/sound/ambient_rate.cpp
+    src/core/sound/layer1.cpp
     src/core/ui/panel.cpp
     src/core/ui/hotkey.cpp
     src/core/options/window.cpp
@@ -227,12 +228,22 @@ target_link_options(test_ambient PRIVATE -static)
 # Offline test of core/sound: the master volume and the pause while switched away on fake Miles functions and a fake
 # game.
 add_executable(test_sound proxy/ddraw/test_sound.cpp src/core/sound/sound.cpp src/core/sound/master_volume.cpp
-    src/core/sound/ambient_rate.cpp src/core/config.cpp src/core/log.cpp src/core/diag/guard.cpp
-    src/core/platform/files.cpp src/core/hook/hook.cpp
+    src/core/sound/ambient_rate.cpp src/core/sound/layer1.cpp src/core/config.cpp src/core/log.cpp
+    src/core/diag/guard.cpp src/core/platform/files.cpp src/core/hook/hook.cpp
     src/core/settings/settings.cpp src/core/settings/ini_text.cpp src/core/ui/hotkey.cpp src/core/game.cpp)
 target_include_directories(test_sound PRIVATE src)
 target_link_options(test_sound PRIVATE -static)
 target_link_libraries(test_sound PRIVATE minhook)
+
+# Offline test of core/sound/layer1: the layer-1 ambient sounds (the file's lines, the flight, the mix, the player on
+# fake Miles functions and a fake game).
+add_executable(test_layer1 proxy/ddraw/test_layer1.cpp src/core/sound/layer1.cpp src/core/sound/sound.cpp
+    src/core/sound/master_volume.cpp src/core/sound/ambient_rate.cpp src/core/config.cpp src/core/log.cpp
+    src/core/diag/guard.cpp src/core/platform/files.cpp src/core/hook/hook.cpp src/core/settings/settings.cpp
+    src/core/settings/ini_text.cpp src/core/ui/hotkey.cpp src/core/game.cpp)
+target_include_directories(test_layer1 PRIVATE src)
+target_link_options(test_layer1 PRIVATE -static)
+target_link_libraries(test_layer1 PRIVATE minhook)
 
 # Offline test of core/scroll/drag: middle-button drag scrolling on a fake game and a fake system
 # (shared by both games).

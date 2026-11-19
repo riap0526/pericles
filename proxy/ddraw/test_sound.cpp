@@ -153,6 +153,14 @@ void TestMasterVolume()
     Check(g_volume[3] == 0 && g_reapplied == 3, "master sound off: silence");
     SetValue("audio", "master_sound", "on");
     Check(g_volume[3] == 60, "master sound on again: the volume the game asked for");
+    // Only one heard (the layer-1 sounds' [debug] nature_sounds_only).
+    game.setSample(P(4), 90);
+    mv::SetSolo(P(4));
+    Check(g_volume[3] == 0 && g_volume[4] == 90, "solo: every other handle silent at once, the one kept");
+    game.set3D(P(3), 70);
+    Check(g_volume[3] == 0 && game.get3D(P(3)) == 70, "... a volume set meanwhile: silent, read back as asked");
+    mv::SetSolo(nullptr);
+    Check(g_volume[3] == 70 && g_volume[4] == 90, "solo off: every handle at the volume the game asked for");
 }
 
 void Reset()
