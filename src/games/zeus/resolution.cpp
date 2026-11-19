@@ -1163,8 +1163,23 @@ void OnLoop()
     }
 }
 
+namespace {
+bool g_installed = false; // Attach succeeded: the game is in our mode 3
+} // namespace
+
+// F6 (the game's 800x600) is blocked while our resolution is installed: it would take the game out of our mode 3 (as
+// Yongle's). The key bindings (core/input/keys) block it first; this is for when they are off after an error. Not when
+// the game posted it itself (lParam 0: the Display options dialog's 800 x 600 button, the game's own way until our
+// buttons replace it). Shift+F7 cycles our resolution.
 bool KeyFilter(UINT message, WPARAM key, LPARAM l)
 {
+    if (g_installed && message == WM_KEYDOWN && key == VK_F6 && l != 0) {
+        static long logs = 0;
+        if (++logs <= 5) {
+            core_log("zeus: resolution: F6 (800x600) ignored: with our resolutions the game stays in mode 3");
+        }
+        return true;
+    }
     return switching::CycleKey(message, key, l);
 }
 
@@ -1251,6 +1266,7 @@ bool Attach(const core_config *cfg)
     core_log("zeus: resolution: installed (video.resolution %s; front-end screens at 1024x768; Shift+F7 cycles the "
              "resolution; each part guarded)",
              what);
+    g_installed = true;
     return true;
 }
 

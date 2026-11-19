@@ -15,6 +15,7 @@
 #include "games/zeus/diag.h"
 #include "games/zeus/fullscreen.h"
 #include "games/zeus/intro.h"
+#include "games/zeus/keys.h"
 #include "games/zeus/sound.h"
 #include "games/zeus/notice.h"
 #include "games/zeus/resolution.h"
@@ -92,8 +93,8 @@ void __cdecl DebugLog_detour(const void *message, int a, int code)
 // F5 and Alt+Enter switch between full screen and a window (ours: core's window mode, the game's picture scaled into
 // it), as in Emperor's layer. The game's own F5 must not run: it switches the game to its own window mode and makes
 // DirectDraw again, and that window mode needs a clipper, which the emulated back end does not have. The game does
-// not use Alt+Enter. F6 and F7 (the game's 800x600 and 1024x768, which is our resolution) stay the game's; Shift+F7
-// cycles our resolution (games/zeus/resolution).
+// not use Alt+Enter. F6, F7 and F8 are the key bindings' (games/zeus/keys: never the game's from the keyboard); with
+// them off, F6 is blocked here and F7 goes to the game; Shift+F7 cycles our resolution (games/zeus/resolution).
 bool KeyFilter(UINT message, WPARAM key, LPARAM l)
 {
     if (zeus::resolution::KeyFilter(message, key, l) || core::display::WindowKey(message, key, l, "zeus")) {
@@ -126,6 +127,7 @@ extern "C" void zeus_register_settings(void)
     zeus::world_map::RegisterSettings();   // [video] world_map, world_map_scale, world_map_background
     zeus::city_picture::RegisterSettings(); // [ui] city_picture_key, minimap_picture_key, minimap_picture_scale
     zeus::sound::RegisterSettings(); // [audio] master_volume, master_sound, background_sound, ambient_sounds
+    zeus::keys::RegisterSettings();  // [keys], one setting per action
     // The settings file this version ships: an older file gets its descriptions.
     core::settings::SetTemplate(zeus::kIniTemplate);
 }
@@ -155,8 +157,7 @@ extern "C" void zeus_attach(void)
         core::diag::Disable(g_gameLog, "the hook could not be installed");
     }
     core::display::SetKeyFilter(&KeyFilter);
-    core_log("zeus: F5 and Alt+Enter switch between full screen and a window (the game's own F5 is not used); F6 "
-             "and F7 stay the game's");
+    core_log("zeus: F5 and Alt+Enter switch between full screen and a window (the game's own F5 is not used)");
     zeus::timing::Attach(); // frames follow the display, the simulation pace, figure animations
     zeus::diag::Attach();   // state line, panel sections, game end, layout logs
     zeus::state_check::Attach(); // [debug] state_check: drawings that do not count leave the save data as it was
@@ -205,6 +206,9 @@ extern "C" void zeus_attach(void)
     }
     // The city and minimap pictures (drawn from smooth scrolling's city_render path).
     zeus::city_picture::Attach(scroll);
+    // The key bindings (core/display asks them before the key filter). After city_picture, which checks
+    // lang_get_string's first bytes before calling it: the pause banner's hook changes them.
+    zeus::keys::Attach();
     // Screenshot file names and the present mode log's lines carry game_screen 0xf2a6dd (one byte, reads only).
     // The tag is asked for when a screenshot is taken (game thread): the draw census sums up the next frame too.
     core::capture::SetTagProvider([](char *out, size_t size) {

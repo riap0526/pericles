@@ -21,6 +21,7 @@
 #include "games/zeus/scroll.h"
 
 #include "core/diag/guard.h"
+#include "core/input/keys.h"
 #include "core/log.h"
 #include "core/scroll/camera.h"
 #include "core/scroll/drag.h"
@@ -126,8 +127,8 @@ const camera::CameraGame kCamera{
                        kKeyLeft, kKeyRight, kKeyUp, kKeyDown, kEdgeScrolling, kScrollSpeed, kFrameCount},
     [] { Function<VoidFn>(kViewClamp)(); },
     [] { Function<VoidFn>(kSoundViewDecay)(); },
-    // Pericles has no key bindings yet: the arrow key itself (as Yongle's own keys do with its bindings off).
-    [](unsigned vk) { return (GetAsyncKeyState(static_cast<int>(vk)) & 0x8000) != 0; },
+    // A key bound to this direction (W, say); with the bindings off, the arrow key itself.
+    [](unsigned vk) { return core::input::keys::Held(vk); },
     // After a fault: the picture's state back to rest, and the zoom back to 100% first (the game then draws straight
     // into the back buffer, which a zoomed view would overrun).
     [] {

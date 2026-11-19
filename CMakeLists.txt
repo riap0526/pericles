@@ -127,6 +127,7 @@ set(CORE_SOURCES
     src/core/sound/layer1.cpp
     src/core/ui/panel.cpp
     src/core/ui/hotkey.cpp
+    src/core/input/keys.cpp
     src/core/options/window.cpp
     src/core/options/menu.cpp
     src/core/ui/settings_view.cpp
@@ -234,6 +235,15 @@ add_executable(test_sound proxy/ddraw/test_sound.cpp src/core/sound/sound.cpp sr
 target_include_directories(test_sound PRIVATE src)
 target_link_options(test_sound PRIVATE -static)
 target_link_libraries(test_sound PRIVATE minhook)
+
+# Offline test of core/input/keys: the key bindings on a fake game and a fake system (the game's own posted F6/F7, the
+# options and Esc callbacks, Alt characters, the editor's actions, a fault).
+add_executable(test_keys proxy/ddraw/test_keys.cpp src/core/input/keys.cpp src/core/config.cpp src/core/log.cpp
+    src/core/diag/guard.cpp src/core/platform/files.cpp src/core/hook/hook.cpp src/core/settings/settings.cpp
+    src/core/settings/ini_text.cpp src/core/ui/hotkey.cpp src/core/game.cpp)
+target_include_directories(test_keys PRIVATE src)
+target_link_options(test_keys PRIVATE -static)
+target_link_libraries(test_keys PRIVATE minhook)
 
 # Offline test of core/sound/layer1: the layer-1 ambient sounds (the file's lines, the flight, the mix, the player on
 # fake Miles functions and a fake game).

@@ -57,6 +57,13 @@
 //   sound_fault          reading the sound manager faults: the game's own stop, the pause off, then always the game's
 //   sound_ambient_pan    ambient_sound_random: none while quiet; sound_play: pan 128 becomes 127
 //
+// The core's key bindings with Zeus's actions (games/zeus/keys, core/input/keys):
+//   key_bindings                 a bound key becomes the game's own (its character eaten), a game key bound to nothing is
+//                           kept, Ctrl actions with key_ctrl put back, Alt characters eaten but Alt+Space, F6-F8 from
+//                           the keyboard kept but the game's own posted ones (lParam 0) passed, R polled once; the
+//                           editor's map only its own actions, other screens as they are; the pause banner's keys
+//   key_bindings_fault           a fault while translating: the bindings off, every key the game's own from then on
+//
 // The framed front-end screens (games/zeus/fullscreen with the core's core/display/framed_screens and
 // core/display/resolution_switch; without the player's interface pack, so no background is composed):
 //   framed_screens              the main menu framed whole at the city's scale, a loading picture by its 800x600, the same
@@ -166,11 +173,15 @@
 #include "core/scroll/zoom.h"
 #include "core/ui/info_window.h"
 #include "core/display/virtual_display.h"
+#include "core/input/keys.h"
+#include "core/settings/settings.h"
+#include "core/ui/hotkey.h"
 #include "games/zeus/anim_clock.h"
 #include "games/zeus/city_picture.h"
 #include "games/zeus/fullscreen.h"
 #include "core/ui/notice.h"
 #include "games/zeus/intro.h"
+#include "games/zeus/keys.h"
 #include "games/zeus/sound.h"
 #include "core/sound/sound.h"
 #include "games/zeus/notice.h"
@@ -290,7 +301,26 @@ struct SavedPic {
 std::vector<SavedPic> g_savedPics;
 void (*g_savedDone)(bool, const char *) = nullptr;
 
+// core/input/keys: what the key bindings sent to the game (for the key scenarios), with key_ctrl at that moment.
+struct KeysSent {
+    UINT m;
+    WPARAM w;
+    int ctrl;
+};
+KeysSent g_keysSent[16];
+int g_keysSentCount = 0;
+volatile int *g_ctrlForKeys = nullptr;
+
 namespace core::display {
+LRESULT SendToGame(UINT m, WPARAM w, LPARAM)
+{
+    if (g_keysSentCount < 16) {
+        g_keysSent[g_keysSentCount++] = KeysSent{m, w, g_ctrlForKeys ? *g_ctrlForKeys : -1};
+    }
+    return 0;
+}
+void SetKeyTranslator(KeyTranslator) {}
+void SetKeyStateFilter(KeyStateFilter) {}
 void AddActionKey(ActionKey *) {} // the pictures' keys (the scenarios ask through RequestCity / RequestMinimap)
 } // namespace core::display
 
@@ -2048,6 +2078,158 @@ void Layer1Fault()
           "a fault in the layer-1 sounds: that feature off");
     zeus::sound::OnLoop();
     Check(true, "... and the game's pass goes on");
+}
+
+// --- The key bindings (games/zeus/keys on core/input/keys). The modifiers and held keys come from a fake
+// system; what the bindings send to the game is recorded by the fake SendToGame (with key_ctrl at that moment).
+unsigned g_fakeMods = 0;
+unsigned g_fakeHeldVk = 0;
+const core::input::keys::KeysSystem kFakeKeys{[] { return g_fakeMods; },
+                                              [](unsigned vk) { return vk != 0 && vk == g_fakeHeldVk; }};
+constexpr DWORD aGameScreenK = 0xf2a6dd, aEditorModeK = 0x665e2c, aKeyCtrl = 0xf9c108;
+const char *__cdecl FakeLangKeys(int group, int index) // lang_get_string: __cdecl(group, index), the caller pops
+{
+    return group == 13 && index == 2 ? "Game paused ('P' key continues)" : "the game's text";
+}
+
+void SetupKeys()
+{
+    namespace k = core::input::keys;
+    k::SetSystem(&kFakeKeys);
+    zeus::keys::RegisterSettings();
+    g_ctrlForKeys = reinterpret_cast<volatile int *>(aKeyCtrl + g_imageShift);
+    At<int>(aKeyCtrl) = 0;
+    At<int>(aEditorModeK) = 0;
+    At<unsigned char>(aGameScreenK) = 1;
+    Thunk(0x507bf0, reinterpret_cast<void *>(&FakeLangKeys)); // lang_get_string
+}
+
+void BindKey(const char *key, const char *v)
+{
+    core::settings::Request(core::settings::Find("keys", key), v, false);
+    core::settings::RunPending();
+}
+
+bool SentOne(UINT m, WPARAM w)
+{
+    return g_keysSentCount == 1 && g_keysSent[0].m == m && g_keysSent[0].w == w;
+}
+
+void KeyBindings()
+{
+    namespace k = core::input::keys;
+    SetupKeys();
+    Check(k::ActionCount() == 44, "keys: 44 actions (no overlay letters, no F9, army groups 1-5, Tab)");
+    g_keysSentCount = 0;
+    Check(k::Translate(WM_KEYDOWN, VK_UP, 1) && SentOne(WM_KEYDOWN, VK_UP), "keys: Up (the default) sent as Up");
+    BindKey("scroll_up", "W");
+    g_keysSentCount = 0;
+    Check(k::Translate(WM_KEYDOWN, 'W', 1) && SentOne(WM_KEYDOWN, VK_UP), "keys: W bound to scrolling up: Up");
+    Check(k::Translate(WM_CHAR, 'w', 1) && g_keysSentCount == 1, "keys: ... and not the character w");
+    g_keysSentCount = 0;
+    Check(k::Translate(WM_KEYDOWN, VK_UP, 1) && g_keysSentCount == 0, "keys: Up bound to nothing: kept from the game");
+    g_fakeHeldVk = 'W';
+    Check(k::Held(VK_UP), "keys: smooth scrolling: W held counts as Up");
+    g_fakeHeldVk = VK_UP;
+    Check(!k::Held(VK_UP), "keys: ... and Up (bound to nothing) does not");
+    g_fakeHeldVk = 0;
+    g_keysSentCount = 0;
+    Check(k::Translate(WM_KEYDOWN, VK_SPACE, 1) && SentOne(WM_CHAR, ' '), "keys: Space: the character space");
+    g_keysSentCount = 0;
+    Check(k::Translate(WM_KEYDOWN, VK_TAB, 1) && SentOne(WM_KEYDOWN, VK_TAB), "keys: Tab: the sidebar's Overview key");
+    g_keysSentCount = 0;
+    Check(k::Translate(WM_KEYDOWN, 'P', 1) && SentOne(WM_CHAR, 'p'), "keys: P: the character p (pause)");
+    g_fakeMods = core::ui::kModCtrl;
+    g_keysSentCount = 0;
+    Check(k::Translate(WM_KEYDOWN, '3', 1) && SentOne(WM_KEYDOWN, '3') && g_keysSent[0].ctrl == 1 &&
+              At<int>(aKeyCtrl) == 0,
+          "keys: Ctrl+3: 3 with key_ctrl 1, put back after");
+    g_keysSentCount = 0;
+    Check(!k::Translate(WM_KEYDOWN, '6', 1) && g_keysSentCount == 0,
+          "keys: Ctrl+6 (no group 6 in Zeus): to the game (which does nothing with it)");
+    Check(k::Translate(WM_KEYDOWN, VK_LEFT, 1) && g_keysSentCount == 0, "keys: Ctrl+Left: kept from the game");
+    g_fakeMods = core::ui::kModAlt;
+    g_keysSentCount = 0;
+    Check(k::Translate(WM_SYSKEYDOWN, '2', 1 | (1 << 29)) && SentOne(WM_SYSKEYDOWN, '2'), "keys: Alt+2: recall 2");
+    Check(k::Translate(WM_SYSCHAR, '2', 1 | (1 << 29)), "keys: ... its character eaten");
+    g_keysSentCount = 0;
+    Check(!k::Translate(WM_SYSKEYDOWN, '7', 1 | (1 << 29)) && g_keysSentCount == 0, "keys: Alt+7: to the game");
+    Check(k::Translate(WM_SYSCHAR, '7', 1 | (1 << 29)), "keys: ... its character eaten (no beep)");
+    Check(!k::Translate(WM_SYSCHAR, ' ', 1 | (1 << 29)), "keys: Alt+Space's character: to Windows (the window menu)");
+    g_fakeMods = 0;
+    g_keysSentCount = 0;
+    Check(k::Translate(WM_KEYDOWN, VK_F6, 1) && g_keysSentCount == 0 && LogContains("keys: the options window is not "
+                                                                                     "available"),
+          "keys: F6 (Open Options): taken, no window yet");
+    Check(k::Translate(WM_KEYDOWN, VK_F7, 1) && k::Translate(WM_KEYDOWN, VK_F8, 1) && g_keysSentCount == 0,
+          "keys: F7, F8 from the keyboard never reach the game");
+    Check(!k::Translate(WM_KEYDOWN, VK_F6, 0) && !k::Translate(WM_KEYDOWN, VK_F7, 0) && g_keysSentCount == 0,
+          "keys: F6, F7 the game posted itself (lParam 0, the Display options buttons): the game's");
+    Check(!k::Translate(WM_KEYDOWN, VK_ESCAPE, 1), "keys: Esc: the game's");
+    g_keysSentCount = 0;
+    Check(k::Translate(WM_KEYDOWN, 'R', 1) && SentOne(WM_KEYDOWN, 'R') &&
+              k::KeyState('R', 0) == static_cast<SHORT>(0x8001) && k::KeyState('R', 0) == 0,
+          "keys: R: the game gets R, and its poll says pressed once");
+    // The editor's map: only its own actions.
+    At<int>(aEditorModeK) = 1;
+    g_keysSentCount = 0;
+    Check(k::Translate(WM_KEYDOWN, 'W', 1) && SentOne(WM_KEYDOWN, VK_UP), "keys: editor: W scrolls up there too");
+    Check(k::Translate(WM_KEYDOWN, VK_UP, 1) && g_keysSentCount == 1, "keys: editor: Up (bound to nothing) kept");
+    g_keysSentCount = 0;
+    Check(k::Translate(WM_KEYDOWN, VK_PRIOR, 1) && SentOne(WM_KEYDOWN, VK_PRIOR), "keys: editor: PgUp rotates the map");
+    g_keysSentCount = 0;
+    Check(k::Translate(WM_KEYDOWN, VK_F2, 1) && SentOne(WM_KEYDOWN, VK_F2), "keys: editor: F2 (bookmark 2)");
+    g_keysSentCount = 0;
+    Check(!k::Translate(WM_KEYDOWN, 'P', 1) && !k::Translate(WM_CHAR, 'p', 1) && !k::Translate(WM_KEYDOWN, VK_SPACE, 1) &&
+              !k::Translate(WM_KEYDOWN, VK_TAB, 1) && g_keysSentCount == 0,
+          "keys: editor: P, Space, Tab are the editor's own");
+    Check(k::Translate(WM_KEYDOWN, VK_F7, 1), "keys: editor: F7 never reaches it");
+    At<unsigned char>(aGameScreenK) = 0x58;
+    g_keysSentCount = 0;
+    Check(k::Translate(WM_KEYDOWN, 'W', 1) && SentOne(WM_KEYDOWN, VK_UP), "keys: editor screen 0x58: translated");
+    At<unsigned char>(aGameScreenK) = 0x27;
+    g_keysSentCount = 0;
+    Check(!k::Translate(WM_KEYDOWN, 'W', 1) && !k::Translate(WM_CHAR, 'w', 1) && g_keysSentCount == 0,
+          "keys: another editor screen: the keys as they are (typing)");
+    // Not a city screen.
+    At<int>(aEditorModeK) = 0;
+    At<unsigned char>(aGameScreenK) = 0x0d;
+    g_keysSentCount = 0;
+    Check(!k::Translate(WM_KEYDOWN, 'W', 1) && !k::Translate(WM_CHAR, 'w', 1) && g_keysSentCount == 0,
+          "keys: the save dialog: the keys as they are");
+    Check(k::Translate(WM_KEYDOWN, VK_F7, 1) && g_keysSentCount == 0, "keys: ... F7 never reaches the game");
+    // The pause banner (lang_get_string's detour).
+    int n = 0;
+    const zeus::Detour *d = zeus::keys::Detours(&n);
+    auto lang = reinterpret_cast<const char *(__cdecl *)(int, int)>(d[0].detour);
+    Check(n == 1 && std::strcmp(lang(13, 2), "Game paused ('P' key continues)") == 0, "keys: the pause banner: P");
+    BindKey("pause", "Space, P");
+    Check(std::strcmp(lang(13, 2), "Game paused ('Space' or 'P' key continues)") == 0,
+          "keys: the pause banner: both keys");
+    BindKey("pause", "");
+    Check(std::strcmp(lang(13, 2), "Game paused") == 0, "keys: the pause banner: no key");
+    Check(std::strcmp(lang(21, 7), "the game's text") == 0, "keys: other texts: the game's");
+}
+
+// A fault while translating (game_screen unreadable): the bindings off, the keys the game's own from then on.
+void KeyBindingsFault()
+{
+    namespace k = core::input::keys;
+    SetupKeys();
+    const DWORD page = (aGameScreenK & ~0xfffu) + g_imageShift;
+    DWORD old;
+    VirtualProtect(reinterpret_cast<void *>(page), 0x1000, PAGE_NOACCESS, &old);
+    g_keysSentCount = 0;
+    Check(!k::Translate(WM_KEYDOWN, VK_UP, 1) && g_keysSentCount == 0, "keys: a fault: the key goes to the game");
+    VirtualProtect(reinterpret_cast<void *>(page), 0x1000, old, &old);
+    Check(LogContains("feature \"key bindings (core/input/keys)\" switched off"), "keys: ... the bindings off");
+    BindKey("scroll_up", "W");
+    Check(!k::Translate(WM_KEYDOWN, 'W', 1) && !k::Translate(WM_KEYDOWN, VK_F7, 1) && g_keysSentCount == 0,
+          "keys: ... and every key the game's own from then on");
+    g_fakeHeldVk = VK_UP;
+    Check(k::Held(VK_UP), "keys: ... smooth scrolling follows the arrow key itself");
+    g_fakeHeldVk = 0;
+    Check(k::KeyState('R', static_cast<SHORT>(0x8000)) == static_cast<SHORT>(0x8000), "keys: ... R polled as it is");
 }
 
 // --- The smoke test's actions (games/zeus/smoke). cheat_run is __cdecl (one argument [esp+4], returns al,
@@ -4602,6 +4784,8 @@ const Scenario kScenarios[] = {
     {"sound_ambient_pan", &SoundAmbientPan},
     {"layer1_keep_off", &Layer1KeepOff},
     {"layer1_fault", &Layer1Fault},
+    {"key_bindings", &KeyBindings},
+    {"key_bindings_fault", &KeyBindingsFault},
     {"framed_screens", &FramedScreens},
     {"framed_setting", &FramedSetting},
     {"framed_fault", &FramedFault},

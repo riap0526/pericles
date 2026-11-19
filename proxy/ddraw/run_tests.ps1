@@ -26,6 +26,9 @@
 #   test_layer1 core/sound/layer1: the layer-1 ambient sounds (the file's lines, the three motions, coming down and
 #               rising, the mix, the player on fake Miles functions: start, loop, pause, end, quiet, a fault) (no DLL;
 #               writes test_layer1.log and makes and removes test_layer1_tmp\)
+#   test_keys   core/input/keys: the key bindings on a fake game and system (the game's own posted F6/F7 passed or
+#               not, options and Esc callbacks, Alt characters, the editor's actions, a fault) (no DLL; runs itself
+#               twice; writes test_keys.log)
 #   test_picture core/scroll/picture: smooth scrolling's picture on a fake game (the buffer, the extent, a clip past
 #               the bottom, conversions, the drag, a fault) (no DLL; writes test_picture.log)
 #   test_zoom   core/scroll/zoom: the city's zoom on a fake game (the wheel, the middle button, the map's limit,
@@ -114,6 +117,7 @@ Run 'test_drag' 'emulated' @()
 Run 'test_ambient' 'emulated' @()
 Run 'test_sound' 'emulated' @()
 Run 'test_layer1' 'emulated' @()
+Run 'test_keys' 'emulated' @()
 Run 'test_picture' 'emulated' @()
 Run 'test_zoom' 'emulated' @()
 Run 'test_logical' 'emulated' @()
