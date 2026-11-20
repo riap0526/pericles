@@ -20,6 +20,9 @@
 #include "games/zeus/notice.h"
 #include "games/zeus/resolution.h"
 #include "games/zeus/scroll.h"
+#include "games/zeus/scroll_arrows.h"
+#include "games/zeus/game_menu.h"
+#include "games/zeus/painter.h"
 #include "games/zeus/site.h"
 #include "games/zeus/state_check.h"
 #include "games/zeus/timing.h"
@@ -208,7 +211,10 @@ extern "C" void zeus_attach(void)
     zeus::city_picture::Attach(scroll);
     // The key bindings (core/display asks them before the key filter). After city_picture, which checks
     // lang_get_string's first bytes before calling it: the pause banner's hook changes them.
+    // Esc and the pause menu (drawn with the game's art in screen_present; before keys, whose Esc it is).
+    zeus::game_menu::Attach(zeus::painter::Attach(), zeus::timing::PresentHooked());
     zeus::keys::Attach();
+    zeus::scroll_arrows::Attach(); // held scroll arrows at the original pace
     // Screenshot file names and the present mode log's lines carry game_screen 0xf2a6dd (one byte, reads only).
     // The tag is asked for when a screenshot is taken (game thread): the draw census sums up the next frame too.
     core::capture::SetTagProvider([](char *out, size_t size) {

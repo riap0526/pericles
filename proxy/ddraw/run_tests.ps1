@@ -48,6 +48,7 @@
 #               strips, the put-back order, a fault, the minimap's two key colors, file names) (no DLL; writes
 #               test_city_picture_core.log)
 #   test_framing core/display/framing: the framed full-screen picture geometry (no DLL)
+#   test_tile_layout core/display/tile_layout: the shared tile walkers as the copies they replaced (no DLL)
 #   test_surface_memory core/ddraw/surface_memory: spare rows with a canary below each emulated surface, guard
 #               pages around it (no DLL)
 #   test_perf   core/diag/perf: phases, samples per thread, averages, history, the rate log window (no DLL; ~1 s)
@@ -59,6 +60,8 @@
 #   test_stall  core/diag/stall: long passes sampled with their call stack (no DLL)
 #   test_autorun core/diag/autorun: the smoke test's script and steps on a fake game and clock (no DLL)
 #   test_notice core/ui/notice: our messages' queue for the game's notice boxes on a fake game layer (no DLL)
+#   test_pause_menu core/options/pause_menu: the pause menu on a fake game layer (no DLL)
+#   test_scroll_repeat core/ui/scroll_repeat: held scroll arrows at the original pace (no DLL)
 #   test_present_mode core/diag/present_mode: mode changes, errors counted, giving up, the once-a-second line, the
 #               not-Direct3D-11 path (no DLL; writes test_present_mode.log)
 #   test_affinity core/platform/affinity: scenarios on one processor in child processes, the last one
@@ -126,6 +129,7 @@ Run 'test_city_zoom' 'emulated' @()
 Run 'test_city_picture' 'emulated' @()
 Run 'test_city_picture_core' 'emulated' @()
 Run 'test_framing' 'emulated' @()
+Run 'test_tile_layout' 'emulated' @()
 Run 'test_moved_rect' 'emulated' @()
 Run 'test_city_layout' 'emulated' @()
 Run 'test_scaled_rect' 'emulated' @()
@@ -138,6 +142,8 @@ Run 'test_env' 'emulated' @()
 Run 'test_stall' 'emulated' @()
 Run 'test_autorun' 'emulated' @()
 Run 'test_notice' 'emulated' @()
+Run 'test_pause_menu' 'emulated' @()
+Run 'test_scroll_repeat' 'emulated' @()
 Run 'test_present_mode' 'emulated' @()
 Run 'test_affinity' 'emulated' @()
 Run 'test_screenshot' 'emulated' @()

@@ -2,6 +2,8 @@
 // places under 0x451820); the bindings are the core's.
 #include "games/zeus/keys.h"
 
+#include "games/zeus/game_menu.h"
+
 #include "core/diag/guard.h"
 #include "core/input/keys.h"
 #include "core/log.h"
@@ -292,13 +294,13 @@ bool OverlayKey(unsigned overlay)
     return c.result != OverlayCall::kNotOne;
 }
 
-// Pericles has no options window or pause menu of its own yet: F6 does nothing (the game's 800x600 stays blocked),
-// Esc stays the game's ("Exit Game?"). The Display options dialog's 800 x 600 / 1024 x 768 buttons post F6/F7 to the
+// Pericles has no options window of its own yet: F6 does nothing (the game's 800x600 stays blocked). Esc closes
+// windows and opens the pause menu (games/zeus/game_menu). The Display options dialog's 800 x 600 / 1024 x 768 buttons post F6/F7 to the
 // game (lParam 0): passed until our own buttons replace them.
 const core::input::keys::KeysGame &Game()
 {
     static const core::input::keys::KeysGame game(kDefs, kCount, &CityScreen, &EditorScreen, kKeyCtrl.ptr(),
-                                                  &core::input::keys::NoOptions, &core::input::keys::NoEscape,
+                                                  &core::input::keys::NoOptions, &zeus::game_menu::Escape,
                                                   &OverlayKey, true);
     return game;
 }

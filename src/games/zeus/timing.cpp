@@ -18,6 +18,7 @@
 #include "core/settings/settings.h"
 #include "core/sim/pace.h"
 #include "core/sim/panel_pause.h"
+#include "games/zeus/game_menu.h"
 #include "core/scroll/drag.h"
 #include "core/sound/layer1.h"
 #include "core/sound/sound.h"
@@ -251,23 +252,24 @@ void ResetWindow()
 // to keep a new resolution (core::ui::WantsGameFrames), the game draws frames (at most ~60 a second) so that the new
 // size can be seen; sim_tick_due says no meanwhile (SimDue_detour), so the city does not move on.
 
-// Zeus has no window of ours over the game yet (the options window is a later step): never open.
+// Our pause menu over the game (games/zeus/game_menu; later also the options window).
 bool OwnWindowOpen()
 {
-    return false;
+    return zeus::game_menu::IsOpen();
 }
 
-void Paused(bool)
+void Paused(bool menu)
 {
-    core::scroll::drag::End("our panel opened"); // the cursor shown again before the panel takes the mouse
+    // The cursor shown again before the panel or the menu takes the mouse.
+    core::scroll::drag::End(menu ? "the pause menu opened" : "our panel opened");
     core::sound::SetQuiet(true); // no new ambient sound meanwhile (frames are drawn while the panel asks "Keep?")
-    LogRates(" (panel opened: game paused)");
+    LogRates(menu ? " (pause menu opened: game paused)" : " (panel opened: game paused)");
 }
 
 void Resumed()
 {
     core::sound::SetQuiet(false);
-    core_log("zeus: panel closed: game resumed");
+    core_log("zeus: panel or pause menu closed: game resumed");
     ResetWindow();
     g_nextFrameMs = 0;
     g_lastFrameMs = 0;      // the pause is not a frame's time
@@ -295,6 +297,9 @@ void __cdecl GameFrame_detour()
         zeus::fullscreen::WhilePaused(); // the panel's blur or brightness shows on a menu without game_frame
         core::sound::layer1::Refresh();  // our nature sounds follow a switch or volume changed meanwhile
         return;
+    }
+    if (zeus::game_menu::OnLoop() && zeus::game_menu::IsOpen()) {
+        return; // a confirmation answered No opened the pause menu again: no pass (the game stays paused)
     }
     if (!FrameDue()) {
         return;
@@ -389,6 +394,7 @@ void AutorunQuit()
 
 void __cdecl ScreenPresent_detour(int param)
 {
+    zeus::game_menu::OnPresent(GameAddress(__builtin_return_address(0))); // over the frame just drawn
     if (param == 1 || *kRedrawRequest != 0) {
         core::output::HoldNextFrame(kPresentGateMs);
     }
@@ -871,6 +877,11 @@ const Detour *Detours(int *count)
 unsigned FrameNumber()
 {
     return g_frameNumber;
+}
+
+bool PresentHooked()
+{
+    return o_ScreenPresent != nullptr;
 }
 
 bool CityDrawingHooked()

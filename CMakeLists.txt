@@ -130,6 +130,9 @@ set(CORE_SOURCES
     src/core/input/keys.cpp
     src/core/options/window.cpp
     src/core/options/menu.cpp
+    src/core/options/pause_menu.cpp
+    src/core/options/menu_text.cpp
+    src/core/ui/scroll_repeat.cpp
     src/core/ui/settings_view.cpp
     src/core/ui/perf_view.cpp
     src/core/settings/settings.cpp
@@ -304,6 +307,12 @@ add_executable(test_framing proxy/ddraw/test_framing.cpp src/core/display/framin
 target_include_directories(test_framing PRIVATE src)
 target_link_options(test_framing PRIVATE -static)
 
+# Offline test of core/display/tile_layout: the shared tile walkers give the tiles, places and order of the copies they
+# replaced (Yongle's options window painter, core/display/framed_screens).
+add_executable(test_tile_layout proxy/ddraw/test_tile_layout.cpp src/core/display/framing.cpp)
+target_include_directories(test_tile_layout PRIVATE src)
+target_link_options(test_tile_layout PRIVATE -static)
+
 # Offline test of core/display/moved_rect (a rectangle shown elsewhere; guard pages around every buffer).
 add_executable(test_moved_rect proxy/ddraw/test_moved_rect.cpp src/core/display/moved_rect.cpp)
 target_include_directories(test_moved_rect PRIVATE src)
@@ -422,6 +431,19 @@ add_executable(test_notice proxy/ddraw/test_notice.cpp src/core/ui/notice.cpp sr
     src/core/diag/guard.cpp src/core/log.cpp)
 target_include_directories(test_notice PRIVATE src)
 target_link_options(test_notice PRIVATE -static)
+
+# Offline test of core/options/pause_menu: the pause menu on a fake game layer (input, drawing, the pending item,
+# confirmations, a fault in the game layer's callback).
+add_executable(test_pause_menu proxy/ddraw/test_pause_menu.cpp src/core/options/pause_menu.cpp
+    src/core/options/menu.cpp src/core/diag/guard.cpp src/core/log.cpp)
+target_include_directories(test_pause_menu PRIVATE src)
+target_link_options(test_pause_menu PRIVATE -static)
+
+# Offline test of core/ui/scroll_repeat: held scroll arrows at 20 lines a second on a fake of the games' buttons
+# function (a click one line, two scroll bars in a pass, types put back).
+add_executable(test_scroll_repeat proxy/ddraw/test_scroll_repeat.cpp src/core/ui/scroll_repeat.cpp)
+target_include_directories(test_scroll_repeat PRIVATE src)
+target_link_options(test_scroll_repeat PRIVATE -static)
 
 # The chosen game's own offline tests (game_add_tests in its game.cmake).
 game_add_tests()

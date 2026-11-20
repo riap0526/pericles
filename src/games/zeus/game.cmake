@@ -35,6 +35,9 @@ set(GAME_SOURCES
     src/games/zeus/zoom.cpp
     src/games/zeus/city_picture.cpp
     src/games/zeus/keys.cpp
+    src/games/zeus/scroll_arrows.cpp
+    src/games/zeus/painter.cpp
+    src/games/zeus/game_menu.cpp
 )
 
 # The offline tests of this game layer (run by src/games/zeus/tests.ps1 through proxy/ddraw/run_tests.ps1).
@@ -55,6 +58,8 @@ macro(game_add_tests)
         src/games/zeus/timing.cpp src/games/zeus/anim_clock.cpp src/games/zeus/state_check.cpp
         src/games/zeus/resolution.cpp src/games/zeus/world_map.cpp src/games/zeus/intro.cpp
         src/games/zeus/keys.cpp src/core/input/keys.cpp
+        src/games/zeus/game_menu.cpp src/games/zeus/painter.cpp src/core/options/pause_menu.cpp
+        src/core/options/menu.cpp src/core/options/menu_text.cpp
         src/games/zeus/sound.cpp src/core/sound/sound.cpp src/core/sound/master_volume.cpp
         src/core/sound/ambient_rate.cpp src/core/sound/layer1.cpp
         src/games/zeus/fullscreen.cpp src/core/display/framed_screens.cpp src/core/display/framing.cpp

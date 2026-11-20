@@ -22,6 +22,8 @@ enum class Font {
     Title,    // the window's title
     Small,    // tooltips
     Disabled, // red, the same size as Normal (a button that does nothing now)
+    MenuItem,      // a menu's button text (core/options/menu MenuLook; Yongle: Normal)
+    MenuItemHover, // ... of the button under the mouse
 };
 
 enum class Arrow { Left, Right, Up, Down };

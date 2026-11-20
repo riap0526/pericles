@@ -32,6 +32,9 @@ void Attach();
 // The number of game_frame runs so far (game thread): changes once per frame, never reset.
 unsigned FrameNumber();
 
+// Whether screen_present is hooked (Attach; present = display / cap60): our pause menu is drawn there.
+bool PresentHooked();
+
 // Whether city_render is hooked (Attach): the menus' city background is taken there (games/zeus/fullscreen).
 bool CityDrawingHooked();
 

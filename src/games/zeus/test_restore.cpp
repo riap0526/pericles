@@ -64,6 +64,14 @@
 //                           editor's map only its own actions, other screens as they are; the pause banner's keys
 //   key_bindings_fault           a fault while translating: the bindings off, every key the game's own from then on
 //
+// Esc and the pause menu (games/zeus/game_menu, core/options/pause_menu):
+//   esc_and_pause                  a confirmation's No; lParam 0 the game's; the main menu asks; dialogs and menu screens a
+//                           right click in the next input pass; the world map; the city (tool, company, pause menu);
+//                           the pause menu's items at the next loop, Replay map's No back to the menu
+//   esc_editor           the editors: 0x58 the game's, pages and dialogs a right click, the map's tool, the three
+//                           editor pause menus and their File menu functions with button_param
+//   esc_fault            a fault in the game's function: Esc off, the game's own from then on
+//
 // The framed front-end screens (games/zeus/fullscreen with the core's core/display/framed_screens and
 // core/display/resolution_switch; without the player's interface pack, so no background is composed):
 //   framed_screens              the main menu framed whole at the city's scale, a loading picture by its 800x600, the same
@@ -179,6 +187,11 @@
 #include "games/zeus/anim_clock.h"
 #include "games/zeus/city_picture.h"
 #include "games/zeus/fullscreen.h"
+#include "games/zeus/game_menu.h"
+#include "games/zeus/painter.h"
+#include "core/options/menu.h"
+#include "core/options/menu_text.h"
+#include "core/options/pause_menu.h"
 #include "core/ui/notice.h"
 #include "games/zeus/intro.h"
 #include "games/zeus/keys.h"
@@ -322,6 +335,7 @@ LRESULT SendToGame(UINT m, WPARAM w, LPARAM)
 void SetKeyTranslator(KeyTranslator) {}
 void SetKeyStateFilter(KeyStateFilter) {}
 void AddActionKey(ActionKey *) {} // the pictures' keys (the scenarios ask through RequestCity / RequestMinimap)
+void SetModalInput(const ModalInput *) {} // games/zeus/game_menu: the pause menu's input (not under test here)
 } // namespace core::display
 
 namespace core::capture {
@@ -2378,6 +2392,268 @@ void OverlayKeysFault()
     g_keysSentCount = 0;
     At<unsigned char>(aGameScreenK) = 1;
     Check(k::Translate(WM_KEYDOWN, 'P', 1) && SentOne(WM_CHAR, 'p'), "overlay keys: ... the other keys work (P)");
+}
+
+// --- Esc and the pause menu (games/zeus/game_menu with core/options/pause_menu). The fakes are thunks at
+// the game's functions, each __cdecl as the game's: modal_dialog_run(title, text,
+// buttons) answers what the scenario says; the File menu's functions and city_cancel_tool count their calls and read
+// button_param; input_update_mouse clears the right-button edge as the game does each pass.
+constexpr DWORD aRightUpM = 0xf2a6fc, aModalDoneM = 0x10df2e8, aModalChoiceM = 0x10df2ec, aModalButtonsM = 0x10df2f0,
+                aMapSelM = 0x903120, aMapSel2M = 0x5fb7d0, aQuitM = 0xf1389d, aBuildTypeM = 0x665dcc,
+                aBuildingM = 0x665dc8, aEditorToolM = 0xf135ec, aDialogXM = 0xf2a6ac, aDialogYM = 0xf2a6a8;
+int g_modalAnswer = 7, g_modalCalls = 0, g_cancelCalls = 0, g_mapToCityCalls = 0, g_loadCalls = 0,
+    g_replayCalls = 0, g_leaveCalls = 0, g_editorCalls = 0, g_editorParam = -1, g_loadParam = -1;
+std::string g_modalTitle, g_modalText;
+bool g_cancelFaults = false;
+
+int __cdecl FakeModal(const char *title, const char *text, int)
+{
+    ++g_modalCalls;
+    g_modalTitle = title;
+    g_modalText = text;
+    return g_modalAnswer;
+}
+char __cdecl FakeCityCancel()
+{
+    if (g_cancelFaults) {
+        Fault();
+    }
+    ++g_cancelCalls;
+    At<int>(aBuildTypeM) = 0;
+    return 1;
+}
+void __cdecl FakeMapToCity() { ++g_mapToCityCalls; }
+void __cdecl FakeInputMouseM() { At<char>(aRightUpM) = 0; }
+void __cdecl FakeLoadM()
+{
+    ++g_loadCalls;
+    g_loadParam = At<int>(aButtonParam);
+}
+void __cdecl FakeReplayM() { ++g_replayCalls; }
+void __cdecl FakeLeaveM() { ++g_leaveCalls; }
+void __cdecl FakeEditorItem()
+{
+    ++g_editorCalls;
+    g_editorParam = At<int>(aButtonParam);
+}
+void __cdecl FakeUiSound(int) {}
+// image_group_get: __thiscall (ecx = a pak's groups), 1 argument, ret 4 -- reached as __fastcall (edx unused, the
+// callee cleans); the entry's +4 is the group's first image (here the group number, for the font).
+BYTE g_groupEntry[8];
+BYTE *__fastcall FakeImageGroupM(void *, void *, int group)
+{
+    *reinterpret_cast<int *>(g_groupEntry + 4) = group;
+    return g_groupEntry;
+}
+// text_get_width: __cdecl (text, font): 7 pixels a character in the confirmation's text font (group 1), 9 in the
+// title's measuring font (group 6), as the real fonts differ.
+int __cdecl FakeTextWidthM(const char *text, int font)
+{
+    return static_cast<int>(std::strlen(text)) * (font == 6 ? 9 : 7);
+}
+
+void SetupGameMenu()
+{
+    SetupKeys(); // lang_get_string's fake ("the game's text"), screen 1, not the editor
+    Thunk(0x40fcf0, reinterpret_cast<void *>(&FakeImageGroupM));
+    Thunk(0x507da0, reinterpret_cast<void *>(&FakeTextWidthM));
+    Thunk(0x5a0980, reinterpret_cast<void *>(&FakeModal));
+    Thunk(0x404c70, reinterpret_cast<void *>(&FakeCityCancel));
+    Thunk(0x408bb0, reinterpret_cast<void *>(&FakeMapToCity));
+    Thunk(0x50b470, reinterpret_cast<void *>(&FakeInputMouseM));
+    Thunk(0x4014d0, reinterpret_cast<void *>(&FakeLoadM));
+    Thunk(0x421730, reinterpret_cast<void *>(&FakeReplayM));
+    Thunk(0x401170, reinterpret_cast<void *>(&FakeLeaveM));
+    Thunk(0x5a4c00, reinterpret_cast<void *>(&FakeUiSound));
+    for (DWORD a : {0x4081f0ul, 0x408250ul, 0x408600ul, 0x51ebe0ul, 0x51ec50ul, 0x401cd0ul, 0x425120ul, 0x427100ul,
+                    0x427140ul, 0x425190ul, 0x42a8e0ul}) {
+        Thunk(a, reinterpret_cast<void *>(&FakeEditorItem));
+    }
+    At<int>(aDialogXM) = 0;
+    At<int>(aDialogYM) = 0;
+    At<int>(aBuildTypeM) = 0;
+    At<int>(aBuildingM) = 0;
+    At<char>(aEditorToolM) = 0;
+    At<int>(aMapSelM) = 0;
+    At<int>(aMapSel2M) = -1;
+    At<char>(aQuitM) = 0;
+    zeus::game_menu::AttachForTest();
+}
+
+bool EscM(LPARAM l = 1) // a WM_KEYDOWN of Esc (repeat count 1); held: bit 30
+{
+    return zeus::game_menu::Escape(l);
+}
+
+std::string Trimmed(const std::string &t)
+{
+    const size_t a = t.find_first_not_of(' '), b = t.find_last_not_of(' ');
+    return a == std::string::npos ? std::string() : t.substr(a, b - a + 1);
+}
+
+// A click on the pause menu's item i (n items), in the game's dialog coordinates (dialog_offset 0, 0), with Pericles'
+// look (the game's Display options).
+void ClickPauseItem(int i, int n)
+{
+    core::options::Menu m;
+    m.SetLook(zeus::painter::MenuLook());
+    m.Set("Pause", std::vector<std::string>(static_cast<size_t>(n), "x"));
+    const int x = m.ButtonX() + 20, y = m.ButtonY(i) + 10;
+    core::options::pause_menu::HandleMessage(WM_LBUTTONDOWN, 0, 0, x, y);
+    core::options::pause_menu::HandleMessage(WM_LBUTTONUP, 0, 0, x, y);
+}
+
+void EscAndPause()
+{
+    namespace pm = core::options::pause_menu;
+    SetupGameMenu();
+    // A confirmation: its last button; a held Esc does nothing more.
+    At<unsigned char>(aGameScreenK) = 0x54;
+    At<int>(aModalButtonsM) = 2;
+    At<int>(aModalChoiceM) = 0;
+    At<char>(aModalDoneM) = 0;
+    Check(EscM() && At<int>(aModalChoiceM) == 1 && At<char>(aModalDoneM) == 1, "esc: a confirmation: No (its last button)");
+    At<char>(aModalDoneM) = 0;
+    Check(EscM(1 | (1 << 30)) && At<char>(aModalDoneM) == 0, "esc: ... held: taken, nothing more");
+    // Posted by the game (lParam 0): the game's own.
+    At<unsigned char>(aGameScreenK) = 1;
+    Check(!EscM(0) && !pm::IsOpen(), "esc: posted by the game (lParam 0): the game's own Esc");
+    // The main menu: our Quit / Exit Game? box; No: nothing; Yes: the game quits.
+    At<unsigned char>(aGameScreenK) = 0;
+    g_modalAnswer = 7;
+    Check(EscM() && g_modalCalls == 1 && At<char>(aQuitM) == 0 && !pm::IsOpen(),
+          "esc: the main menu: asks (No: stays, no pause menu)");
+    Check(Trimmed(g_modalTitle) == "the game's text" && Trimmed(g_modalText) == "the game's text" &&
+              std::max(FakeTextWidthM(g_modalText.c_str(), 1), FakeTextWidthM(g_modalTitle.c_str(), 6)) >=
+                  FakeTextWidthM("the game's text", 6),
+          "esc: ... Quit / Exit Game?, the box at least as wide as the text in the title's font");
+    g_modalAnswer = 6;
+    Check(EscM() && At<char>(aQuitM) == 1, "esc: ... Yes: quit_request");
+    At<char>(aQuitM) = 0;
+    // A dialog and a menu screen: a right click for the next input pass (after input_update_mouse's own edges).
+    for (int s : {0x05, 0x09, 0x21, 0x3b, 0x02, 0x1f, 0x2f, 0x35}) {
+        At<unsigned char>(aGameScreenK) = static_cast<unsigned char>(s);
+        const bool taken = EscM();
+        zeus::game_menu::InputMouseForTest();
+        char what[96];
+        std::snprintf(what, sizeof what, "esc: screen 0x%02x: a right click in the next input pass", s);
+        Check(taken && At<char>(aRightUpM) == 1, what);
+        zeus::game_menu::InputMouseForTest();
+        Check(At<char>(aRightUpM) == 0, "esc: ... only once");
+    }
+    // Screens that do not read a right click (but 0x35): the game's own Esc.
+    for (int s : {0x2d, 0x4c}) {
+        At<unsigned char>(aGameScreenK) = static_cast<unsigned char>(s);
+        char what[96];
+        std::snprintf(what, sizeof what, "esc: screen 0x%02x: the game's own Esc", s);
+        Check(!EscM(), what);
+    }
+    // The timed picture, ratings, scoreboard, victory: Esc taken, nothing else (no right click).
+    for (int s : {0x04, 0x33, 0x37, 0x3a, 0x42, 0x43}) {
+        At<unsigned char>(aGameScreenK) = static_cast<unsigned char>(s);
+        char what[96];
+        std::snprintf(what, sizeof what, "esc: screen 0x%02x: taken, nothing happens", s);
+        Check(EscM() && g_modalCalls == 2 && !pm::IsOpen(), what);
+    }
+    zeus::game_menu::InputMouseForTest();
+    Check(At<char>(aRightUpM) == 0, "esc: ... and no right click");
+    // The world map: the selection let go first, then back to the city.
+    At<unsigned char>(aGameScreenK) = 0x14;
+    At<int>(aMapSelM) = 5;
+    Check(EscM() && At<int>(aMapSelM) == 0 && At<int>(aMapSel2M) == -1 && g_mapToCityCalls == 0,
+          "esc: the world map: the selection let go");
+    Check(EscM() && g_mapToCityCalls == 1, "esc: ... then back to the city");
+    // The city: a tool dropped (city_cancel_tool), a company / ship let go (a right click), else the pause menu.
+    At<unsigned char>(aGameScreenK) = 1;
+    At<int>(aBuildTypeM) = 3;
+    Check(EscM() && g_cancelCalls == 1 && !pm::IsOpen(), "esc: the city with a tool: dropped, no pause menu");
+    for (int s : {0x48, 0x20}) {
+        At<unsigned char>(aGameScreenK) = static_cast<unsigned char>(s);
+        Check(EscM() && !pm::IsOpen(), "esc: a company (0x48) / ship (0x20) selected: taken");
+        zeus::game_menu::InputMouseForTest();
+        Check(At<char>(aRightUpM) == 1, "esc: ... as the game's right click");
+    }
+    At<unsigned char>(aGameScreenK) = 1;
+    Check(EscM() && pm::IsOpen() && zeus::game_menu::IsOpen() && LogContains("pause menu: opened"),
+          "esc: the city with nothing to cancel: the pause menu");
+    // Its items: Load (2 of 7) closes the menu and runs at the next loop with button_param 0.
+    At<int>(aButtonParam) = 77;
+    ClickPauseItem(2, 7);
+    Check(!pm::IsOpen() && g_loadCalls == 0, "pause menu: Load: closed, not run in the window procedure");
+    Check(zeus::game_menu::OnLoop() && g_loadCalls == 1 && g_loadParam == 0 && !zeus::game_menu::OnLoop(),
+          "pause menu: ... run once at the next loop, button_param 0 (as the File menu)");
+    // Replay map: asks with our text and the button's name; No: the pause menu again.
+    EscM();
+    g_modalAnswer = 7;
+    ClickPauseItem(1, 7);
+    Check(zeus::game_menu::OnLoop() && zeus::game_menu::IsOpen() && g_replayCalls == 0 &&
+              Trimmed(g_modalTitle) == core::options::menu_text::kMenuReplayMap &&
+              Trimmed(g_modalText) == core::options::menu_text::kLeaveGame,
+          "pause menu: Replay map: asked (\"Replay map\", our text); No: the pause menu again");
+    g_modalAnswer = 6;
+    ClickPauseItem(5, 7); // Exit to main menu
+    Check(zeus::game_menu::OnLoop() && !zeus::game_menu::IsOpen() && g_leaveCalls == 1,
+          "pause menu: Exit to main menu: Yes: the game's New adventure (to the game choice)");
+    EscM();
+    ClickPauseItem(0, 7);
+    Check(!pm::IsOpen() && !zeus::game_menu::OnLoop(), "pause menu: Continue: closed, nothing to run");
+}
+
+void EscEditor()
+{
+    namespace pm = core::options::pause_menu;
+    SetupGameMenu();
+    At<int>(aEditorModeK) = 1;
+    At<unsigned char>(aGameScreenK) = 0x58;
+    Check(!EscM() && !pm::IsOpen(), "esc editor: the city editor 0x58: the game's own Esc (no pause menu)");
+    for (int s : {0x18, 0x29, 0x46, 0x0d, 0x03, 0x1f}) { // 0x1f: the editor's first screen (choose an adventure)
+        At<unsigned char>(aGameScreenK) = static_cast<unsigned char>(s);
+        const bool taken = EscM();
+        zeus::game_menu::InputMouseForTest();
+        Check(taken && At<char>(aRightUpM) == 1, "esc editor: a page / dialog that goes back with a right click");
+    }
+    At<unsigned char>(aGameScreenK) = 0x01;
+    At<char>(aEditorToolM) = 1;
+    Check(EscM() && !pm::IsOpen(), "esc editor: the map with a tool held: taken ...");
+    zeus::game_menu::InputMouseForTest();
+    Check(At<char>(aRightUpM) == 1, "esc editor: ... as the game's right click (drops the tool)");
+    At<char>(aEditorToolM) = 0;
+    At<int>(aBuildTypeM) = 28; // a brush (as a test log showed)
+    Check(EscM() && !pm::IsOpen(), "esc editor: the map with a brush (build_tool 28): taken ...");
+    zeus::game_menu::InputMouseForTest();
+    Check(At<char>(aRightUpM) == 1, "esc editor: ... as the game's right click (drops the brush)");
+    At<int>(aBuildTypeM) = 0;
+    Check(EscM() && pm::IsOpen(), "esc editor: the map: the editor pause menu");
+    ClickPauseItem(3, 6); // Save map
+    Check(zeus::game_menu::OnLoop() && g_editorCalls == 1 && g_editorParam == 0 && LogContains("editor_menu_save_map"),
+          "esc editor: ... Save map: the File menu's function, button_param 0");
+    At<unsigned char>(aGameScreenK) = 0x57;
+    Check(EscM() && pm::IsOpen(), "esc editor: the adventure editor: its pause menu");
+    ClickPauseItem(5, 7); // Create Adventure
+    Check(zeus::game_menu::OnLoop() && g_editorCalls == 2 && g_editorParam == 1 &&
+              LogContains("editor_menu_create_adventure"),
+          "esc editor: ... Create Adventure with button_param 1 (its File menu item's)");
+    At<unsigned char>(aGameScreenK) = 0x15;
+    Check(EscM() && pm::IsOpen(), "esc editor: the world map editor: its pause menu");
+    ClickPauseItem(0, 5);
+    At<int>(aEditorModeK) = 0;
+}
+
+// city_cancel_tool faults: Esc off (the game's own from then on), nothing of ours open.
+void EscFault()
+{
+    namespace pm = core::options::pause_menu;
+    SetupGameMenu();
+    At<unsigned char>(aGameScreenK) = 1;
+    At<int>(aBuildTypeM) = 3;
+    g_cancelFaults = true;
+    Check(!EscM() && !pm::IsOpen(), "esc: a fault in the game's function: the game's own Esc");
+    g_cancelFaults = false;
+    Check(LogContains("feature \"Esc and the pause menu (games/zeus/game_menu)\" switched off") &&
+              LogContains("game menu: off after an error"),
+          "esc: ... switched off, logged");
+    At<int>(aBuildTypeM) = 0;
+    Check(!EscM() && !pm::IsOpen(), "esc: ... afterwards Esc is the game's (no pause menu)");
 }
 
 // --- The smoke test's actions (games/zeus/smoke). cheat_run is __cdecl (one argument [esp+4], returns al,
@@ -4935,6 +5211,9 @@ const Scenario kScenarios[] = {
     {"key_bindings", &KeyBindings},
     {"key_bindings_fault", &KeyBindingsFault},
     {"overlay_keys", &OverlayKeys},
+    {"esc_and_pause", &EscAndPause},
+    {"esc_editor", &EscEditor},
+    {"esc_fault", &EscFault},
     {"overlay_keys_fault", &OverlayKeysFault},
     {"framed_screens", &FramedScreens},
     {"framed_setting", &FramedSetting},
