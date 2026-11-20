@@ -27,6 +27,11 @@ bool NoEscape(LPARAM)
     return false;
 }
 
+bool NoCall(unsigned)
+{
+    return false;
+}
+
 namespace {
 
 constexpr int kMaxActions = 96;
@@ -93,8 +98,8 @@ bool GameKey(unsigned vk, unsigned mods, bool editor)
         return true; // Ctrl with the arrows: kept from the game, the keys free for players
     }
     for (int a = 0; a < g_count; ++a) {
-        if (editor && !D(a).editorToo) {
-            continue;
+        if ((editor && !D(a).editorToo) || D(a).send == Send::Call) {
+            continue; // (a Call action's default is ours, not a key the game knows)
         }
         for (const core::ui::Hotkey &k : g_defaults[a]) {
             if (k.vk == vk && (k.mods == mods || (D(a).send == Send::Char && (mods & ~core::ui::kModShift) == 0))) {
@@ -142,6 +147,11 @@ void Fire(int a)
     case Send::Options:
         if (!g_game->openOptions()) {
             core_log("keys: the options window is not available");
+        }
+        break;
+    case Send::Call:
+        if (!g_game->call(d.code) && g_fireLogs <= 40) {
+            core_log("keys: %s did nothing", d.info.key);
         }
         break;
     }

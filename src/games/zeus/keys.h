@@ -10,16 +10,19 @@
 
 namespace zeus::keys {
 
-// The Hotkeys window's sections (core::input::keys::ActionInfo::section).
-enum Section { kArrows, kGlobal, kCity, kBuild, kBookmarks, kArmy, kSectionCount };
+// The Hotkeys window's sections (core::input::keys::ActionInfo::section; the same order as Yongle's).
+enum Section { kArrows, kGlobal, kCity, kBuild, kOverlays, kBookmarks, kArmy, kSectionCount };
 
 // From zeus_register_settings: one setting per action in [keys].
 void RegisterSettings();
 // After the game's hooks: the translator and the key-state filter; the pause banner's text hook (logged when its site
-// does not match: the banner then keeps the game's 'P').
+// does not match: the banner then keeps the game's 'P'); the overlay keys' three functions checked (when one does not
+// match, logged: the overlay keys do nothing, the others work).
 void Attach();
 
-// The offline tests (src/games/zeus/test_restore.cpp): the detours (lang_get_string).
+// The offline tests (src/games/zeus/test_restore.cpp): the detours (lang_get_string); the overlay keys' functions
+// taken as matching (the test's copy of the game has fakes there).
 const Detour *Detours(int *count);
+void OverlaySitesForTest();
 
 } // namespace zeus::keys

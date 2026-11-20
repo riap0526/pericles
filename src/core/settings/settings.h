@@ -106,7 +106,10 @@ void RenameMovedValue(const char *newSection, const char *newKey, const char *ol
 // it does not know kept as written; the file as it was is kept in emperor_engine.ini.bak. A missing file is made
 // again from the template, with the values of emperor_engine.ini.bak when there is one (the .bak is left as it is),
 // else at the defaults. Without a template (e.g. offline tests) the descriptions in the file are never changed and a
-// missing file is not made.
+// missing file is not made. A setting the template does not list (e.g. Yongle's [keys]) keeps a line only while it
+// differs from its default: saving it back to the default removes its line instead of writing the default, and a
+// line that has the default (an older version wrote it, or the player did) is removed at Load and at every save, so
+// the file keeps only what the player changed.
 void SetTemplate(const char *text);
 
 // Called when the item's value changed (game thread; also once per item after Load, with initial = true). Returns

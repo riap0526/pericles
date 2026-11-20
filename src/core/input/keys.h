@@ -23,6 +23,7 @@ enum class Send {
     Char,    // WM_CHAR code (the game reads the character)
     Rotate,  // WM_KEYDOWN code, and the game's poll GetAsyncKeyState(code) says "pressed once" (0x8001)
     Options, // ours: the options window
+    Call,    // the game layer's KeysGame::call(code): an action the game has no key for (Pericles's overlays)
 };
 
 struct ActionInfo {
@@ -42,12 +43,13 @@ struct Def {
 };
 
 // What the key bindings need from the game (a constant of the game layer, kept for the run). No member may be
-// nullptr; "none" is a function that says no (Never, NoOptions, NoEscape).
+// nullptr; "none" is a function that says no (Never, NoOptions, NoEscape, NoCall).
 struct KeysGame {
     KeysGame(const Def *defs, int count, bool (*cityScreen)(), bool (*editorScreen)(), volatile int *ctrlDown,
-             bool (*openOptions)(), bool (*escape)(LPARAM lparam), bool postedModeKeysToGame)
+             bool (*openOptions)(), bool (*escape)(LPARAM lparam), bool (*call)(unsigned code),
+             bool postedModeKeysToGame)
         : defs(defs), count(count), cityScreen(cityScreen), editorScreen(editorScreen), ctrlDown(ctrlDown),
-          openOptions(openOptions), escape(escape), postedModeKeysToGame(postedModeKeysToGame)
+          openOptions(openOptions), escape(escape), call(call), postedModeKeysToGame(postedModeKeysToGame)
     {
     }
 
@@ -59,6 +61,8 @@ struct KeysGame {
     bool (*openOptions)();  // opens our options window (false: not available, logged)
     bool (*escape)(LPARAM lparam); // Esc pressed: true when ours took it (a window closed, our pause menu), false
                                    // when the game gets it
+    bool (*call)(unsigned code); // a Send::Call action (its Def::code; game thread, from the window procedure);
+                                 // false: it did nothing (logged)
     // The game posts F6/F7 to itself (WM_KEYDOWN, lParam 0; its Display options buttons): those reach the game.
     bool postedModeKeysToGame;
 };
@@ -67,6 +71,7 @@ struct KeysGame {
 bool Never();
 bool NoOptions();
 bool NoEscape(LPARAM);
+bool NoCall(unsigned);
 
 // What the key bindings ask of the system, so the offline test can give a fake one. No member may be nullptr.
 struct KeysSystem {

@@ -6,6 +6,8 @@
 #include "core/input/keys.h"
 #include "core/log.h"
 
+#include <initializer_list>
+
 namespace zeus::keys {
 namespace {
 
@@ -20,7 +22,7 @@ constexpr bool kEditorToo = true; // the editor's map has it too (game_wndproc: 
                                   // the arrows, F1-F4 on screen 1 without an editor_mode check)
 
 // The same names and words as Yongle's for the same actions; Zeus has no
-// overlay letters, no F9 help, army groups 1-5 only (army_group_set 0x433ab0 / army_group_recall 0x433b60 return for
+// overlay letters of its own (ours: OverlayKey), no F9 help, army groups 1-5 only (army_group_set 0x433ab0 / army_group_recall 0x433b60 return for
 // n > 5); Tab is Zeus's own (0x516d30: the sidebar's Info / Overview).
 const Def kDefs[] = {
     {Item{"keys", "scroll_up", "Scroll up", "", Type::Hotkey, "Up", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
@@ -50,8 +52,6 @@ const Def kDefs[] = {
      Send::Rotate, 'R', false, {"rotate_building", kCity, kNoText, 0}},
     {Item{"keys", "hold_preview", "Hold building preview", "", Type::Hotkey, "M", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, 'm', false, {"hold_preview", kCity, kNoText, 0}},
-    {Item{"keys", "toggle_overlay", "Toggle current overlay", "", Type::Hotkey, "Space", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
-     Send::Char, ' ', false, {"toggle_overlay", kCity, kNoText, 0}},
     {Item{"keys", "sidebar_overview", "Toggle sidebar overview", "", Type::Hotkey, "Tab", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_TAB, false, {"sidebar_overview", kCity, kNoText, 0}},
     {Item{"keys", "category_1", "Building menu 1", "", Type::Hotkey, "1", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
@@ -76,6 +76,50 @@ const Def kDefs[] = {
      Send::Char, '0', false, {"category_10", kBuild, kNoText, 0}},
     {Item{"keys", "category_11", "Building menu 11", "", Type::Hotkey, "Minus", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, '-', false, {"category_11", kBuild, kNoText, 0}},
+    {Item{"keys", "toggle_overlay", "Toggle current overlay", "", Type::Hotkey, "Space", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Char, ' ', false, {"toggle_overlay", kOverlays, kNoText, 0}},
+    // The overlays: the game has no keys for them, so they are ours (Send::Call, code = the overlay's
+    // number). Their names are Zeus_Text.eng's group 14 (index = the number); in Poseidon's adventures the culture
+    // overlays 10-14 are the science ones (the game's texts 20-24), hence both names. The same names and default
+    // letters as Yongle's where the game's word is the same; no default for the ones only Zeus has.
+    {Item{"keys", "overlay_supplies", "Overlay: supplies", "", Type::Hotkey, "S", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Call, 1, false, {"overlay_supplies", kOverlays, 14, 1}},
+    {Item{"keys", "overlay_husbandry", "Overlay: husbandry", "", Type::Hotkey, "G", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Call, 2, false, {"overlay_husbandry", kOverlays, 14, 2}},
+    {Item{"keys", "overlay_industry", "Overlay: industry", "", Type::Hotkey, "I", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Call, 3, false, {"overlay_industry", kOverlays, 14, 3}},
+    {Item{"keys", "overlay_distribution", "Overlay: distribution", "", Type::Hotkey, "J", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Call, 4, false, {"overlay_distribution", kOverlays, 14, 4}},
+    {Item{"keys", "overlay_water", "Overlay: water", "", Type::Hotkey, "W", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Call, 5, false, {"overlay_water", kOverlays, 14, 5}},
+    {Item{"keys", "overlay_hygiene", "Overlay: hygiene", "", Type::Hotkey, "H", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Call, 6, false, {"overlay_hygiene", kOverlays, 14, 6}},
+    {Item{"keys", "overlay_hazards", "Overlay: hazards", "", Type::Hotkey, "Z", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Call, 7, false, {"overlay_hazards", kOverlays, 14, 7}},
+    {Item{"keys", "overlay_unrest", "Overlay: unrest", "", Type::Hotkey, "U", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Call, 8, false, {"overlay_unrest", kOverlays, 14, 8}},
+    {Item{"keys", "overlay_taxes", "Overlay: taxes", "", Type::Hotkey, "X", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Call, 9, false, {"overlay_taxes", kOverlays, 14, 9}},
+    {Item{"keys", "overlay_culture", "Overlay: all culture or science", "", Type::Hotkey, "E", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Call, 10, false, {"overlay_culture", kOverlays, 14, 10}},
+    {Item{"keys", "overlay_competitors", "Overlay: competitors or curators", "", Type::Hotkey, "", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Call, 11, false, {"overlay_competitors", kOverlays, 14, 11}},
+    {Item{"keys", "overlay_philosophers", "Overlay: philosophers or astronomers", "", Type::Hotkey, "", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Call, 12, false, {"overlay_philosophers", kOverlays, 14, 12}},
+    {Item{"keys", "overlay_athletes", "Overlay: athletes or scholars", "", Type::Hotkey, "", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Call, 13, false, {"overlay_athletes", kOverlays, 14, 13}},
+    {Item{"keys", "overlay_actors", "Overlay: actors or inventors", "", Type::Hotkey, "Semicolon", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Call, 14, false, {"overlay_actors", kOverlays, 14, 14}},
+    {Item{"keys", "overlay_immortals", "Overlay: immortals", "", Type::Hotkey, "", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Call, 15, false, {"overlay_immortals", kOverlays, 14, 15}},
+    {Item{"keys", "overlay_security", "Overlay: security", "", Type::Hotkey, "V", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Call, 16, false, {"overlay_security", kOverlays, 14, 16}},
+    {Item{"keys", "overlay_appeal", "Overlay: appeal", "", Type::Hotkey, "D", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Call, 17, false, {"overlay_appeal", kOverlays, 14, 17}},
+    {Item{"keys", "overlay_problems", "Overlay: problems", "", Type::Hotkey, "Y", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Call, 18, false, {"overlay_problems", kOverlays, 14, 18}},
+    {Item{"keys", "overlay_roads", "Overlay: roads", "", Type::Hotkey, "", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::Call, 19, false, {"overlay_roads", kOverlays, 14, 19}},
     {Item{"keys", "bookmark_go_1", "Go to bookmark 1", "", Type::Hotkey, "F1", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_F1, false, {"bookmark_go_1", kBookmarks, kNoText, 0}, kEditorToo},
     {Item{"keys", "bookmark_go_2", "Go to bookmark 2", "", Type::Hotkey, "F2", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
@@ -142,13 +186,120 @@ bool EditorScreen()
     return s == 1 || s == 0x58;
 }
 
+// The overlay keys: what Yongle's game does for its own overlay letters
+// (Emperor's build_hotkey 0x4765f0), done with Zeus's functions of the sidebar's buttons. All three take their
+// argument in button_param, no stack arguments, plain ret (__cdecl). category_available is not called (it switches
+// the category there and back): its bytes are checked so that the two values read below are still what it reads.
+const Site kOverlaySelect{"overlay_select", 0x516cd0, {0xa1, 0xf8, 0x35, 0xf1, 0x00, 0x8b, 0x0d, 0xf0}};
+const Site kSetCategory{"sidebar_set_category", 0x516d50, {0xa1, 0xf8, 0x35, 0xf1, 0x00, 0xc6, 0x05, 0xce}};
+const Site kCategoryAvailable{"category_available", 0x516f50, {0xa1, 0xf0, 0x5d, 0x66, 0x00, 0x85, 0xc0, 0x8b}};
+using Button_fn = void(__cdecl *)();
+const Var<int> kAllCategories{0x665df0};   // non-0: every category can be used
+constexpr DWORD aCategoryOpen = 0xfeae06;  // byte [category]: the category can be used
+constexpr DWORD aCategoryOverlays = 0x63e2e0; // int [category * 5 + slot]: the overlays of each category (0: none)
+constexpr int kCategories = 11, kSlots = 5;
+const Var<int> kButtonParam{0xf135f8};
+const Var<int> kBuildCategory{0xfa0004};
+const Var<int> kOverlayShown{0xfa05f0};
+const Var<int> kOverlayBefore{0xfa05f4};
+constexpr DWORD aCategoryOverlay = 0xfa042c; // int [category]: the overlay Space toggles
+const Var<unsigned char> kSidebarDialog{0xfa0428};
+core::diag::Feature g_overlays{"overlay keys (games/zeus/keys)"};
+bool g_overlaySites = false;
+
+struct OverlayCall {
+    unsigned overlay;
+    enum Result { kNotOne, kUnusable, kShown } result; // not one of the game's overlays, a category that cannot be
+                                                      // used, done
+    core::diag::Restore undo;
+};
+
+void OverlayNow(void *p)
+{
+    OverlayCall &c = *static_cast<OverlayCall *>(p);
+    int category = -1;
+    for (int i = 0; i < kCategories * kSlots && category < 0; ++i) {
+        if (At<int>(aCategoryOverlays)[i] == static_cast<int>(c.overlay)) {
+            category = i / kSlots;
+        }
+    }
+    if (category < 0) {
+        return; // not one of the game's overlays
+    }
+    const unsigned char screen = *kGameScreen;
+    // As Yongle (Emperor's build_hotkey 0x4765f0): nothing for a category the player cannot use, the current one too
+    // (checked before anything changes). The check reads what category_available 0x516f50 decides on: 0x665df0, or
+    // the category's byte at 0xfeae06 (its switching there and back afterwards always ends in "usable", 0x516f98).
+    // Warships selected (screen 0x20, Zeus only: Emperor's 0x20 is a leftover no game reaches) is like an army
+    // selected (0x48): the overlay changes, the selection stays (as the game's own overlay menu there).
+    if (*kAllCategories == 0 && At<unsigned char>(aCategoryOpen)[category] == 0) {
+        c.result = OverlayCall::kUnusable;
+        return;
+    }
+    core::diag::Restore &u = c.undo;
+    u.Save(kGameScreen.ptr());
+    u.Save(kSidebarDialog.ptr());
+    u.Save(kButtonParam.ptr());
+    u.Save(kBuildCategory.ptr());
+    u.Save(kOverlayShown.ptr());
+    u.Save(kOverlayBefore.ptr());
+    u.Save(At<int>(aCategoryOverlay) + category);
+    u.Save(At<int>(aCategoryOverlay) + *kBuildCategory);
+    const int param = *kButtonParam;
+    // Back on the city first (an open building menu's overview closed), as build_hotkey does; on screen 7
+    // sidebar_set_category would open the new category's overview instead.
+    const bool backToCity = screen == 7;
+    if (backToCity) {
+        *kGameScreen = 1;
+    }
+    if (category != *kBuildCategory) {
+        // Like build_hotkey: the overlay off first (sidebar_set_category would put the new category's own in, and
+        // selecting the same one again turns it off).
+        *kOverlayShown = 0;
+        *kButtonParam = category;
+        Function<Button_fn>(kSetCategory)();
+    }
+    if (backToCity) {
+        *kSidebarDialog = 0;
+    }
+    *kButtonParam = static_cast<int>(c.overlay);
+    Function<Button_fn>(kOverlaySelect)(); // the same one again turns it off
+    *kButtonParam = param;
+    u.Forget();
+    c.result = OverlayCall::kShown;
+}
+
+// KeysGame::call: the overlay's number (1..19).
+bool OverlayKey(unsigned overlay)
+{
+    static long logs = 0;
+    if (!g_overlaySites || !core::diag::Enabled(g_overlays)) {
+        if (++logs <= 5) {
+            core_log("keys: the overlay keys are off");
+        }
+        return false;
+    }
+    OverlayCall c{overlay, OverlayCall::kNotOne, {}};
+    if (!core::diag::Guarded(g_overlays, &OverlayNow, &c, &c.undo)) {
+        core_log("keys: the overlay keys are off for the rest of the run (an error); the other keys work");
+        return true; // the key is taken all the same
+    }
+    static long unusableLogs = 0;
+    if (c.result == OverlayCall::kUnusable && ++unusableLogs <= 20) {
+        core_log("keys: overlay %u: its category cannot be used now", overlay);
+        return true; // said here (the core would log "did nothing" too)
+    }
+    return c.result != OverlayCall::kNotOne;
+}
+
 // Pericles has no options window or pause menu of its own yet: F6 does nothing (the game's 800x600 stays blocked),
 // Esc stays the game's ("Exit Game?"). The Display options dialog's 800 x 600 / 1024 x 768 buttons post F6/F7 to the
 // game (lParam 0): passed until our own buttons replace them.
 const core::input::keys::KeysGame &Game()
 {
     static const core::input::keys::KeysGame game(kDefs, kCount, &CityScreen, &EditorScreen, kKeyCtrl.ptr(),
-                                                  &core::input::keys::NoOptions, &core::input::keys::NoEscape, true);
+                                                  &core::input::keys::NoOptions, &core::input::keys::NoEscape,
+                                                  &OverlayKey, true);
     return game;
 }
 
@@ -187,6 +338,17 @@ void RegisterSettings()
 void Attach()
 {
     core::input::keys::Install();
+    g_overlaySites = true;
+    for (const Site *s : {&kOverlaySelect, &kSetCategory, &kCategoryAvailable}) {
+        if (!Matches(*s)) {
+            core_log("keys: %s at 0x%lx does not match; the overlay keys do nothing", s->name,
+                     static_cast<unsigned long>(s->address));
+            g_overlaySites = false;
+        }
+    }
+    if (!g_overlaySites) {
+        core::diag::Disable(g_overlays, "a site does not match");
+    }
     if (!Matches(kLangGetString)) {
         core_log("keys: lang_get_string at 0x%lx does not match; the pause banner keeps the game's 'P'",
                  static_cast<unsigned long>(kLangGetString.address));
@@ -198,6 +360,11 @@ void Attach()
     else {
         core_log("keys: the pause banner names the player's pause keys");
     }
+}
+
+void OverlaySitesForTest()
+{
+    g_overlaySites = true;
 }
 
 const Detour *Detours(int *count)

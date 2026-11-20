@@ -81,6 +81,8 @@ const k::Def kDefs[] = {
      k::Send::Rotate, 'R', false, {"rotate_building", 2, 0, 0}},
     {Item{"keys", "bookmark_set_1", "Set bookmark 1", "", Type::Hotkey, "Ctrl+F1", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      k::Send::KeyDown, VK_F1, true, {"bookmark_set_1", 3, 0, 0}},
+    {Item{"keys", "overlay_water", "Overlay: water", "", Type::Hotkey, "W", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     k::Send::Call, 5, false, {"overlay_water", 4, 0, 0}},
 };
 
 bool g_city = true, g_editor = false, g_cityFaults = false;
@@ -109,6 +111,13 @@ bool Escape(LPARAM)
     ++g_escapes;
     return g_escapeTakes;
 }
+unsigned g_called = 0;
+bool g_callDoes = true;
+bool CallAction(unsigned code)
+{
+    g_called = code;
+    return g_callDoes;
+}
 
 const k::KeysSystem kSystem{[] { return g_mods; }, [](unsigned) { return false; }};
 
@@ -121,10 +130,33 @@ void Bind(const char *key, const char *v)
 void Run(bool passPosted)
 {
     static const k::KeysGame game(kDefs, static_cast<int>(sizeof(kDefs) / sizeof(kDefs[0])), &City, &Editor, &g_ctrl,
-                                  &Options, &Escape, passPosted);
+                                  &Options, &Escape, &CallAction, passPosted);
     k::SetSystem(&kSystem);
     k::RegisterSettings(&game);
     k::Install();
+
+    // A Send::Call action: the game layer's callback with its code, the key and its character eaten; its default key
+    // is not one of the game's (bound elsewhere, it goes to the game); not on the editor's screens.
+    g_sentCount = 0;
+    Check(k::Translate(WM_KEYDOWN, 'W', 1) && g_called == 5 && g_sentCount == 0 && k::Translate(WM_CHAR, 'w', 1),
+          "Call action: the callback gets its code, the key and its character eaten");
+    g_callDoes = false;
+    g_called = 0;
+    Check(k::Translate(WM_KEYDOWN, 'W', 1) && g_called == 5 && LogContains("keys: overlay_water did nothing"),
+          "Call action: the callback did nothing: logged, the key still taken");
+    g_callDoes = true;
+    Bind("overlay_water", "O");
+    g_called = 0;
+    Check(!k::Translate(WM_KEYDOWN, 'W', 1) && !k::Translate(WM_CHAR, 'w', 1) && g_called == 0,
+          "Call action bound to O: W goes to the game (not a key of the game's own)");
+    Check(k::Translate(WM_KEYDOWN, 'O', 1) && g_called == 5, "... O calls it");
+    g_editor = true;
+    g_city = false;
+    g_called = 0;
+    Check(!k::Translate(WM_KEYDOWN, 'O', 1) && g_called == 0, "Call action: not on the editor's screens");
+    g_editor = false;
+    g_city = true;
+    Bind("overlay_water", "W");
 
     // The game's own posted display mode keys (lParam 0).
     g_sentCount = 0;

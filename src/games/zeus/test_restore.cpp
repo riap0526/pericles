@@ -2119,7 +2119,7 @@ void KeyBindings()
 {
     namespace k = core::input::keys;
     SetupKeys();
-    Check(k::ActionCount() == 44, "keys: 44 actions (no overlay letters, no F9, army groups 1-5, Tab)");
+    Check(k::ActionCount() == 63, "keys: 63 actions (19 overlays, no F9, army groups 1-5, Tab)");
     g_keysSentCount = 0;
     Check(k::Translate(WM_KEYDOWN, VK_UP, 1) && SentOne(WM_KEYDOWN, VK_UP), "keys: Up (the default) sent as Up");
     BindKey("scroll_up", "W");
@@ -2230,6 +2230,154 @@ void KeyBindingsFault()
     Check(k::Held(VK_UP), "keys: ... smooth scrolling follows the arrow key itself");
     g_fakeHeldVk = 0;
     Check(k::KeyState('R', static_cast<SHORT>(0x8000)) == static_cast<SHORT>(0x8000), "keys: ... R polled as it is");
+}
+
+// --- The overlay keys (games/zeus/keys OverlayKey). The fakes do what the game's three functions do
+// (checked by disassembly), each __cdecl as the game's: overlay_select and sidebar_set_category without
+// arguments (button_param), category_available(category) switching there and back.
+constexpr DWORD aButtonParam = 0xf135f8, aBuildCategory = 0xfa0004, aOverlayShown = 0xfa05f0,
+                aOverlayBefore = 0xfa05f4, aCategoryOverlay = 0xfa042c, aSidebarDialog = 0xfa0428,
+                aCategoryOverlays = 0x63e2e0;
+const int kZeusCategoryOverlays[55] = {1, 0, 0, 0, 0, 2, 0, 0, 0, 0, 3, 0, 0, 0, 0, 4, 0, 0, 0, 0, 5, 6, 7, 8, 0,
+                                       9, 0, 0, 0, 0, 12, 13, 14, 11, 10, 15, 0, 0, 0, 0, 16, 0, 0, 0, 0, 17, 0, 0, 0,
+                                       0, 18, 19, 0, 0, 0}; // the game's table, read from Zeus.exe
+constexpr DWORD aAllCategories = 0x665df0, aCategoryOpen = 0xfeae06; // what category_available 0x516f50 reads
+int g_overviewsOpened = 0;
+bool g_selectFaults = false;
+
+void __cdecl FakeOverlaySelect() // 0x516cd0
+{
+    if (g_selectFaults) {
+        Fault();
+    }
+    const int o = At<int>(aButtonParam);
+    At<int>(aOverlayBefore) = At<int>(aOverlayShown);
+    if (o == At<int>(aOverlayShown)) {
+        At<int>(aOverlayShown) = 0;
+        return;
+    }
+    At<int>(aOverlayShown) = o;
+    At<int>(aCategoryOverlay + 4 * At<int>(aBuildCategory)) = o;
+}
+
+void __cdecl FakeSetCategory() // 0x516d50: the category from button_param; an overlay shown becomes the new one's
+{
+    const int c = At<int>(aButtonParam);
+    At<int>(aBuildCategory) = c;
+    if (At<int>(aOverlayShown) != 0) {
+        volatile int &own = At<int>(aCategoryOverlay + 4 * c);
+        if (own == 0) {
+            own = kZeusCategoryOverlays[c * 5];
+        }
+        At<int>(aOverlayShown) = own;
+    }
+    if (At<unsigned char>(aGameScreenK) == 7) {
+        ++g_overviewsOpened; // the game opens the new category's overview here
+    }
+}
+
+void SetupOverlayKeys()
+{
+    SetupKeys();
+    Thunk(0x516cd0, reinterpret_cast<void *>(&FakeOverlaySelect));
+    Thunk(0x516d50, reinterpret_cast<void *>(&FakeSetCategory));
+    for (int i = 0; i < 55; ++i) {
+        At<int>(aCategoryOverlays + 4 * i) = kZeusCategoryOverlays[i];
+    }
+    At<int>(aAllCategories) = 0;
+    for (int c = 0; c < 11; ++c) {
+        At<unsigned char>(aCategoryOpen + c) = 1; // every category usable (category_available's byte)
+    }
+    zeus::keys::OverlaySitesForTest();
+    At<int>(aBuildCategory) = 0;
+    At<int>(aOverlayShown) = 0;
+    At<int>(aButtonParam) = 77; // the last button's: put back after each key
+}
+
+void OverlayKeys()
+{
+    namespace k = core::input::keys;
+    SetupOverlayKeys();
+    g_keysSentCount = 0;
+    Check(k::Translate(WM_KEYDOWN, 'S', 1) && At<int>(aOverlayShown) == 1 && At<int>(aBuildCategory) == 0 &&
+              At<int>(aButtonParam) == 77 && g_keysSentCount == 0 && k::Translate(WM_CHAR, 's', 1),
+          "overlay keys: S shows supplies (its category already), button_param put back, the character eaten");
+    Check(k::Translate(WM_KEYDOWN, 'W', 1) && At<int>(aBuildCategory) == 4 && At<int>(aOverlayShown) == 5 &&
+              At<int>(aCategoryOverlay + 4 * 4) == 5 && At<int>(aButtonParam) == 77,
+          "overlay keys: W switches the sidebar to category 4 and shows water (Space's overlay there too)");
+    Check(k::Translate(WM_KEYDOWN, 'W', 1) && At<int>(aOverlayShown) == 0, "overlay keys: W again hides it");
+    // Another category while one of its overlays is shown: the new one shown, not turned off.
+    At<int>(aCategoryOverlay + 4 * 6) = 0;
+    Check(k::Translate(WM_KEYDOWN, 'E', 1) && At<int>(aBuildCategory) == 6 && At<int>(aOverlayShown) == 10,
+          "overlay keys: E: culture category, all culture shown");
+    Check(k::Translate(WM_KEYDOWN, 'H', 1) && At<int>(aBuildCategory) == 4 && At<int>(aOverlayShown) == 6,
+          "overlay keys: H with an overlay shown: hygiene shown (not turned off by the switch)");
+    // A building menu's overview open (screen 7): back on the city, no overview of the new category.
+    At<unsigned char>(aGameScreenK) = 7;
+    At<unsigned char>(aSidebarDialog) = 1;
+    g_overviewsOpened = 0;
+    Check(k::Translate(WM_KEYDOWN, 'S', 1) && At<unsigned char>(aGameScreenK) == 1 &&
+              At<unsigned char>(aSidebarDialog) == 0 && g_overviewsOpened == 0 && At<int>(aOverlayShown) == 1,
+          "overlay keys: screen 7: back on the city first, supplies shown, no overview opened");
+    At<unsigned char>(aGameScreenK) = 0x20;
+    Check(k::Translate(WM_KEYDOWN, 'W', 1) && At<unsigned char>(aGameScreenK) == 0x20 && At<int>(aOverlayShown) == 5 &&
+              At<int>(aBuildCategory) == 4,
+          "overlay keys: warships selected (0x20): stays, water shown (as an army selected)");
+    At<unsigned char>(aGameScreenK) = 0x48;
+    Check(k::Translate(WM_KEYDOWN, 'S', 1) && At<unsigned char>(aGameScreenK) == 0x48 && At<int>(aOverlayShown) == 1 &&
+              At<int>(aBuildCategory) == 0,
+          "overlay keys: an army selected (0x48): stays, supplies shown (as Yongle)");
+    Check(k::Translate(WM_KEYDOWN, 'S', 1) && At<int>(aOverlayShown) == 0, "overlay keys: ... S again hides it");
+    // A category the player cannot use: nothing changes, the menu stays open; the current category too.
+    At<unsigned char>(aGameScreenK) = 7;
+    At<unsigned char>(aCategoryOpen + 2) = 0;
+    Check(k::Translate(WM_KEYDOWN, 'I', 1) && At<int>(aBuildCategory) == 0 && At<int>(aOverlayShown) == 0 &&
+              At<unsigned char>(aGameScreenK) == 7 && At<int>(aButtonParam) == 77 &&
+              LogContains("keys: overlay 3: its category cannot be used now"),
+          "overlay keys: a category that cannot be used: nothing changed, logged");
+    At<unsigned char>(aCategoryOpen) = 0;
+    At<unsigned char>(aGameScreenK) = 1;
+    Check(k::Translate(WM_KEYDOWN, 'S', 1) && At<int>(aOverlayShown) == 0,
+          "overlay keys: the current category (0) cannot be used: S does nothing either");
+    At<int>(aAllCategories) = 1;
+    Check(k::Translate(WM_KEYDOWN, 'I', 1) && At<int>(aBuildCategory) == 2 && At<int>(aOverlayShown) == 3,
+          "overlay keys: every category usable (0x665df0): I shows industry");
+    At<int>(aAllCategories) = 0;
+    At<unsigned char>(aCategoryOpen) = 1;
+    At<unsigned char>(aCategoryOpen + 2) = 1;
+    // Rebound: the default letter goes to the game (Zeus does nothing with it); no default: only once bound.
+    BindKey("overlay_supplies", "F5");
+    Check(!k::Translate(WM_KEYDOWN, 'S', 1) && !k::Translate(WM_CHAR, 's', 1),
+          "overlay keys: S bound to nothing: to the game as it is");
+    BindKey("overlay_roads", "Q");
+    Check(k::Translate(WM_KEYDOWN, 'Q', 1) && At<int>(aBuildCategory) == 10 && At<int>(aOverlayShown) == 19,
+          "overlay keys: roads (no default) bound to Q: shown");
+    // The editor: not translated.
+    At<int>(aEditorModeK) = 1;
+    const int shown = At<int>(aOverlayShown);
+    Check(!k::Translate(WM_KEYDOWN, 'W', 1) && At<int>(aOverlayShown) == shown,
+          "overlay keys: the editor's map: W is the editor's own");
+    At<int>(aEditorModeK) = 0;
+}
+
+// The game's overlay_select faults: everything the key changed back, the overlay keys off, the other keys work.
+void OverlayKeysFault()
+{
+    namespace k = core::input::keys;
+    SetupOverlayKeys();
+    At<unsigned char>(aGameScreenK) = 7;
+    g_selectFaults = true;
+    Check(k::Translate(WM_KEYDOWN, 'W', 1), "overlay keys: a fault: the key taken");
+    g_selectFaults = false;
+    Check(At<int>(aBuildCategory) == 0 && At<int>(aButtonParam) == 77 && At<unsigned char>(aGameScreenK) == 7 &&
+              At<int>(aOverlayShown) == 0,
+          "overlay keys: ... category, button_param, screen and overlay back");
+    Check(LogContains("feature \"overlay keys (games/zeus/keys)\" switched off"), "overlay keys: ... switched off");
+    Check(k::Translate(WM_KEYDOWN, 'W', 1) && At<int>(aBuildCategory) == 0 && LogContains("keys: the overlay keys are off"),
+          "overlay keys: ... afterwards W does nothing");
+    g_keysSentCount = 0;
+    At<unsigned char>(aGameScreenK) = 1;
+    Check(k::Translate(WM_KEYDOWN, 'P', 1) && SentOne(WM_CHAR, 'p'), "overlay keys: ... the other keys work (P)");
 }
 
 // --- The smoke test's actions (games/zeus/smoke). cheat_run is __cdecl (one argument [esp+4], returns al,
@@ -4786,6 +4934,8 @@ const Scenario kScenarios[] = {
     {"layer1_fault", &Layer1Fault},
     {"key_bindings", &KeyBindings},
     {"key_bindings_fault", &KeyBindingsFault},
+    {"overlay_keys", &OverlayKeys},
+    {"overlay_keys_fault", &OverlayKeysFault},
     {"framed_screens", &FramedScreens},
     {"framed_setting", &FramedSetting},
     {"framed_fault", &FramedFault},
