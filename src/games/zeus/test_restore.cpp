@@ -188,6 +188,8 @@
 #include "games/zeus/city_picture.h"
 #include "games/zeus/fullscreen.h"
 #include "games/zeus/game_menu.h"
+#include "core/ui/game_menu_layout.h"
+#include "games/zeus/options_entry.h"
 #include "games/zeus/painter.h"
 #include "core/options/menu.h"
 #include "core/options/menu_text.h"
@@ -251,6 +253,9 @@ bool g_panelOpen = false, g_panelWantsFrames = false; // draw_only
 namespace core::ui {
 bool IsOpen() { return g_panelOpen; }
 bool WantsGameFrames() { return g_panelWantsFrames; }
+// core/options/options_host: the debug panel's list and a wait for a key (the panel is not under test)
+void SetListedElsewhere(const int *, int) {}
+void SetOtherCapture(bool, unsigned) {}
 } // namespace core::ui
 
 int g_nativeCalls = 0, g_nativeFaultAt = 0; // NativeSize faults on that call (mode_size_fault)
@@ -2174,7 +2179,7 @@ void KeyBindings()
     g_keysSentCount = 0;
     Check(k::Translate(WM_KEYDOWN, VK_F6, 1) && g_keysSentCount == 0 && LogContains("keys: the options window is not "
                                                                                      "available"),
-          "keys: F6 (Open Options): taken, no window yet");
+          "keys: F6 (Open Options): taken; the window is not attached here, so it says so (nothing to the game)");
     Check(k::Translate(WM_KEYDOWN, VK_F7, 1) && k::Translate(WM_KEYDOWN, VK_F8, 1) && g_keysSentCount == 0,
           "keys: F7, F8 from the keyboard never reach the game");
     Check(!k::Translate(WM_KEYDOWN, VK_F6, 0) && !k::Translate(WM_KEYDOWN, VK_F7, 0) && g_keysSentCount == 0,
@@ -2451,6 +2456,23 @@ int __cdecl FakeTextWidthM(const char *text, int font)
 {
     return static_cast<int>(std::strlen(text)) * (font == 6 ? 9 : 7);
 }
+// text_draw: __cdecl (text, x, y, font, colour, flag): the y each text is drawn at (the pause menu's look).
+struct DrawnText {
+    char text[32];
+    int y, font;
+};
+std::vector<DrawnText> g_texts;
+int __cdecl FakeTextDrawM(const char *text, int, int y, int font, int, int)
+{
+    DrawnText d{};
+    std::snprintf(d.text, sizeof(d.text), "%s", text);
+    d.y = y;
+    d.font = font;
+    g_texts.push_back(d);
+    return 0;
+}
+void __fastcall FakeImageDrawM(void *, int, int, int, int, int, int, int) {}
+void __cdecl FakeClipResetM() {}
 
 void SetupGameMenu()
 {
@@ -2576,26 +2598,49 @@ void EscAndPause()
     At<unsigned char>(aGameScreenK) = 1;
     Check(EscM() && pm::IsOpen() && zeus::game_menu::IsOpen() && LogContains("pause menu: opened"),
           "esc: the city with nothing to cancel: the pause menu");
-    // Its items: Load (2 of 7) closes the menu and runs at the next loop with button_param 0.
+    // Drawn as before the options window's fonts: text_draw's y is the panel's top + 14 for the title (group 6) and
+    // the button's top + 8 for its text (group 1); the painter's 3 pixels are taken off the look's numbers.
+    {
+        Thunk(0x508800, reinterpret_cast<void *>(&FakeTextDrawM));
+        Thunk(0x5acf50, reinterpret_cast<void *>(&FakeImageDrawM));
+        Thunk(0x59fcf0, reinterpret_cast<void *>(&FakeClipResetM));
+        At<BYTE *>(aDrawBuffer) = reinterpret_cast<BYTE *>(1);
+        g_texts.clear();
+        zeus::game_menu::OnPresent(0x1);
+        core::options::Menu m;
+        m.SetLook(zeus::painter::MenuLook());
+        m.Set("Pause", std::vector<std::string>(8, "x"));
+        const bool title = !g_texts.empty() && std::strcmp(g_texts[0].text, "Pause") == 0 &&
+                           g_texts[0].y == m.PanelY() + 14 && g_texts[0].font == 6;
+        const bool label = g_texts.size() > 1 && g_texts[1].y == m.ButtonY(0) + 8 && g_texts[1].font == 1;
+        Check(title && label, "pause menu: the title and the buttons' text where they were (text_draw y + 14, + 8)");
+        At<BYTE *>(aDrawBuffer) = nullptr;
+    }
+    // Its items (8, Options before Exit to main menu): Load (2) closes the menu and runs at the next loop with
+    // button_param 0.
     At<int>(aButtonParam) = 77;
-    ClickPauseItem(2, 7);
+    ClickPauseItem(2, 8);
     Check(!pm::IsOpen() && g_loadCalls == 0, "pause menu: Load: closed, not run in the window procedure");
     Check(zeus::game_menu::OnLoop() && g_loadCalls == 1 && g_loadParam == 0 && !zeus::game_menu::OnLoop(),
           "pause menu: ... run once at the next loop, button_param 0 (as the File menu)");
     // Replay map: asks with our text and the button's name; No: the pause menu again.
     EscM();
     g_modalAnswer = 7;
-    ClickPauseItem(1, 7);
+    ClickPauseItem(1, 8);
     Check(zeus::game_menu::OnLoop() && zeus::game_menu::IsOpen() && g_replayCalls == 0 &&
               Trimmed(g_modalTitle) == core::options::menu_text::kMenuReplayMap &&
               Trimmed(g_modalText) == core::options::menu_text::kLeaveGame,
           "pause menu: Replay map: asked (\"Replay map\", our text); No: the pause menu again");
+    // Options (5): the options window over the menu; not attached here (no painter), so the menu stays and nothing
+    // runs at the next loop.
+    ClickPauseItem(5, 8);
+    Check(pm::IsOpen() && !zeus::game_menu::OnLoop(), "pause menu: Options: the menu stays, nothing to run later");
     g_modalAnswer = 6;
-    ClickPauseItem(5, 7); // Exit to main menu
+    ClickPauseItem(6, 8); // Exit to main menu
     Check(zeus::game_menu::OnLoop() && !zeus::game_menu::IsOpen() && g_leaveCalls == 1,
           "pause menu: Exit to main menu: Yes: the game's New adventure (to the game choice)");
     EscM();
-    ClickPauseItem(0, 7);
+    ClickPauseItem(0, 8);
     Check(!pm::IsOpen() && !zeus::game_menu::OnLoop(), "pause menu: Continue: closed, nothing to run");
 }
 
@@ -2624,19 +2669,103 @@ void EscEditor()
     Check(At<char>(aRightUpM) == 1, "esc editor: ... as the game's right click (drops the brush)");
     At<int>(aBuildTypeM) = 0;
     Check(EscM() && pm::IsOpen(), "esc editor: the map: the editor pause menu");
-    ClickPauseItem(3, 6); // Save map
+    ClickPauseItem(3, 7); // Save map (7 items: Options before Return to Main Menu)
     Check(zeus::game_menu::OnLoop() && g_editorCalls == 1 && g_editorParam == 0 && LogContains("editor_menu_save_map"),
           "esc editor: ... Save map: the File menu's function, button_param 0");
     At<unsigned char>(aGameScreenK) = 0x57;
     Check(EscM() && pm::IsOpen(), "esc editor: the adventure editor: its pause menu");
-    ClickPauseItem(5, 7); // Create Adventure
+    ClickPauseItem(5, 8); // Create Adventure (8 items: Options before Exit Editor)
     Check(zeus::game_menu::OnLoop() && g_editorCalls == 2 && g_editorParam == 1 &&
               LogContains("editor_menu_create_adventure"),
           "esc editor: ... Create Adventure with button_param 1 (its File menu item's)");
     At<unsigned char>(aGameScreenK) = 0x15;
     Check(EscM() && pm::IsOpen(), "esc editor: the world map editor: its pause menu");
-    ClickPauseItem(0, 5);
+    ClickPauseItem(0, 6);
     At<int>(aEditorModeK) = 0;
+}
+
+// The game's lang_get_string for options_entry's texts: "group,index" (Autosave and Auto Defend show the game's own).
+const char *__cdecl FakeLangGI(int group, int index)
+{
+    static char buf[32];
+    std::snprintf(buf, sizeof(buf), "%d,%d", group, index);
+    return buf;
+}
+
+void PutMenu(DWORD at, short group, DWORD items, int count)
+{
+    At<short>(at + 6) = group;
+    At<DWORD>(at + 8) = items;
+    At<int>(at + 12) = count;
+}
+
+void PutItem(DWORD at, short text, DWORD handler)
+{
+    At<short>(at + 2) = text;
+    At<DWORD>(at + 4) = handler;
+    At<int>(at + 8) = 0;
+    At<int>(at + 12) = 0;
+}
+
+// The Options and File menus (games/zeus/options_entry): our tables in the bars, our texts, the game's ON / OFF texts
+// for Autosave and Auto Defend, and an error that puts the game's tables back.
+void OptionsMenus()
+{
+    namespace oe = zeus::options_entry;
+    // The game's bars and tables as Zeus.exe has them (tools: the File and Options tables, 0x5eff00..0x5f002f).
+    PutMenu(0x5eff00, 1, 0x5efcc0, 6);
+    PutMenu(0x5eff10, 2, 0x5efd20, 7);
+    PutMenu(0x5eff40, 2, 0x5efd20, 3);
+    PutMenu(0x5eff80, 2, 0x5efd20, 2);
+    PutMenu(0x5f0010, 2, 0x5efd20, 2);
+    const short file[] = {1, 2, 3, 4, 6, 5};
+    const DWORD fileHandlers[] = {0x401170, 0x421730, 0x4014d0, 0x401680, 0x401770, 0x401cb0};
+    for (int k = 0; k < 6; ++k) {
+        PutItem(0x5efcc0 + 16 * k, file[k], fileHandlers[k]);
+    }
+    const short options[] = {1, 2, 3, 6, 9, 11, 13};
+    const DWORD optionHandlers[] = {0x401db0, 0x401f90, 0x4023d0, 0x401ec0, 0x402660, 0x5692d0, 0x4026a0};
+    for (int k = 0; k < 7; ++k) {
+        PutItem(0x5efd20 + 16 * k, options[k], optionHandlers[k]);
+    }
+    oe::AttachForTest(true, true);
+    using core::ui::game_menu_layout::Menu;
+    using core::ui::game_menu_layout::MenuItem;
+    auto menu = [](DWORD at) { return *reinterpret_cast<const Menu *>(at + g_imageShift); };
+    const Menu o = menu(0x5eff10);
+    Check(o.count == 10 && o.items[0].text == 20 && o.items[1].text == 21 && o.items[2].text == 22 &&
+              o.items[3].text == 1 && o.items[5].text == 3 && o.items[6].text == 6 && o.items[7].text == 25 &&
+              o.items[8].text == 26 && o.items[9].text == 13 && o.items[9].y == 180 &&
+              reinterpret_cast<DWORD>(o.items[7].handler) == 0x402660,
+          "menus: Options: General, Video, Audio, the game's Display, Sound, Speed, Difficulty, Autosave, Auto "
+          "Defend, Messages (their handlers)");
+    Check(menu(0x5eff40).count == 6 && menu(0x5eff80).count == 5 && menu(0x5f0010).count == 5 &&
+              menu(0x5eff40).items[5].text == 3 && menu(0x5eff80).items[4].text == 2,
+          "menus: the editors' Options: ours and the game's first three / two");
+    const Menu f = menu(0x5eff00);
+    const short want[] = {42, 3, 4, 40, 41, 6, 43, 5};
+    bool order = f.count == 8;
+    for (int k = 0; order && k < 8; ++k) {
+        order = f.items[k].text == want[k];
+    }
+    Check(order && reinterpret_cast<DWORD>(f.items[1].handler) == 0x4014d0 &&
+              f.items[7].handler == &zeus::game_menu::MenuExit,
+          "menus: File: Replay map, Load, Save, the screenshots, Delete, Exit to main menu, Exit game (ours)");
+    Check(std::strcmp(oe::MenuText(2, 20, &FakeLangGI), "General Settings") == 0 &&
+              std::strcmp(oe::MenuText(1, 42, &FakeLangGI), "Replay map") == 0 &&
+              std::strcmp(oe::MenuText(30, 2, &FakeLangGI), "Options") == 0 &&
+              oe::MenuText(2, 3, &FakeLangGI) == nullptr && oe::MenuText(13, 2, &FakeLangGI) == nullptr,
+          "menus: our texts; the game's own and the pause banner pass on");
+    Check(std::strcmp(oe::MenuText(2, 25, &FakeLangGI), "2,9") == 0 &&
+              std::strcmp(oe::MenuText(2, 26, &FakeLangGI), "2,11") == 0,
+          "menus: Autosave and Auto Defend: the text number in the game's own table");
+    At<short>(0x5efd20 + 16 * 4 + 2) = 10; // the game's toggle writes OFF into its table
+    Check(std::strcmp(oe::MenuText(2, 25, &FakeLangGI), "2,10") == 0, "menus: ... it follows the game's toggle");
+    // An error in our texts (no game function to ask): the game's tables back, its texts from then on.
+    Check(oe::MenuText(2, 25, nullptr) == nullptr && menu(0x5eff10).count == 7 && menu(0x5eff00).count == 6 &&
+              menu(0x5eff40).count == 3 && LogContains("menus: our menu texts failed"),
+          "menus: an error: the game's own menus are back");
+    Check(oe::MenuText(2, 20, &FakeLangGI) == nullptr, "menus: ... and our texts are off");
 }
 
 // city_cancel_tool faults: Esc off (the game's own from then on), nothing of ours open.
@@ -5214,6 +5343,7 @@ const Scenario kScenarios[] = {
     {"esc_and_pause", &EscAndPause},
     {"esc_editor", &EscEditor},
     {"esc_fault", &EscFault},
+    {"options_menus", &OptionsMenus},
     {"overlay_keys_fault", &OverlayKeysFault},
     {"framed_screens", &FramedScreens},
     {"framed_setting", &FramedSetting},

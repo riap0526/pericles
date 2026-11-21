@@ -28,6 +28,15 @@ bool OnLoop();
 // Before the game's frame is presented: the pause menu over it. caller: the game address screen_present returns to.
 void OnPresent(unsigned long caller);
 
+// Attached and not switched off after an error (games/zeus/options_entry puts our File menu items in only then).
+bool Available();
+
+// The File menu's items (called by the game's drop-down, in the game's input pass): our confirmations (the pause
+// menu's), Yongle's way; the game's own New adventure and Replay episode do not ask, its Exit game asks in its own box.
+void __cdecl MenuReplay();
+void __cdecl MenuMainMenu();
+void __cdecl MenuExit();
+
 // Offline tests only (src/games/zeus/test_restore.cpp): Attach without the byte checks and the hook (the fakes are
 // thunks at the game's addresses), and input_update_mouse's detour.
 void AttachForTest();

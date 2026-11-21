@@ -16,6 +16,7 @@
 #include "games/zeus/fullscreen.h"
 #include "games/zeus/intro.h"
 #include "games/zeus/keys.h"
+#include "games/zeus/options_entry.h"
 #include "games/zeus/sound.h"
 #include "games/zeus/notice.h"
 #include "games/zeus/resolution.h"
@@ -214,6 +215,9 @@ extern "C" void zeus_attach(void)
     // Esc and the pause menu (drawn with the game's art in screen_present; before keys, whose Esc it is).
     zeus::game_menu::Attach(zeus::painter::Attach(), zeus::timing::PresentHooked());
     zeus::keys::Attach();
+    // The Options and File menus and the main menu's Options (our texts through keys' lang_get_string hook; after
+    // game_menu, whose confirmations the File menu uses, and city_picture, whose screenshots it adds).
+    zeus::options_entry::Attach();
     zeus::scroll_arrows::Attach(); // held scroll arrows at the original pace
     // Screenshot file names and the present mode log's lines carry game_screen 0xf2a6dd (one byte, reads only).
     // The tag is asked for when a screenshot is taken (game thread): the draw census sums up the next frame too.

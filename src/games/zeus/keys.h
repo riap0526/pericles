@@ -19,6 +19,8 @@ void RegisterSettings();
 // does not match: the banner then keeps the game's 'P'); the overlay keys' three functions checked (when one does not
 // match, logged: the overlay keys do nothing, the others work).
 void Attach();
+// lang_get_string is hooked here (the pause banner; games/zeus/options_entry's menu texts go through the same hook).
+bool LangHooked();
 
 // The offline tests (src/games/zeus/test_restore.cpp): the detours (lang_get_string); the overlay keys' functions
 // taken as matching (the test's copy of the game has fakes there).

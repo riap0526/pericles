@@ -29,12 +29,20 @@ const Site kTextWidth{"text_get_width", 0x507da0, {0x83, 0xec, 0x08, 0x8b, 0x15,
 // screen_clip_reset 0x59fcf0: __cdecl, no arguments; the clip back to the whole screen (Emperor's 0x5bf860, the same
 // instructions).
 const Site kClipReset{"screen_clip_reset", 0x59fcf0, {0x8b, 0x0d, 0xb4, 0xa6, 0xf2, 0x00, 0x8b, 0x15}};
+// The tooltip's box, as the game's own tooltips (0x51c99d / 0x51c9c6): rect_draw 0x509870 (x, y, w, h, colour) for the
+// edge, fill_rect 0x509b20 (the same arguments) inside it; both __cdecl, the caller pops. fill_rect is hooked by
+// resolution (checked there; its detour passes our calls on unchanged), so its first bytes are not checked here.
+const Site kRectDraw{"rect_draw", 0x509870, {0x53, 0x55, 0x56, 0x57, 0x8b, 0x7c, 0x24, 0x14}};
+const Site kFillRect{"fill_rect", 0x509b20, {}};
+// dd_pixel_format_index 0xf9c0e4: 2 when the surfaces are RGB565 (the tooltip picks its colours by it).
+const Var<int> kPixelFormat{0xf9c0e4};
 
 using ImageGroup_fn = BYTE *(__thiscall *)(void *, int);
 using ImageDraw_fn = void(__thiscall *)(void *, int, int, int, int, int, int);
 using TextDraw_fn = int(__cdecl *)(const char *text, int x, int y, int font, int, int);
 using TextWidth_fn = int(__cdecl *)(const char *text, int font);
 using Void_fn = void(__cdecl *)();
+using Rect_fn = void(__cdecl *)(int x, int y, int w, int h, int colour);
 
 const DWORD kImagePaks = 0x12afbe8, kImages = 0x12aebe8;
 constexpr DWORD kPakSize = 0xcc44;
@@ -43,20 +51,33 @@ const Var<int> kDialogY{0xf2a6a8};
 
 // Art: Zeus_Interface is pak 1. The panel as the game's own dialogs draw it (0x59ee90 /
 // 0x59f0f0) [confirmed]. The text button bar, 25 high: group 0x0e's first six images, two sets of left, middle, right:
-// style 0 raised, style 1 darker and sunk (the pressed or hovered look) [confirmed: images 205-210 of Zeus_Interface,
-// build\mockups\zeus\z5-pause\round1\bars.png]; the game's text_button_bar_draw 0x59ed50 draws them. (The Display
+// style 0 raised, style 1 darker and sunk (the pressed or hovered look) [confirmed: images 205-210 of Zeus_Interface
+// drawn out and viewed]; the game's text_button_bar_draw 0x59ed50 draws them. (The Display
 // options dialog's buttons are the 20-high set after them, 0x1a + 3 x style, 0x59fba0; the pause menu uses the
 // 25-high buttons with the darker one under the mouse.) The hover frame (not used by the pause menu) group 0x7b + 8
 // [inferred].
+// The options window's art (Zeus_Interface groups, each image checked by eye): the inset 0x84 (inner_panel_draw
+// 0x59f2a0); the strip 20 high: group 0x0e + 0x1a (left, middle, right); the checkbox pairs of group 0x14, the lighter
+// pair + 2 ticked / + 3 empty; the round arrows up 0x99, down 0x81, left 0x73, right 0x72, + 0 normal, + 1 under the
+// mouse, + 2 pressed; the scroll thumb 0x0d (26 x 26, the game's own scroll bars' diamond), also the slider's knob;
+// the thin line 0x1b (left, middle, right, 16 x 3).
 constexpr int kInterfacePak = 1;
-constexpr int kPanel = 0x83, kButton = 0x0e, kFrame = 0x7b;
-// Fonts: pak 0 groups. The Display options dialog draws its title in group 6 and its buttons' text in group 1 with the
-// colour 0x02bf, 0xfac1 under the mouse (0x512b50's colour, text_draw's fifth argument); the confirmation box draws
-// its text in group 1 and sizes the box by the title in group 6, drawing the title in group 7 (modal_dialog_draw
-// 0x5a04f0) [confirmed: decompilation].
+constexpr int kPanel = 0x83, kButton = 0x0e, kFrame = 0x7b, kInset = 0x84, kStripFirst = 0x1a, kCheck = 0x14;
+constexpr int kArrowUp = 0x99, kArrowDown = 0x81, kArrowLeft = 0x73, kArrowRight = 0x72, kThumb = 0x0d, kLine = 0x1b;
+constexpr int kThumbSize = 26;
+// Fonts: pak 0 groups. Only group 0 (a 9 px mask) takes text_draw's colour; every other group carries its own colours
+// (font_mask_draw 0x416c30 fills type 20 images only), so a colour of ours would do nothing. The groups are made for a
+// light ground (the panel, the buttons, the strips) or a dark one (the inset, the tooltip): group 1 dark blue on light
+// (the game's dialogs and menus), 3 light on the inset, 9 yellow and 4 gold for emphasis on light and dark, 6 the
+// dialog title, 13 the tooltip's small text (the game's tooltips). The confirmation box draws its text in group 1 and
+// sizes the box by the title in group 6, drawing the title in group 7 (modal_dialog_draw 0x5a04f0) [confirmed:
+// decompilation].
 constexpr int kFontPak = 0;
 constexpr int kFontNormal = 1, kFontTitle = 6, kFontConfirmTitle = 7, kFontTitleWidth = 6;
-constexpr int kColourItem = 0x02bf, kColourItemHover = 0xfac1;
+constexpr int kFontLight = 3, kFontYellow = 9, kFontGold = 4, kFontSmall = 13;
+// text_draw puts the top of a letter's image 3 pixels above its y (text_draw_glyph 0x508b50: y - 3); the options
+// window's y is the top of the letters.
+constexpr int kTextDown = 3;
 
 int Group(int pak, int group)
 {
@@ -77,12 +98,15 @@ int FontId(int group)
 
 int FontOf(co::Font f)
 {
-    return FontId(f == co::Font::Title ? kFontTitle : kFontNormal); // Gold, Small, Disabled: with the options window
-}
-
-int ColourOf(co::Font f)
-{
-    return f == co::Font::MenuItem ? kColourItem : f == co::Font::MenuItemHover ? kColourItemHover : 0;
+    switch (f) {
+    case co::Font::Title: return FontId(kFontTitle);
+    case co::Font::Gold: return FontId(kFontYellow);
+    case co::Font::Label: return FontId(kFontLight);
+    case co::Font::Accent:
+    case co::Font::Disabled: return FontId(kFontGold); // no red font the size of the others
+    case co::Font::Small: return FontId(kFontSmall);
+    default: return FontId(kFontNormal); // Normal, Value, MenuItem, MenuItemHover
+    }
 }
 
 void Image(int id, int x, int y)
@@ -109,24 +133,47 @@ public:
         const int base = ArtId(kFrame) + 8; // the darker set, as Emperor's button_frame_draw
         tl::WalkFrame(ox + x, oy + y, w, h, [&](int i, int xx, int yy) { Image(base + i, xx, yy); });
     }
-    // y is where the game's own dialogs put their text (text_draw's y: Display options' title at the panel's top +
-    // 0x0e, a button's text at its top + 4; the menu's look gives those).
+    // y is the top of the letters (text_draw draws 3 pixels above its y).
     void Text(const char *t, int x, int y, co::Font f) override
     {
-        Function<TextDraw_fn>(kTextDraw)(t, ox + x, oy + y, FontOf(f), ColourOf(f), 0);
+        Function<TextDraw_fn>(kTextDraw)(t, ox + x, oy + y + kTextDown, FontOf(f), 0, 0);
     }
     int TextWidth(const char *t, co::Font f) override { return Function<TextWidth_fn>(kTextWidth)(t, FontOf(f)); }
-
-    // Not drawn until the options window: the pause menu does not use them, and their art is not checked
-    // yet.
-    void Inset(int, int, int, int) override {}
-    void Strip(int, int, int) override {}
-    void Check(int, int, bool) override {}
-    void ArrowButton(int, int, co::Arrow, co::ArrowState) override {}
-    void Knob(int, int) override {}
-    void Thumb(int, int) override {}
-    void Line(int, int, int) override {}
-    void TipBox(int, int, int, int) override {}
+    void Inset(int x, int y, int w, int h) override
+    {
+        const int base = ArtId(kInset);
+        tl::WalkNine(tl::kInset, ox + x, oy + y, w, h, true, [&](int i, int xx, int yy) { Image(base + i, xx, yy); });
+    }
+    void Strip(int x, int y, int w) override
+    {
+        const int base = ArtId(kButton) + kStripFirst;
+        tl::WalkPieces(ox + x, oy + y, w, [&](int i, int xx, int yy) { Image(base + i, xx, yy); });
+    }
+    void Check(int x, int y, bool on) override { Image(ArtId(kCheck) + (on ? 2 : 3), ox + x, oy + y); }
+    void ArrowButton(int x, int y, co::Arrow a, co::ArrowState s) override
+    {
+        const int g = a == co::Arrow::Left ? kArrowLeft : a == co::Arrow::Right ? kArrowRight
+                      : a == co::Arrow::Up ? kArrowUp : kArrowDown;
+        Image(ArtId(g) + static_cast<int>(s), ox + x, oy + y);
+    }
+    // The knob's place is kKnobSize square; the diamond is larger, centred on it (over the strip's edges).
+    void Knob(int x, int y) override
+    {
+        const int d = (kThumbSize - co::kKnobSize) / 2;
+        Image(ArtId(kThumb), ox + x - d, oy + y - d);
+    }
+    void Thumb(int x, int y) override { Image(ArtId(kThumb), ox + x, oy + y); }
+    void Line(int x, int y, int w) override
+    {
+        const int base = ArtId(kLine);
+        tl::WalkLine(ox + x, oy + y, w, [&](int i, int xx, int yy) { Image(base + i, xx, yy); });
+    }
+    void TipBox(int x, int y, int w, int h) override // the game's tooltip colours (0x51c8cd..0x51c8de)
+    {
+        const bool rgb565 = *kPixelFormat == 2;
+        Function<Rect_fn>(kRectDraw)(ox + x, oy + y, w, h, rgb565 ? 0x104 : 0x84);
+        Function<Rect_fn>(kFillRect)(ox + x + 1, oy + y + 1, w - 2, h - 2, rgb565 ? 0x1372 : 0x9b2);
+    }
 };
 
 ZeusPainter g_painter;
@@ -140,7 +187,7 @@ bool Attach()
         core_log("painter: image_draw at 0x%lx does not match; our windows are not available", kImageDraw.address);
         return false;
     }
-    const Site *sites[] = {&kImageGroup, &kTextDraw, &kTextWidth, &kClipReset};
+    const Site *sites[] = {&kImageGroup, &kTextDraw, &kTextWidth, &kClipReset, &kRectDraw};
     for (const Site *s : sites) {
         if (!Matches(*s)) {
             core_log("painter: %s at 0x%lx does not match; our windows are not available", s->name, s->address);
@@ -158,7 +205,8 @@ co::Painter &Get()
 co::MenuLook MenuLook()
 {
     co::MenuLook l; // the sizes and spacing of Yongle's menu
-    l.labelDown = 8; // a button's text in the middle of its 25-high bar (as an earlier build had it)
+    l.titleY = 11;   // the title and the buttons' text where they were before Text drew letters' tops at y
+    l.labelDown = 5; // a button's text in the middle of its 25-high bar
     l.barStyle = 0;
     l.hoverBarStyle = 1;
     l.hoverFrame = false;

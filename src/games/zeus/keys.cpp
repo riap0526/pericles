@@ -3,6 +3,8 @@
 #include "games/zeus/keys.h"
 
 #include "games/zeus/game_menu.h"
+#include "games/zeus/options_entry.h"
+#include "games/zeus/options_window.h"
 
 #include "core/diag/guard.h"
 #include "core/input/keys.h"
@@ -35,7 +37,7 @@ const Def kDefs[] = {
      Send::KeyDown, VK_LEFT, false, {"scroll_left", kArrows, kNoText, 0}, kEditorToo},
     {Item{"keys", "scroll_right", "Scroll right", "", Type::Hotkey, "Right", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_RIGHT, false, {"scroll_right", kArrows, kNoText, 0}, kEditorToo},
-    {Item{"keys", "open_options", "Open Options", "No effect in Zeus yet.", Type::Hotkey, "F6", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "open_options", "Open Options", "", Type::Hotkey, "F6", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Options, 0, false, {"open_options", kGlobal, kNoText, 0}},
     {Item{"keys", "speed_down", "Decrease game speed", "", Type::Hotkey, "LeftBracket", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, '[', false, {"speed_down", kCity, kNoText, 0}},
@@ -294,13 +296,18 @@ bool OverlayKey(unsigned overlay)
     return c.result != OverlayCall::kNotOne;
 }
 
-// Pericles has no options window of its own yet: F6 does nothing (the game's 800x600 stays blocked). Esc closes
-// windows and opens the pause menu (games/zeus/game_menu). The Display options dialog's 800 x 600 / 1024 x 768 buttons post F6/F7 to the
-// game (lParam 0): passed until our own buttons replace them.
+// The options key opens Pericles's options window (General), in the city, the menus and the editors. Esc closes
+// windows and opens the pause menu (games/zeus/game_menu). The Display options dialog's 800 x 600 / 1024 x 768 buttons
+// post F6/F7 to the game (lParam 0): passed until our own buttons replace them.
+bool OpenOptions()
+{
+    return zeus::options_window::Open(zeus::options_window::kPageGeneral, 0);
+}
+
 const core::input::keys::KeysGame &Game()
 {
     static const core::input::keys::KeysGame game(kDefs, kCount, &CityScreen, &EditorScreen, kKeyCtrl.ptr(),
-                                                  &core::input::keys::NoOptions, &zeus::game_menu::Escape,
+                                                  &OpenOptions, &zeus::game_menu::Escape,
                                                   &OverlayKey, true);
     return game;
 }
@@ -316,6 +323,10 @@ core::diag::Feature g_banner{"pause banner keys (games/zeus/keys)"};
 
 const char *__cdecl LangGetString_detour(int group, int index)
 {
+    // The menu items we add (games/zeus/options_entry; under its own guard: its error leaves the banner's).
+    if (const char *menu = zeus::options_entry::MenuText(group, index, Original(o_LangGetString, kLangGetString))) {
+        return menu;
+    }
     if (group == kPauseGroup && index == kTextPaused && core::diag::Enabled(g_banner)) {
         const char *text = nullptr;
         if (!core::diag::Guarded(g_banner,
@@ -362,6 +373,11 @@ void Attach()
     else {
         core_log("keys: the pause banner names the player's pause keys");
     }
+}
+
+bool LangHooked()
+{
+    return o_LangGetString != nullptr;
 }
 
 void OverlaySitesForTest()

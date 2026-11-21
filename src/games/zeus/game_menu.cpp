@@ -4,7 +4,9 @@
 #include "core/display/virtual_display.h"
 #include "core/log.h"
 #include "core/options/menu_text.h"
+#include "core/options/options_host.h"
 #include "core/options/pause_menu.h"
+#include "games/zeus/options_window.h"
 #include "games/zeus/painter.h"
 #include "games/zeus/site.h"
 
@@ -119,7 +121,7 @@ bool RightClickScreen(int s)
     }
 }
 
-// The menu screens that go back a step with a right click (C5 and 0.6): tutorials 0x02, choose an adventure 0x1f, the
+// The menu screens that go back a step with a right click: tutorials 0x02, choose an adventure 0x1f, the
 // family 0x2f, choose a game 0x30, the name entry 0x36, mission choice 0x3d, 0x51, 0x53. The mission intro 0x35 does
 // not read a right click: listed as Yongle lists it, so Esc does nothing there.
 bool MenuBackScreen(int s)
@@ -187,7 +189,7 @@ bool Confirm(const char *title0, const char *text0, int minWidth = 0)
 // ---------------------------------------------------------------------------------------------------------------
 // The pause menus' items
 
-enum class Act { Continue, Replay, Load, Save, Delete, MainMenu, Exit, Call };
+enum class Act { Continue, Replay, Load, Save, Delete, Options, MainMenu, Exit, Call };
 
 struct Item {
     Act act;
@@ -197,32 +199,34 @@ struct Item {
     int param;          // ... and its button_param
 };
 
-// The game: Continue, Replay map, Load / Save / Delete adventure, Exit to main menu, Exit game (Yongle's order; the
-// game's texts for Load (1, 3), Save (1, 4), Delete (1, 6), Exit game (1, 5): Zeus's 5 and 6 are Emperor's 6 and 5).
-// Options: later, with Pericles' own options window.
+// The game: Continue, Replay map, Load / Save / Delete adventure, Options, Exit to main menu, Exit game (Yongle's
+// order; the game's texts for Load (1, 3), Save (1, 4), Delete (1, 6), Exit game (1, 5): Zeus's 5 and 6 are Emperor's
+// 6 and 5).
 const Item kGameItems[] = {
     {Act::Continue, nullptr, 0, 0, nullptr, 0},       {Act::Replay, nullptr, 0, 0, nullptr, 0},
     {Act::Load, nullptr, 1, 3, nullptr, 0},           {Act::Save, nullptr, 1, 4, nullptr, 0},
-    {Act::Delete, nullptr, 1, 6, nullptr, 0},         {Act::MainMenu, nullptr, 0, 0, nullptr, 0},
-    {Act::Exit, nullptr, 1, 5, nullptr, 0},
+    {Act::Delete, nullptr, 1, 6, nullptr, 0},         {Act::Options, nullptr, 0, 0, nullptr, 0},
+    {Act::MainMenu, nullptr, 0, 0, nullptr, 0},       {Act::Exit, nullptr, 1, 5, nullptr, 0},
 };
-// The editors: Continue and that screen's File menu, the same order and the game's texts; no Exit game
-// (leaving an editor goes through Return to Main Menu / Exit Editor, which ask to save).
+// The editors: Continue and that screen's File menu, the same order and the game's texts, with Options before the
+// item that leaves (as in the game's menu); no Exit game (leaving an editor goes through Return to Main Menu / Exit
+// Editor, which ask to save).
 const Item kCityMapItems[] = {
     {Act::Continue, nullptr, 0, 0, nullptr, 0},       {Act::Call, nullptr, 7, 1, &kNewMap, 0},
     {Act::Call, nullptr, 7, 2, &kRevertMap, 0},       {Act::Call, nullptr, 7, 3, &kSaveMap, 0},
-    {Act::Call, nullptr, 7, 4, &kImportCity, 0},      {Act::Call, nullptr, 7, 5, &kEditorReturn, 0},
+    {Act::Call, nullptr, 7, 4, &kImportCity, 0},      {Act::Options, nullptr, 0, 0, nullptr, 0},
+    {Act::Call, nullptr, 7, 5, &kEditorReturn, 0},
 };
 const Item kWorldMapItems[] = {
     {Act::Continue, nullptr, 0, 0, nullptr, 0},       {Act::Call, nullptr, 7, 6, &kRevertMap, 0},
     {Act::Call, nullptr, 7, 3, &kSaveMap, 0},         {Act::Call, nullptr, 7, 4, &kImportWorld, 0},
-    {Act::Call, nullptr, 7, 5, &kEditorReturn, 0},
+    {Act::Options, nullptr, 0, 0, nullptr, 0},        {Act::Call, nullptr, 7, 5, &kEditorReturn, 0},
 };
 const Item kAdventureItems[] = {
     {Act::Continue, nullptr, 0, 0, nullptr, 0},       {Act::Call, nullptr, 93, 1, &kNewAdv, 0},
     {Act::Call, nullptr, 93, 2, &kLoadAdv, 0},        {Act::Call, nullptr, 93, 3, &kSaveSettings, 0},
     {Act::Call, nullptr, 93, 4, &kSaveAs, 0},         {Act::Call, nullptr, 93, 5, &kCreateAdv, 1},
-    {Act::Call, nullptr, 93, 6, &kEditorReturn, 0},
+    {Act::Options, nullptr, 0, 0, nullptr, 0},        {Act::Call, nullptr, 93, 6, &kEditorReturn, 0},
 };
 
 const Item *g_items = kGameItems; // the open menu's items
@@ -234,6 +238,7 @@ const char *Label(const Item &it)
     switch (it.act) {
     case Act::Continue: return mt::kPauseContinue;
     case Act::Replay: return mt::kMenuReplayMap;
+    case Act::Options: return mt::kPauseOptions;
     case Act::MainMenu: return mt::kMenuExitToMainMenu;
     default: return Lang(it.group, it.index);
     }
@@ -269,14 +274,13 @@ void PauseAct(int i)
         pm::Close("Continue");
         return;
     }
+    if (it.act == Act::Options) { // over the pause menu; closing it shows the pause menu again
+        zeus::options_window::Open(zeus::options_window::kPageGeneral, 0);
+        return;
+    }
     pm::Close(Label(it));
     g_pending = &it;
     pm::Request(i);
-}
-
-bool NoOptionsKey(unsigned, unsigned)
-{
-    return false; // Pericles has no options window yet: no options key in the pause menu
 }
 
 void Redraw()
@@ -298,7 +302,7 @@ const pm::PauseGame &PauseGame()
 {
     static const pm::PauseGame game("zeus", zeus::painter::Get(), zeus::painter::MenuLook(), &zeus::painter::DialogOrigin,
                                     &zeus::painter::BeginDraw, &Redraw, &ClickSound, &CanDraw, &PauseAct,
-                                    &NoOptionsKey);
+                                    &core::options::options_host::PauseOptionsKey);
     return game;
 }
 
@@ -502,14 +506,6 @@ void __cdecl InputMouse_detour()
     }
 }
 
-// The pause menu's input: Pericles registers core::display's one modal input slot for it (no options window yet).
-void ModalMessage(UINT m, WPARAM w, LPARAM l, int x, int y)
-{
-    pm::HandleMessage(m, w, l, x, y);
-}
-
-const core::display::ModalInput kInput{&pm::Active, &ModalMessage};
-
 } // namespace
 
 bool Attach(bool painter, bool presentHooked)
@@ -519,6 +515,10 @@ bool Attach(bool painter, bool presentHooked)
                  !painter ? "the painter's sites do not match" : "screen_present is not hooked (the menu is drawn there)");
         return false;
     }
+    // The options window, the pause menu under it and their input: they need only the painter and screen_present,
+    // so a site of Esc's below that does not match leaves the options window and its ways in (as Yongle's, which
+    // checks its own sites).
+    zeus::options_window::Attach(PauseGame());
     const Site *sites[] = {&kModalDialog, &kNewAdventure, &kReplay, &kLoad, &kSave, &kDelete, &kCityCancel,
                            &kMapToCity, &kInputMouse, &kUiSound};
     for (const Site *s : sites) {
@@ -543,8 +543,6 @@ bool Attach(bool painter, bool presentHooked)
         core_log("game menu: input_update_mouse could not be hooked; Esc and the pause menu stay the game's");
         return false;
     }
-    pm::Attach(PauseGame());
-    core::display::SetModalInput(&kInput);
     g_attached = true;
     core_log("game menu: Esc closes windows (as a right click), goes back on the menu screens (as a right click), "
              "asks before quitting on the main menu and opens the pause menu on the city screen and in the editors; "
@@ -569,7 +567,33 @@ bool Escape(LPARAM lparam)
 
 bool IsOpen()
 {
-    return pm::IsOpen();
+    return zeus::options_window::IsOpen(); // the options window or the pause menu
+}
+
+bool Available()
+{
+    return g_attached && core::diag::Enabled(g_feature);
+}
+
+void __cdecl MenuReplay()
+{
+    if (!core::diag::Guarded(g_feature, [](void *) { Replay(false); }, nullptr)) {
+        core_log("game menu: Replay map failed (an error)");
+    }
+}
+
+void __cdecl MenuMainMenu()
+{
+    if (!core::diag::Guarded(g_feature, [](void *) { MainMenu(false); }, nullptr)) {
+        core_log("game menu: Exit to main menu failed (an error)");
+    }
+}
+
+void __cdecl MenuExit()
+{
+    if (!core::diag::Guarded(g_feature, [](void *) { Exit(false); }, nullptr)) {
+        core_log("game menu: Exit game failed (an error)");
+    }
 }
 
 bool OnLoop()
@@ -589,7 +613,7 @@ bool OnLoop()
 
 void OnPresent(unsigned long caller)
 {
-    pm::OnPresent(caller);
+    zeus::options_window::OnPresent(caller); // the options window, or the pause menu alone
 }
 
 void AttachForTest()

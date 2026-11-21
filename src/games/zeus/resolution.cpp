@@ -33,7 +33,7 @@
 //                       the screen's bottom;
 //   city_message_layout 0x4f2d80: the city message is put on the screen's bottom, not the clip's;
 //   sidebar_draw 0x517b10, sidebar_draw_units 0x525280: below the sidebar (above 768 high) its picture moved to
-//                       the screen's bottom and the game's inset panel between, right of it the marble (layout G,
+//                       the screen's bottom and the game's inset panel between, right of it the marble
 //                       (see the filler's section below);
 //   world_map_sidebars 0x597e50: the world map's sidebar filled the same way on its own picture;
 //   info_window_place 0x5715a0, info_fixed_window_draw 0x5b2880, info_fixed_window_foreground 0x5b38c0,
@@ -568,7 +568,7 @@ struct Edge {
 constexpr Edge kCityEdge{11, 640, true};   // the city sidebar's red edge (entry 1232)
 constexpr Edge kWorldEdge{11, 470, false}; // the world map sidebar's gold beaded edge (entry 1600)
 
-// The picture's frame is not at the same place on every sidebar (measured on the screenshots of the first and second
+// The picture's frame is not at the same place on every sidebar (measured on the screenshots of two test
 // builds): Zeus's city and world map sidebars: rows 604..761 (158 rows), the same picture; Poseidon's city sidebar:
 // rows 610..755, Poseidon's world map sidebar: rows 614..759 (146 rows each), and the world map's picture 1 px right
 // of the city's (its frame 1 px wider on the right). The frame is placed in the 168 rows at the screen's bottom one row

@@ -132,6 +132,9 @@ set(CORE_SOURCES
     src/core/options/menu.cpp
     src/core/options/pause_menu.cpp
     src/core/options/menu_text.cpp
+    src/core/options/option_text.cpp
+    src/core/options/setting_rows.cpp
+    src/core/options/options_host.cpp
     src/core/ui/scroll_repeat.cpp
     src/core/ui/settings_view.cpp
     src/core/ui/perf_view.cpp
@@ -439,6 +442,15 @@ add_executable(test_pause_menu proxy/ddraw/test_pause_menu.cpp src/core/options/
 target_include_directories(test_pause_menu PRIVATE src)
 target_link_options(test_pause_menu PRIVATE -static)
 
+# Offline test of core/options/options_host: the options window in a game on a fake game layer (opening, drawing
+# where allowed, Hotkeys over the window, Apply after it, the options key, a right click, Options from the pause menu,
+# an error while drawing).
+add_executable(test_options_host proxy/ddraw/test_options_host.cpp src/core/options/options_host.cpp
+    src/core/options/window.cpp src/core/options/menu.cpp src/core/options/pause_menu.cpp src/core/options/menu_text.cpp
+    src/core/ui/hotkey.cpp src/core/diag/guard.cpp src/core/log.cpp)
+target_include_directories(test_options_host PRIVATE src)
+target_link_options(test_options_host PRIVATE -static)
+
 # Offline test of core/ui/scroll_repeat: held scroll arrows at 20 lines a second on a fake of the games' buttons
 # function (a click one line, two scroll bars in a pass, types put back).
 add_executable(test_scroll_repeat proxy/ddraw/test_scroll_repeat.cpp src/core/ui/scroll_repeat.cpp)
@@ -481,10 +493,5 @@ add_executable(test_options proxy/ddraw/test_options.cpp src/core/options/window
 target_include_directories(test_options PRIVATE src)
 target_link_options(test_options PRIVATE -static)
 
-# Timer probe: timeGetTime/Sleep granularity and an emulation of Emperor's 50 ms present gate.
-# A development tool, not in the public source export.
-if(FALSE) # the probe's source is a local development tool, not in this repository
-    add_executable(timer_probe timer_probe.cpp)
-    target_link_options(timer_probe PRIVATE -static)
-    target_link_libraries(timer_probe PRIVATE winmm)
-endif()
+# Targets of local development tools, kept out of the public source: built only where the file exists.
+include(${CMAKE_CURRENT_SOURCE_DIR}/local_targets.cmake OPTIONAL)

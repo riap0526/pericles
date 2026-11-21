@@ -105,7 +105,7 @@ void MenuScreens()
 } // namespace
 
 // The drop-down menu 0x03 lies over another screen: judged by that screen (seen in testing: the editor's menus showed
-// city around them).
+// the city around them).
 bool CityAroundShown(unsigned char screen, bool playerPicture)
 {
     return CityAround(screen == 0x03 ? static_cast<unsigned char>(*kBeneath) : screen, playerPicture);
@@ -206,7 +206,7 @@ void CityDrawn()
 {
     // Not in the editors: the menus' background is the city the player played last. The
     // adventure editor edits a city on the city screen 0x01 at our resolution (seen in testing), so the front-end
-    // not enough; editor_mode tells.
+    // test is not enough; editor_mode tells.
     if (!g_installed || core::display::resolution::FrontEnd()) {
         return;
     }

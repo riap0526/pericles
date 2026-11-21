@@ -1,5 +1,4 @@
-// core/options' Painter drawn with Zeus's own drawing functions and art (the pause menu now; the options
-// window later). Window coordinates (640 x 480) plus an origin (the game's dialog_offset).
+// core/options' Painter drawn with Zeus's own drawing functions and art (the pause menu and the options window). Window coordinates (640 x 480) plus an origin (the game's dialog_offset).
 //
 // Threads: the game thread only.
 #pragma once
@@ -16,8 +15,7 @@ bool Attach();
 core::options::Painter &Get();
 
 // The pause menu's look: Yongle's sizes and spacing, the button under the mouse drawn with the
-// game's darker bar (style 1) and another text colour instead of a frame (as Yongle's); the title in the Display
-// options dialog's title font.
+// game's darker bar (style 1) instead of a frame (as Yongle's); the title in the Display options dialog's title font.
 core::options::MenuLook MenuLook();
 
 // Before drawing: the game's clip reset to the screen, the origin at the game's dialog_offset.

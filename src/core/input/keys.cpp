@@ -1,5 +1,5 @@
 // See keys.h. Moved from Yongle's games/emperor/keys.cpp (for Zeus): the model of the
-// bindings without the game's addresses; Alt with a character eaten (C1) and the game's own posted F6/F7 (C2) are new.
+// bindings without the game's addresses; Alt with a character eaten and the game's own posted F6/F7 are new.
 #include "core/input/keys.h"
 
 #include "core/diag/guard.h"

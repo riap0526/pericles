@@ -11,6 +11,8 @@
 #               with ui.panel_key = Ctrl+F12); F11 screenshots and the F12 problem report
 #   test_hotkey core/ui/hotkey: the hotkey syntax (no DLL)
 #   test_options core/options: the options window with a fake painter (no DLL)
+#   test_options_host core/options/options_host: the window in a game on a fake game layer (Hotkeys over it, the
+#               pause menu, an error while drawing) (no DLL)
 #   test_ini    core/settings/ini_text: changing values in the ini, keeping everything else (no DLL)
 #   test_settings the settings model: load, requests, callbacks, saving (no DLL; rewrites the ini next to it,
 #               which is put back to the default at the end)
@@ -74,10 +76,14 @@
 # -Interactive: also the checks that need real input (test_emu: the screenshot keys with present=display, the frozen
 # cursor). They press real keys, take the foreground and move the cursor: run it with nobody at the computer. Without
 # it those checks are SKIPPED and listed at the end.
-param([string]$Game = 'emperor', [switch]$Interactive)
+# -GamePath: a folder with the game installed (its DATA\ folder is read, nothing is written). The game's own tests
+# that read the player's image packs need it; without it they are not run and are listed at the end.
+param([string]$Game = 'emperor', [switch]$Interactive, [string]$GamePath = '')
 $ErrorActionPreference = 'Stop'
 if ($Interactive) { $env:YONGLE_TEST_INTERACTIVE = '1' } else { Remove-Item Env:YONGLE_TEST_INTERACTIVE -ErrorAction SilentlyContinue }
 $skipped = @()
+$notRun = @() # the game's tests that need -GamePath, added by its tests.ps1
+if ($GamePath) { $GamePath = (Resolve-Path $GamePath).Path }
 $repo = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 $gameDir = Join-Path $repo "src\games\$Game"
 if (-not (Test-Path (Join-Path $gameDir 'game.cmake'))) { throw "No game '$Game' (src\games\$Game\game.cmake)" }
@@ -112,6 +118,7 @@ Run 'test_emu' 'emulated' @('.\ddraw.dll', 'panel-ctrlf12') 'display' "[ui]`r`np
 Run 'test_files' 'emulated' @()
 Run 'test_hotkey' 'emulated' @()
 Run 'test_options' 'emulated' @()
+Run 'test_options_host' 'emulated' @()
 Run 'test_ini' 'emulated' @()
 Run 'test_settings' 'emulated' @()
 Run 'test_scroll' 'emulated' @()
@@ -148,7 +155,7 @@ Run 'test_present_mode' 'emulated' @()
 Run 'test_affinity' 'emulated' @()
 Run 'test_screenshot' 'emulated' @()
 Run 'test_log' 'emulated' @()
-# The game's own tests ($repo, $dir and Run are available to it).
+# The game's own tests ($repo, $dir, $GamePath, $notRun and Run are available to it).
 $gameTests = Join-Path $gameDir 'tests.ps1'
 if (Test-Path $gameTests) { . $gameTests }
 Copy-Item $default $ini -Force
@@ -157,5 +164,9 @@ $results | Format-Table -AutoSize
 if ($skipped.Count -gt 0) {
     "Skipped (need real input; run_tests.ps1 -Interactive with nobody at the computer):"
     $skipped | ForEach-Object { "  $_" }
+}
+if ($notRun.Count -gt 0) {
+    "Not run (need the game's files; run_tests.ps1 -GamePath <a folder with the game installed>):"
+    $notRun | ForEach-Object { "  $_" }
 }
 if ($results | Where-Object { $_.Exit -ne 0 }) { exit 1 }
