@@ -9,6 +9,7 @@
 #include "games/zeus/site.h"
 
 #include <algorithm>
+#include <initializer_list>
 #include <string>
 
 // Evidence (Zeus.exe 2.1.4.0, SHA256 382bcd28...0a57): the game's own options dialogs read from the disassembly
@@ -208,6 +209,96 @@ void WriteSpeeds(int game, int scroll)
 
 const go::NewPlayer kNewPlayer(kShipped, 1, &HasPlayer, &Speed, &WriteSpeeds);
 
+// --- Difficulty and auto defend (core/options/game_options Difficulty).
+// difficulty_step 0x401ee0 (__cdecl, no arguments; ret): button_param 0 one level up, else one down, clamped to 0..4,
+// then the game's data for the level read again and screen_redraw set. It is the difficulty dialog's arrows' handler;
+// the dialog itself (screen 0x45) lowers difficulty_lowest to the difficulty when it closes (0x515530..0x51555a).
+const Site kDifficultyStep{"difficulty_step", 0x401ee0, {0xa1, 0xf8, 0x35, 0xf1, 0x00, 0x85, 0xc0, 0xa1}};
+// auto_defend_toggle 0x5692d0 (__cdecl, no arguments; ret): flips auto_defend unless enemies are attacking and it is
+// off, writes the Options menu's ON / OFF text number and keeps the drop-down open (0x781888).
+const Site kAutoDefendToggle{"auto_defend_toggle", 0x5692d0, {0xa1, 0x84, 0xb0, 0xfe, 0x00, 0x85, 0xc0, 0xa0}};
+
+const Var<int> kDifficulty{0xf2a988};       // 0..4; Zeus.inf and the saved games keep it
+const Var<int> kDifficultyLowest{0xfeb1f8}; // the lowest difficulty of this mission (its result reads it)
+const Var<int> kButtonParam{0xf135f8};      // the pressed button's parameter (difficulty_step reads it)
+const Var<BYTE> kAutoDefend{0xf2a990};      // 0 / 1; Zeus.inf and the saved games keep it
+const Var<int> kInvasionA{0xfeb084}, kInvasionB{0xfeb3ec}; // not 0: enemies attacking (auto_defend_toggle's test)
+const Var<BYTE> kGameScreen{0xf2a6dd};
+const Var<int> kEditorMode{0x665e2c}; // 1 in the editors (their city map is screen 0x01 too)
+constexpr int kTextDifficulty = 153;  // Zeus_Text.eng: 1..5 Beginner .. Olympian
+
+int Difficulty()
+{
+    return *kDifficulty;
+}
+int DifficultyLowest()
+{
+    return *kDifficultyLowest;
+}
+void SetDifficultyLowest(int v)
+{
+    *kDifficultyLowest = v;
+}
+int ButtonParam()
+{
+    return *kButtonParam;
+}
+void SetButtonParam(int v)
+{
+    *kButtonParam = v;
+}
+void __cdecl DifficultyStep()
+{
+    Function<Void_fn>(kDifficultyStep)();
+}
+std::string LevelName(int level)
+{
+    return Text(kTextDifficulty, level + 1);
+}
+bool AutoDefend()
+{
+    return *kAutoDefend != 0;
+}
+void ToggleAutoDefend()
+{
+    Function<Void_fn>(kAutoDefendToggle)(); // the core calls it only with no enemies attacking: it always flips
+}
+bool UnderAttack()
+{
+    return *kInvasionA != 0 || *kInvasionB != 0;
+}
+// The city being played: the city screen, or with a ship (0x20) or a company (0x48) selected -- the screens where Esc
+// opens the pause menu (games/zeus/game_menu); the Options menu puts the city screen back before calling its items.
+bool InCity()
+{
+    const int s = *kGameScreen;
+    return *kEditorMode != 1 && (s == 0x01 || s == 0x20 || s == 0x48);
+}
+// Zeus has no multiplayer game.
+bool AlwaysSinglePlayer()
+{
+    return true;
+}
+
+const go::Difficulty kDifficultyRows(&Difficulty, &DifficultyLowest, &SetDifficultyLowest, &ButtonParam,
+                                     &SetButtonParam, &DifficultyStep, &LevelName,
+                                     1, // Mortal: config_load's default
+                                     &AutoDefend, &ToggleAutoDefend, &UnderAttack, &InCity, &AlwaysSinglePlayer);
+
+void AttachDifficultyRows()
+{
+    for (const Site *s : {&kDifficultyStep, &kAutoDefendToggle}) {
+        if (!Matches(*s)) {
+            core_log("options window: %s at 0x%lx does not match; no Difficulty and Auto defend rows (the Options "
+                     "menu keeps the game's own)",
+                     s->name, static_cast<unsigned long>(s->address));
+            return;
+        }
+    }
+    go::AttachDifficulty(kDifficultyRows);
+    core_log("options window: the game's difficulty and auto defend found");
+}
+
 core::diag::Feature g_newPlayer{"new player's speeds (games/zeus/options_original)"};
 bool g_checked = false;
 
@@ -260,6 +351,7 @@ bool Attach()
     g_ok = true;
     go::Attach(kGame);
     core_log("options window: the game's own options found");
+    AttachDifficultyRows();
     return true;
 }
 
@@ -267,6 +359,7 @@ void AttachForTest()
 {
     g_ok = true;
     go::Attach(kGame);
+    go::AttachDifficulty(kDifficultyRows);
 }
 
 void ReapplyVolumes()

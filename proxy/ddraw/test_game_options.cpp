@@ -3,11 +3,18 @@
 // only when it differs; the message kinds' "2 - value", their names, a fixed kind left out; the sound switches and
 // volumes; Restore defaults and Apply writing only what changed; ReapplyVolumes on the streamed channels only; no
 // rows before Attach. Then a new player's speeds for each combination of a player file and the shipped speeds, and
-// PlayerFileIn on a folder made below this exe's (test_game_options_tmp\, removed at the end).
+// PlayerFileIn on a folder made below this exe's (test_game_options_tmp\, removed at the end). Last, the difficulty
+// and auto defend on a fake game whose difficulty_step is __cdecl and reads the button parameter: shown only in a
+// city and single player, one level at a time, the button parameter put back, the lowest difficulty following it
+// down, Restore defaults, auto defend refused while enemies attack (a notice), and a fault in the step that switches
+// both rows off while the lowest still follows the level reached.
+#include "core/diag/guard.h"
 #include "core/options/game_options.h"
+#include "core/options/menu_text.h"
 #include "core/options/window.h"
 #include "core/platform/files.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -18,6 +25,15 @@
 
 namespace co = core::options;
 namespace go = core::options::game_options;
+
+// Before core/ui/notice is installed, its texts go to our caption line: recorded here.
+std::string g_caption;
+namespace core::output {
+void SetNotice(const char *utf8, unsigned)
+{
+    g_caption = utf8;
+}
+} // namespace core::output
 
 namespace {
 
@@ -274,14 +290,143 @@ void TestPlayerFile()
     Check(GetFileAttributesW(root.c_str()) == INVALID_FILE_ATTRIBUTES, "the test folder removed");
 }
 
+// --- Difficulty and auto defend.
+struct FakeDifficulty {
+    int level = 1, lowest = 1, param = 77;
+    std::vector<int> steps; // the button parameter seen by each call of the step
+    int faultAt = -1;       // the step faults on this call (0-based); -1 never
+    bool defend = false, attack = false, city = true, single = true;
+    int toggles = 0;
+} d;
+
+void __cdecl FakeStep() // as the games' difficulty_step: reads the button parameter, clamps 0..4
+{
+    if (static_cast<int>(d.steps.size()) == d.faultAt) {
+        *static_cast<volatile int *>(nullptr) = 1;
+    }
+    d.steps.push_back(d.param);
+    d.level = std::max(0, std::min(4, d.level + (d.param == 0 ? 1 : -1)));
+}
+int DLevel() { return d.level; }
+int DLowest() { return d.lowest; }
+void DSetLowest(int v) { d.lowest = v; }
+int DParam() { return d.param; }
+void DSetParam(int v) { d.param = v; }
+std::string DName(int k) { return "Level " + std::to_string(k); }
+bool DDefend() { return d.defend; }
+void DToggle() { d.defend = !d.defend; ++d.toggles; }
+bool DAttack() { return d.attack; }
+bool DCity() { return d.city; }
+bool DSingle() { return d.single; }
+
+const go::Difficulty kDiff(&DLevel, &DLowest, &DSetLowest, &DParam, &DSetParam, &FakeStep, &DName, 2, &DDefend,
+                           &DToggle, &DAttack, &DCity, &DSingle);
+
+void TestDifficulty()
+{
+    std::vector<co::Row> rows;
+    go::DifficultyRows(rows);
+    Check(rows.empty() && !go::DifficultyAttached() && !go::DifficultyShown() && !go::ToggleAutoDefend(),
+          "difficulty: before AttachDifficulty: no rows, no toggle");
+    go::AttachDifficulty(kDiff);
+    Check(go::DifficultyAttached() && go::DifficultyShown(), "difficulty: attached, shown in a city");
+    d.city = false;
+    go::DifficultyRows(rows);
+    Check(rows.empty() && !go::DifficultyShown(), "difficulty: not in a city: no rows");
+    d.city = true;
+    d.single = false;
+    go::DifficultyRows(rows);
+    Check(rows.empty(), "difficulty: not single player: no rows");
+    d.single = true;
+    go::DifficultyRows(rows);
+    Check(rows.size() == 2, "difficulty: two rows in a city, single player");
+    const co::Row level = rows[0], defend = rows[1];
+    Check(level.kind == co::Kind::Choice && level.id == "difficulty" && level.label == "Difficulty" &&
+              level.choices.size() == 5 && level.choices[0] == "Level 0" && level.choices[4] == "Level 4" &&
+              level.defaultValue == 2,
+          "difficulty: a choice of the game's five levels, the game's default");
+    Check(level.help.find("result") != std::string::npos && level.help.find("lowest") != std::string::npos,
+          "difficulty: its description says the mission's result counts the lowest");
+    Check(defend.kind == co::Kind::Check && defend.id == "auto_defend" && defend.label == "Auto defend" &&
+              defend.defaultValue == 0 && !defend.help.empty(),
+          "auto defend: a checkbox, off by default, described");
+    Check(Get(level.value) == 1 && Get(defend.value) == 0, "difficulty: the game's values read");
+
+    // Up three levels: three steps with parameter 0, the parameter put back, the lowest stays.
+    Set(level.value, 4);
+    Check(d.level == 4 && d.steps.size() == 3 && d.steps[0] == 0 && d.steps[2] == 0 && d.param == 77 &&
+              d.lowest == 1,
+          "difficulty: 1 -> 4: three steps up, button parameter back, lowest stays 1");
+    // Down four: four steps with parameter 1, the lowest follows down.
+    d.steps.clear();
+    Set(level.value, 0);
+    Check(d.level == 0 && d.steps.size() == 4 && d.steps[3] == 1 && d.param == 77 && d.lowest == 0,
+          "difficulty: 4 -> 0: four steps down, the lowest now 0");
+    d.steps.clear();
+    Set(level.value, 3);
+    Check(d.level == 3 && d.lowest == 0 && d.steps.size() == 3, "difficulty: up again: the lowest stays 0");
+    d.steps.clear();
+    Set(level.value, 3);
+    Check(d.steps.empty(), "difficulty: the same level: no step");
+    d.steps.clear();
+    Set(level.value, 9);
+    Check(d.level == 4 && d.steps.size() == 1, "difficulty: past the last level: to the last");
+
+    // Restore defaults in the window: the game's default (2), Apply walks there.
+    {
+        co::Page page{"General", {{"Difficulty", rows}}};
+        co::Window w;
+        w.SetPages({page});
+        w.Open(0, 0);
+        w.RestoreDefaults();
+        d.steps.clear();
+        w.Apply();
+        Check(d.level == 2 && d.steps.size() == 2 && !d.defend && d.toggles == 0,
+              "difficulty: Restore defaults + Apply: the game's default, auto defend not touched");
+    }
+
+    // Auto defend: switched when no enemies attack; refused while they do (a notice, nothing changes).
+    Set(defend.value, 1);
+    Check(d.defend && d.toggles == 1, "auto defend: on");
+    Set(defend.value, 1);
+    Check(d.toggles == 1, "auto defend: on again: not toggled");
+    d.attack = true;
+    g_caption.clear();
+    Set(defend.value, 0);
+    Check(d.defend && d.toggles == 1 && g_caption == co::menu_text::kAutoDefendLocked,
+          "auto defend: while enemies attack: not switched off, the notice shown");
+    Check(!go::ToggleAutoDefend() && d.defend, "auto defend: ... the menu's toggle refused too");
+    d.defend = false;
+    Check(!go::ToggleAutoDefend() && !d.defend, "auto defend: ... and not switched on");
+    d.attack = false;
+    Check(go::ToggleAutoDefend() && d.defend, "auto defend: the menu's toggle after the attack");
+
+    // A fault in the game's step (the second of three): off, the button parameter back, the level reached kept and
+    // the lowest following it.
+    d.level = 4;
+    d.lowest = 4;
+    d.steps.clear();
+    d.faultAt = 1;
+    Set(level.value, 1);
+    Check(d.level == 3 && d.lowest == 3 && d.param == 77, "difficulty: a fault: stays at 3, lowest 3, parameter back");
+    rows.clear();
+    go::DifficultyRows(rows);
+    Check(rows.empty() && !go::DifficultyShown(), "difficulty: ... both rows off from then on");
+    const int toggles = d.toggles;
+    Check(!go::ToggleAutoDefend() && d.toggles == toggles, "difficulty: ... auto defend not changed either");
+}
+
 } // namespace
 
 int main()
 {
+    core::diag::InstallExceptionLog(); // the guard's exception handling (the difficulty's fault)
     TestRows();
     TestWindow();
     TestNewPlayer();
     TestPlayerFile();
+    TestDifficulty(); // last: its fault switches the rows off for the rest of the process
+
     go::DetachForTest();
     std::vector<co::Row> rows;
     go::SoundRows(rows);

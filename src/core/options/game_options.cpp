@@ -1,7 +1,10 @@
 #include "core/options/game_options.h"
 
+#include "core/diag/guard.h"
 #include "core/log.h"
+#include "core/options/menu_text.h"
 #include "core/options/option_text.h"
+#include "core/ui/notice.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -81,7 +84,152 @@ void Texts(Row &r, const char *key)
     }
 }
 
+// --- Difficulty and auto defend.
+
+const Difficulty *g_diff = nullptr;
+core::diag::Feature g_difficulty{"difficulty and auto defend (core/options/game_options)"};
+constexpr int kLevels = 5;
+
+int Level()
+{
+    return std::clamp(g_diff->level(), 0, kLevels - 1);
+}
+
+// The lowest difficulty of the mission follows the difficulty down, as the game's own dialog does when it closes.
+void FollowLowest()
+{
+    const int now = g_diff->level();
+    if (g_diff->lowest() > now) {
+        g_diff->setLowest(now);
+        core_log("options window: the lowest difficulty of this mission is now %d", now);
+    }
+}
+
+struct Walk {
+    int to;
+};
+
+// One level at a time, as the game's own arrows: the game reloads its data for each level.
+void WalkNow(void *p)
+{
+    const Walk &w = *static_cast<Walk *>(p);
+    const Difficulty &d = *g_diff;
+    for (int k = 0; k < kLevels && Level() != w.to; ++k) {
+        d.setButtonParam(Level() < w.to ? 0 : 1);
+        d.step();
+    }
+}
+
+int DifficultyGet(const void *c)
+{
+    if (!g_diff) {
+        return 0;
+    }
+    return IndexOf(c) == 0 ? Level() : (g_diff->autoDefend() ? 1 : 0);
+}
+
+void DifficultySet(const void *c, int v)
+{
+    if (!g_diff || !core::diag::Enabled(g_difficulty)) {
+        core_log("options window: the difficulty and auto defend are switched off; not changed");
+        return;
+    }
+    if (IndexOf(c) == 1) {
+        if ((v != 0) != g_diff->autoDefend()) {
+            ToggleAutoDefend();
+        }
+        return;
+    }
+    const int from = Level();
+    Walk w{std::clamp(v, 0, kLevels - 1)};
+    const int param = g_diff->buttonParam();
+    const bool ok = core::diag::Guarded(g_difficulty, &WalkNow, &w);
+    // Outside the guard: after a fault the difficulty stays at the level reached (each step is complete in the game),
+    // and the lowest still follows it, so a fault never keeps a lower difficulty out of the mission's result.
+    g_diff->setButtonParam(param);
+    FollowLowest();
+    if (ok) {
+        core_log("options window: the game's difficulty %d -> %d (lowest of this mission %d)", from, Level(),
+                 g_diff->lowest());
+    }
+    else {
+        core_log("options window: the difficulty failed at level %d; the difficulty and auto defend rows are off",
+                 Level());
+    }
+}
+
+void ToggleNow(void *p)
+{
+    bool &flipped = *static_cast<bool *>(p);
+    if (g_diff->underAttack()) {
+        core_log("options window: enemies are attacking: auto defend stays %s", g_diff->autoDefend() ? "on" : "off");
+        core::ui::notice::Post(core::options::menu_text::kAutoDefendLocked);
+        return;
+    }
+    g_diff->toggleAutoDefend();
+    flipped = true;
+    core_log("options window: the game's auto defend is now %s", g_diff->autoDefend() ? "on" : "off");
+}
+
 } // namespace
+
+void AttachDifficulty(const Difficulty &d)
+{
+    g_diff = &d;
+}
+
+bool DifficultyAttached()
+{
+    return g_diff != nullptr;
+}
+
+bool DifficultySwitchedOff()
+{
+    return g_diff && !core::diag::Enabled(g_difficulty);
+}
+
+bool DifficultyShown()
+{
+    return g_diff && core::diag::Enabled(g_difficulty) && g_diff->inCity() && g_diff->singlePlayer();
+}
+
+void DifficultyRows(std::vector<Row> &rows)
+{
+    if (!DifficultyShown()) {
+        return;
+    }
+    Row level;
+    level.kind = Kind::Choice;
+    level.id = "difficulty";
+    Texts(level, "difficulty");
+    for (int k = 0; k < kLevels; ++k) {
+        level.choices.push_back(g_diff->levelName(k));
+    }
+    level.value = {&DifficultyGet, &DifficultySet, reinterpret_cast<const void *>(intptr_t{0})};
+    level.defaultValue = std::clamp(g_diff->defaultLevel, 0, kLevels - 1);
+    rows.push_back(std::move(level));
+    Row defend;
+    defend.kind = Kind::Check;
+    defend.id = "auto_defend";
+    Texts(defend, "auto_defend");
+    defend.value = {&DifficultyGet, &DifficultySet, reinterpret_cast<const void *>(intptr_t{1})};
+    defend.defaultValue = 0; // both games ship with it off
+    rows.push_back(std::move(defend));
+}
+
+bool ToggleAutoDefend()
+{
+    if (!g_diff || !core::diag::Enabled(g_difficulty)) {
+        core_log("options window: the difficulty and auto defend are switched off; auto defend not changed");
+        return false;
+    }
+    bool flipped = false;
+    if (!core::diag::Guarded(g_difficulty, &ToggleNow, &flipped)) {
+        core_log("options window: auto defend failed; the difficulty and auto defend rows are off");
+        return false;
+    }
+    return flipped;
+}
 
 void Attach(const GameOptions &g)
 {
@@ -96,6 +244,7 @@ bool Attached()
 void DetachForTest()
 {
     g_game = nullptr;
+    g_diff = nullptr;
 }
 
 void SpeedRows(std::vector<Row> &rows, bool gameSpeed)

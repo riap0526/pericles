@@ -105,6 +105,57 @@ bool CheckNewPlayer(const NewPlayer &n);
 // way the game finds its players.
 bool PlayerFileIn(const std::wstring &folder);
 
+// The difficulty and auto defend, both games' own (the same code in both: Zeus's Auto Defend is Emperor's Auto
+// Combat). Their own Attach, so that a game whose difficulty functions do not match keeps its other rows. The values
+// stay where the game keeps them (its .inf and its saved games).
+struct Difficulty {
+    Difficulty(int (*level)(), int (*lowest)(), void (*setLowest)(int level), int (*buttonParam)(),
+               void (*setButtonParam)(int value), void(__cdecl *step)(), std::string (*levelName)(int level),
+               int defaultLevel, bool (*autoDefend)(), void (*toggleAutoDefend)(), bool (*underAttack)(),
+               bool (*inCity)(), bool (*singlePlayer)())
+        : level(level), lowest(lowest), setLowest(setLowest), buttonParam(buttonParam), setButtonParam(setButtonParam),
+          step(step), levelName(levelName), defaultLevel(defaultLevel), autoDefend(autoDefend),
+          toggleAutoDefend(toggleAutoDefend), underAttack(underAttack), inCity(inCity), singlePlayer(singlePlayer)
+    {
+    }
+
+    // The difficulty 0..4 and the lowest one used in this mission (the game keeps it for the mission's result: its
+    // own difficulty dialog lowers it to the difficulty when it closes).
+    int (*level)();
+    int (*lowest)();
+    void (*setLowest)(int level);
+    // The game's button parameter and its difficulty_step (__cdecl, no arguments), which reads it: 0 one level up,
+    // else one down (clamped to 0..4), then reloads the game's data for that level. step does not touch the lowest.
+    int (*buttonParam)();
+    void (*setButtonParam)(int value);
+    void(__cdecl *step)();
+    std::string (*levelName)(int level); // the game's name of a level, 0..4
+    int defaultLevel;                    // the game's own default (Restore defaults)
+    // Auto defend on; toggleAutoDefend flips it as the game does (called only when underAttack() is false).
+    bool (*autoDefend)();
+    void (*toggleAutoDefend)();
+    bool (*underAttack)(); // enemies are attacking the city now: auto defend is not changed
+    // Where the rows are shown: a city being played (not the menus, the editors, a mission's briefing) ...
+    bool (*inCity)();
+    // ... by one player (a multiplayer game keeps both in step over the network: not ours to change).
+    bool (*singlePlayer)();
+};
+
+// Start-up, after the game layer checked the game's functions (d lives as long as the process).
+void AttachDifficulty(const Difficulty &d);
+bool DifficultyAttached(); // the game's functions matched (the Options menus' items are then ours)
+bool DifficultySwitchedOff(); // attached, then switched off after a fault (a game's own toggle may take over)
+// Attached, not switched off after a fault, in a city and single player: the rows are shown now. Game thread.
+bool DifficultyShown();
+
+// The rows (a Choice of the five levels, a Check), only when DifficultyShown(); a category of their own
+// (menu_text::kCategoryDifficulty). Game thread.
+void DifficultyRows(std::vector<Row> &rows);
+
+// The game's Options menu's Auto defend, and the row's set: flips auto defend unless enemies are attacking now (then a
+// notice says why and nothing changes). true: flipped. Game thread; guarded (a fault switches both rows off).
+bool ToggleAutoDefend();
+
 // For the offline test: no game options again.
 void DetachForTest();
 

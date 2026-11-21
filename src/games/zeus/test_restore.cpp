@@ -189,6 +189,7 @@
 #include "games/zeus/fullscreen.h"
 #include "games/zeus/game_menu.h"
 #include "core/ui/game_menu_layout.h"
+#include "core/options/game_options.h"
 #include "games/zeus/options_entry.h"
 #include "games/zeus/options_original.h"
 #include "games/zeus/display_options.h"
@@ -2945,6 +2946,145 @@ void OriginalOptions()
     At<int>(0xf2a774) = 90;
     oo::AfterInfRead();
     Check(At<int>(0xf2a774) == 90, "game options: ... checked once only");
+}
+
+// --- The difficulty and auto defend (games/zeus/options_original and options_entry on core/options/game_options).
+// difficulty_step 0x401ee0 and auto_defend_toggle 0x5692d0 are __cdecl with no arguments: so are the fakes.
+constexpr DWORD aDifficulty = 0xf2a988, aDifficultyLowest = 0xfeb1f8, aAutoDefend = 0xf2a990,
+                aInvasionA = 0xfeb084, aInvasionB = 0xfeb3ec, aKeepOpen = 0x781888;
+std::vector<int> g_difficultySteps; // button_param at each call
+int g_autoDefendToggles = 0;
+void __cdecl FakeDifficultyStep() // as 0x401ee0: button_param 0 up, else down, clamped to 0..4
+{
+    const int p = At<int>(aButtonParam);
+    g_difficultySteps.push_back(p);
+    At<int>(aDifficulty) = std::max(0, std::min(4, At<int>(aDifficulty) + (p == 0 ? 1 : -1)));
+}
+void __cdecl FakeDifficultyStepFault()
+{
+    *static_cast<volatile int *>(nullptr) = 1;
+}
+void __cdecl FakeAutoDefendToggle() // as 0x5692d0: also the menu's ON / OFF text and the drop-down kept open
+{
+    ++g_autoDefendToggles;
+    const bool on = At<unsigned char>(aAutoDefend) == 0;
+    At<unsigned char>(aAutoDefend) = on ? 1 : 0;
+    At<int>(aKeepOpen) = 1;
+    At<short>(0x5efd72) = static_cast<short>(on ? 11 : 12);
+}
+
+void DifficultyOptions()
+{
+    namespace oo = zeus::options_original;
+    namespace oe = zeus::options_entry;
+    SetupKeys(); // editor_mode 0, game_screen 1 (the city)
+    Thunk(0x401ee0, reinterpret_cast<void *>(&FakeDifficultyStep));
+    Thunk(0x5692d0, reinterpret_cast<void *>(&FakeAutoDefendToggle));
+    At<int>(aDifficulty) = 1;
+    At<int>(aDifficultyLowest) = 1;
+    At<int>(aButtonParam) = 5;
+    At<unsigned char>(aAutoDefend) = 0;
+    At<int>(aInvasionA) = 0;
+    At<int>(aInvasionB) = 0;
+    oo::AttachForTest();
+
+    auto pages = zeus::options_window::PagesForTest();
+    const co::Category *diff = FindCategory(pages, 0, "Difficulty");
+    Check(diff && diff->rows.size() == 2 && diff->rows[0].id == "difficulty" && diff->rows[1].id == "auto_defend" &&
+              diff->rows[0].choices.size() == 5 && diff->rows[0].defaultValue == 1,
+          "difficulty: in the city: General > Difficulty with the two rows (default Mortal)");
+    // The other screens: the editors' city map (also 0x01), the main menu, the briefing, the difficulty dialog.
+    At<int>(aEditorModeK) = 1;
+    Check(!FindCategory(zeus::options_window::PagesForTest(), 0, "Difficulty"), "difficulty: in an editor: none");
+    At<int>(aEditorModeK) = 0;
+    for (int s : {0x00, 0x35, 0x45, 0x11}) {
+        At<unsigned char>(aGameScreenK) = static_cast<unsigned char>(s);
+        Check(!FindCategory(zeus::options_window::PagesForTest(), 0, "Difficulty"),
+              s == 0x00   ? "difficulty: on the main menu: none"
+              : s == 0x35 ? "difficulty: on the briefing: none"
+              : s == 0x45 ? "difficulty: over the game's difficulty dialog: none"
+                          : "difficulty: over the message list: none");
+    }
+    for (int s : {0x20, 0x48}) {
+        At<unsigned char>(aGameScreenK) = static_cast<unsigned char>(s);
+        Check(FindCategory(zeus::options_window::PagesForTest(), 0, "Difficulty") != nullptr,
+              s == 0x20 ? "difficulty: a ship selected: shown" : "difficulty: a company selected: shown");
+    }
+    At<unsigned char>(aGameScreenK) = 1;
+
+    // One level at a time through the game's step, button_param put back, the lowest follows down.
+    const co::Row &level = diff->rows[0], &defend = diff->rows[1];
+    level.value.set(level.value.ctx, 3);
+    Check(At<int>(aDifficulty) == 3 && g_difficultySteps.size() == 2 && g_difficultySteps[0] == 0 &&
+              At<int>(aButtonParam) == 5 && At<int>(aDifficultyLowest) == 1,
+          "difficulty: Mortal -> Titan: two steps up, button_param back, lowest Mortal");
+    g_difficultySteps.clear();
+    level.value.set(level.value.ctx, 0);
+    Check(At<int>(aDifficulty) == 0 && g_difficultySteps.size() == 3 && g_difficultySteps[2] == 1 &&
+              At<int>(aDifficultyLowest) == 0 && LogContains("the lowest difficulty of this mission is now 0"),
+          "difficulty: Titan -> Beginner: three steps down, lowest Beginner, logged");
+
+    // Auto defend through the game's toggle; refused while enemies attack.
+    defend.value.set(defend.value.ctx, 1);
+    Check(g_autoDefendToggles == 1 && At<unsigned char>(aAutoDefend) == 1, "auto defend: on through the game's toggle");
+    At<int>(aInvasionB) = 3;
+    defend.value.set(defend.value.ctx, 0);
+    Check(g_autoDefendToggles == 1 && At<unsigned char>(aAutoDefend) == 1 && LogContains("enemies are attacking"),
+          "auto defend: while enemies attack: not switched off (logged)");
+    At<int>(aInvasionB) = 0;
+
+    // The Options menu: Difficulty opens our window (not the game's dialog 0x401ec0), Auto Defend goes through our check.
+    PutMenu(0x5eff00, 1, 0x5efcc0, 6);
+    PutMenu(0x5eff10, 2, 0x5efd20, 7);
+    PutMenu(0x5eff40, 2, 0x5efd20, 3);
+    PutMenu(0x5eff80, 2, 0x5efd20, 2);
+    PutMenu(0x5f0010, 2, 0x5efd20, 2);
+    const short options[] = {1, 2, 3, 6, 9, 11, 13};
+    const DWORD optionHandlers[] = {0x401db0, 0x401f90, 0x4023d0, 0x401ec0, 0x402660, 0x5692d0, 0x4026a0};
+    for (int k = 0; k < 7; ++k) {
+        PutItem(0x5efd20 + 16 * k, options[k], optionHandlers[k]);
+    }
+    oe::AttachForTest(true, true);
+    using core::ui::game_menu_layout::Menu;
+    const Menu o = *reinterpret_cast<const Menu *>(0x5eff10 + g_imageShift);
+    const DWORD h3 = reinterpret_cast<DWORD>(o.items[3].handler), h5 = reinterpret_cast<DWORD>(o.items[5].handler);
+    Check(o.count == 6 && o.items[3].text == 6 && h3 != 0x401ec0 && h3 != 0 && h5 != 0x5692d0 && h5 != 0 &&
+              reinterpret_cast<DWORD>(o.items[4].handler) == 0x402660,
+          "difficulty menu: Difficulty and Auto Defend are ours; Autosave the game's");
+    o.items[5].handler();
+    Check(g_autoDefendToggles == 2 && At<unsigned char>(aAutoDefend) == 0, "difficulty menu: Auto Defend toggles");
+    At<int>(aInvasionA) = 1;
+    o.items[5].handler();
+    Check(g_autoDefendToggles == 2 && At<unsigned char>(aAutoDefend) == 0,
+          "difficulty menu: ... not while enemies attack (not switched on)");
+    At<int>(aInvasionA) = 0;
+    o.items[3].handler(); // the window is not attached in this test: nothing, logged
+    Check(At<unsigned char>(aGameScreenK) == 1 && LogContains("the Options menu's Difficulty does nothing"),
+          "difficulty menu: Difficulty without the window: nothing (not the game's dialog), logged");
+
+    // Another screen under the menu (not one with the rows): still our check, never the game's own toggle.
+    At<unsigned char>(aGameScreenK) = 0x14;
+    At<unsigned char>(aAutoDefend) = 1;
+    At<int>(aInvasionB) = 2;
+    o.items[5].handler();
+    Check(g_autoDefendToggles == 2 && At<unsigned char>(aAutoDefend) == 1,
+          "difficulty menu: off the city screens, while enemies attack: still not switched off");
+    At<int>(aInvasionB) = 0;
+    At<unsigned char>(aGameScreenK) = 1;
+
+    // A fault in the game's step: the rows off; the menu's Auto Defend is then the game's own toggle (which may switch
+    // it off while enemies attack, its own rule).
+    Thunk(0x401ee0, reinterpret_cast<void *>(&FakeDifficultyStepFault));
+    level.value.set(level.value.ctx, 4);
+    Check(!core::options::game_options::DifficultyShown() && core::options::game_options::DifficultySwitchedOff() &&
+              At<int>(aButtonParam) == 5,
+          "difficulty: a fault in the game's step: the rows off, button_param back");
+    At<int>(aInvasionB) = 2;
+    o.items[5].handler();
+    Check(g_autoDefendToggles == 3 && At<unsigned char>(aAutoDefend) == 0 &&
+              LogContains("the Options menu's Auto Defend is the game's own"),
+          "difficulty menu: after the fault: Auto Defend is the game's own toggle, logged");
+    At<int>(aInvasionB) = 0;
 }
 
 // --- The Display options dialog (games/zeus/display_options on core/options/display_dialog).
@@ -5726,6 +5866,7 @@ const Scenario kScenarios[] = {
     {"options_menus", &OptionsMenus},
     {"original_options", &OriginalOptions},
     {"original_options_missing", &OriginalOptionsMissing},
+    {"difficulty_options", &DifficultyOptions},
     {"display_dialog", &DisplayDialog},
     {"display_dialog_missing", &DisplayDialogMissing},
     {"display_dialog_behind_fault", &DisplayDialogBehindFault},

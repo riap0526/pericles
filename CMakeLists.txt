@@ -498,8 +498,9 @@ target_link_options(test_options PRIVATE -static)
 # Offline test of core/options/game_options: the game's own options as rows on a fake game (ranges, defaults, the
 # message kinds, Apply writing only what changed, the volumes set again) and a new player's starting speeds.
 add_executable(test_game_options proxy/ddraw/test_game_options.cpp src/core/options/game_options.cpp
-    src/core/options/option_text.cpp src/core/options/window.cpp src/core/options/menu.cpp src/core/ui/hotkey.cpp
-    src/core/log.cpp src/core/platform/files.cpp src/core/game.cpp)
+    src/core/options/option_text.cpp src/core/options/menu_text.cpp src/core/options/window.cpp
+    src/core/options/menu.cpp src/core/ui/hotkey.cpp src/core/ui/notice.cpp src/core/ui/notice_text.cpp
+    src/core/diag/guard.cpp src/core/log.cpp src/core/platform/files.cpp src/core/game.cpp)
 target_include_directories(test_game_options PRIVATE src)
 target_link_options(test_game_options PRIVATE -static)
 

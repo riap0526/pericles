@@ -161,6 +161,14 @@ const Text kShared[] = {
     {"game", "autosave", "The game saves your city by itself from time to time, as its own Autosave option does.",
      nullptr, 0, false, "Autosave"},
     {"game", "messages", nullptr, kMessageModes, N(kMessageModes)}, // no tooltip on the kinds' names
+    {"game", "difficulty", "How hard the game is. A change takes effect at once. The mission's result counts the "
+                           "lowest difficulty you played it at: once you lower it, raising it again later does not "
+                           "change that.",
+     nullptr, 0, false, "Difficulty"},
+    {"game", "auto_defend", "When enemies come, your soldiers gather and march out to meet them by themselves. They "
+                            "stay out after the enemies have left: switch this off, then send them back yourself. It "
+                            "can't be changed while enemies are attacking.",
+     nullptr, 0, false, "Auto defend"},
     {"game", "music", "The music. The slider sets its volume.", nullptr, 0, false, "Music"},
     {"game", "speech", "The spoken voices. The slider sets their volume.", nullptr, 0, false, "Speech"},
     {"game", "sound_effects", "The sounds of the buildings, the people and the buttons. The slider sets their "

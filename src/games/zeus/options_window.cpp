@@ -53,6 +53,15 @@ std::vector<co::Page> BuildPages()
         general.categories.push_back(std::move(c));
     }
     {
+        // Only while a city is played (games/zeus/options_original's InCity): in the menus the next mission's choice
+        // overrides it, and the briefing would reset the starting money.
+        co::Category c{core::options::menu_text::kCategoryDifficulty, {}};
+        if (!sr::Dry()) go::DifficultyRows(c.rows);
+        if (!c.rows.empty()) {
+            general.categories.push_back(std::move(c));
+        }
+    }
+    {
         co::Category c{"Autosave", {}};
         if (!sr::Dry()) go::AutosaveRows(c.rows);
         if (!c.rows.empty()) {

@@ -3,6 +3,7 @@
 #include "core/capture/city_picture.h"
 #include "core/diag/guard.h"
 #include "core/log.h"
+#include "core/options/game_options.h"
 #include "core/options/menu_text.h"
 #include "core/ui/game_menu_layout.h"
 #include "games/zeus/game_menu.h"
@@ -56,10 +57,11 @@ constexpr int kTextCityShot = 40, kTextMinimapShot = 41, kTextReplayMap = 42, kT
 constexpr int kMainMenuGroup = 30, kTextWebsite = 2; // "Activision Website"
 // Autosave (0x402660) and Auto Defend (0x5692d0) write their ON / OFF text number into the game's table (its +2 at
 // 0x5efd62, 0x5efd72; config_load at start-up too): ours show the number the game's entry has now.
-constexpr int kAutosaveRow = 4, kAutoDefendRow = 5;
+constexpr int kDifficultyRow = 3, kAutosaveRow = 4, kAutoDefendRow = 5;
 
 // The game's dialogs, the fall-back when our window is not available: Speed, Display, Sound options, Messages.
 const DWORD kSpeedDialog = 0x4023d0, kDisplayDialog = 0x401db0, kSoundDialog = 0x401f90, kMessagesDialog = 0x4026a0;
+const DWORD kAutoDefendToggle = 0x5692d0; // checked by games/zeus/options_original (auto_defend_toggle)
 // The game's Options items in our menu: Difficulty, Autosave, Auto Defend (Display, Sound and Speed are in our window's
 // pages, Messages in General > Messages).
 constexpr int kFirstGameItem = 3, kGameItems = 3;
@@ -88,6 +90,30 @@ void __cdecl MenuAudio()
     if (!ow::Open(ow::kPageAudio, 0)) {
         reinterpret_cast<Handler_fn>(kSoundDialog)();
     }
+}
+
+// Difficulty: our window's General > Difficulty, not the game's dialog (the window changes it as the dialog's arrows
+// do). The window not available or the rows switched off after a fault: nothing (logged).
+void __cdecl MenuDifficulty()
+{
+    if (!core::options::game_options::DifficultyShown() ||
+        !ow::OpenCategory(ow::kPageGeneral, mt::kCategoryDifficulty)) {
+        core_log("options window: the difficulty is not available now; the Options menu's Difficulty does nothing");
+    }
+}
+
+// Auto Defend: not while enemies are attacking (our check, then the game's own toggle, which writes the menu's ON /
+// OFF text and keeps the drop-down open). Only after a fault switched the rows off: the game's own toggle, as without
+// us (wherever the menu is opened; the menu is the game's, so it is not limited to the screens with the rows).
+void __cdecl MenuAutoDefend()
+{
+    namespace go = core::options::game_options;
+    if (!go::DifficultySwitchedOff()) {
+        go::ToggleAutoDefend();
+        return;
+    }
+    core_log("options window: auto defend is switched off; the Options menu's Auto Defend is the game's own");
+    reinterpret_cast<Handler_fn>(kAutoDefendToggle + g_imageShift)(); // the game's (shifted in the offline test)
 }
 
 void __cdecl MessagesButton()
@@ -140,6 +166,14 @@ void MakeOptions(const MenuItem *game)
         }
         if (k == kAutoDefendRow) {
             g_options[n].text = kTextAutoDefend;
+        }
+        if (core::options::game_options::DifficultyAttached()) { // else the game's dialog and toggle stay
+            if (k == kDifficultyRow) {
+                g_options[n].handler = &MenuDifficulty;
+            }
+            if (k == kAutoDefendRow) {
+                g_options[n].handler = &MenuAutoDefend;
+            }
         }
         ++n;
     }
@@ -322,7 +356,10 @@ void OptionsIn()
     }
     const bool mainMenu = !g_testing && CallTo(kWebsiteOpen.address, reinterpret_cast<const void *>(&OpenOptions));
     core_log("options window: the Options menus open it (General Settings, Video, Audio; in the game then the game's "
-             "Difficulty, Autosave, Auto Defend); the main menu's Activision Website is Options%s",
+             "Difficulty, Autosave, Auto Defend%s); the main menu's Activision Website is Options%s",
+             core::options::game_options::DifficultyAttached()
+                 ? "; Difficulty opens General > Difficulty, Auto Defend not while enemies attack"
+                 : "",
              mainMenu ? "" : " (not changed: the code could not be written)");
     Handler_fn &messagesButton = *reinterpret_cast<Handler_fn *>(kMessagesButtonHandler + g_imageShift);
     if (reinterpret_cast<DWORD>(messagesButton) == kMessagesDialog) {

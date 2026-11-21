@@ -19,6 +19,12 @@ const char *const kMenuHotkeys = "Hotkeys";
 const char *const kMenuCityScreenshot = "Save city screenshot";       // 136 in Emperor's menu font
 const char *const kMenuMinimapScreenshot = "Save minimap screenshot"; // 165
 const char *const kCategoryMessages = "Messages";
+const char *const kCategoryDifficulty = "Difficulty";
+const char *const kMenuDifficulty = "Difficulty";
+const char *const kMenuAutoDefendOn = "Auto Defend - ON"; // as the game's "Autosave - ON" and Zeus's own
+const char *const kMenuAutoDefendOff = "Auto Defend - OFF";
+// Short enough for the games' widest notice box (Zeus's: 460 pixels).
+const char *const kAutoDefendLocked = "Auto defend can't be changed during an attack.";
 
 const char *const kHotkeysTitle = "Hotkeys";
 const char *const kColumnAction = "Action";

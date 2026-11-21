@@ -19,6 +19,11 @@ extern const char *const kRestartTip;
 extern const char *const kMenuGeneral, *const kMenuVideo, *const kMenuAudio, *const kMainMenuOptions, *const kMenuHotkeys;
 extern const char *const kMenuCityScreenshot, *const kMenuMinimapScreenshot;
 extern const char *const kCategoryMessages; // the options window's General > Messages (the message list opens it)
+// The options window's General > Difficulty (the Options menus' Difficulty opens it); the Options menu's Difficulty
+// and Auto defend ON / OFF for a game whose texts have none (Emperor; Zeus uses its own); the notice when auto defend
+// cannot be changed now.
+extern const char *const kCategoryDifficulty, *const kMenuDifficulty, *const kMenuAutoDefendOn,
+    *const kMenuAutoDefendOff, *const kAutoDefendLocked;
 
 // The Hotkeys window and "keep this setting?" (core/options Window::Texts; %s / %d as there).
 extern const char *const kHotkeysTitle, *const kColumnAction, *const kColumnKey, *const kColumnAlternative,
