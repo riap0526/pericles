@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstddef>
+#include <string>
 
 namespace core::settings {
 
@@ -148,6 +149,11 @@ void SetWakeup(void (*wake)());
 
 // The result of the last save, for the panel ("" before the first one).
 void LastSaveResult(char *out, size_t size);
+
+// A label or help text with the game's names filled in: {product} (e.g. Yongle), {ini} (e.g. emperor_engine.ini) and
+// {native} (the game's own size, e.g. 1024x768); the registrations' labels and help get it already. For other texts for
+// players that both games share (core/options/option_text, core/options/menu_text).
+std::string GameNames(const char *text);
 
 // One line for the log: "display.backend=emulated display.scaling=sharp_bilinear ..."
 void Describe(char *out, size_t size);

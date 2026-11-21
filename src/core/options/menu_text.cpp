@@ -43,4 +43,20 @@ const char *const kKeep = "Keep";
 const char *const kRevert = "Revert";
 const char *const kOverlayName = "%s overlay";
 
+namespace {
+const char *const kKeySections[] = {"Arrow keys", "Global hotkeys", "City hotkeys", "Building menus",
+                                    "Overlays",   "Bookmarks",      "Army groups"};
+} // namespace
+
+const char *KeySection(int section)
+{
+    return section >= 0 && section < static_cast<int>(sizeof(kKeySections) / sizeof(kKeySections[0]))
+               ? kKeySections[section]
+               : "";
+}
+
+const char *const kKeyNoteWindow =
+    "{product} also uses this key to switch between window and full screen; that no longer works with it.";
+const char *const kKeyNoteResolution = "{product} also uses this key to change the resolution; that no longer works with it.";
+
 } // namespace core::options::menu_text

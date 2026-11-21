@@ -50,8 +50,8 @@ constexpr int kOptionsCount = 7, kFileCount = 6;
 // Sound, 3 Speed, 6 Difficulty, 9 / 10 Autosave ON / OFF, 11 / 12 Auto Defend ON / OFF, 13 Messages. File (group 1, 7
 // texts): 1 New adventure, 2 Replay episode, 3 Load, 4 Save, 5 Exit game, 6 Delete. Ours use numbers the groups do
 // not have (the game would read past the group into the next one's: we answer them first).
-constexpr int kOptionsGroup = 2, kTextGeneral = 20, kTextVideo = 21, kTextAudio = 22, kTextAutosave = 25,
-              kTextAutoDefend = 26;
+constexpr int kOptionsGroup = 2, kTextGeneral = 20, kTextVideo = 21, kTextAudio = 22, kTextHotkeys = 23,
+              kTextAutosave = 25, kTextAutoDefend = 26;
 constexpr int kFileGroup = 1, kTextLoad = 3, kTextSave = 4, kTextExit = 5, kTextDelete = 6;
 constexpr int kTextCityShot = 40, kTextMinimapShot = 41, kTextReplayMap = 42, kTextExitToMainMenu = 43;
 constexpr int kMainMenuGroup = 30, kTextWebsite = 2; // "Activision Website"
@@ -89,6 +89,14 @@ void __cdecl MenuAudio()
 {
     if (!ow::Open(ow::kPageAudio, 0)) {
         reinterpret_cast<Handler_fn>(kSoundDialog)();
+    }
+}
+
+// Hotkeys: the Hotkeys window alone (the game has no dialog for it: nothing when ours is not available, logged).
+void __cdecl MenuHotkeys()
+{
+    if (!ow::OpenHotkeys()) {
+        core_log("options window: not available; the Options menu's Hotkeys does nothing");
     }
 }
 
@@ -133,10 +141,12 @@ void __cdecl MenuMinimapShot()
 }
 
 // Our tables (filled at Attach from the game's: its handlers and parameters as they are). The game's Options: General
-// Settings, Video, Audio, then the game's Difficulty, Autosave and Auto Defend. The editors: General Settings, Video,
-// Audio (their menus had the game's Display, Sound (, Speed), which the window's pages have).
-MenuItem g_options[3 + kGameItems];
-MenuItem g_editor[3];
+// Settings, Video, Audio, Hotkeys, then the game's Difficulty, Autosave and Auto Defend (Yongle's order). The editors:
+// General Settings, Video, Audio, Hotkeys (their menus had the game's Display, Sound (, Speed), which the window's pages
+// have; the Hotkeys window is the same: scrolling, rotating the map and the bookmarks act in the map editor too).
+constexpr int kOurItems = 4;
+MenuItem g_options[kOurItems + kGameItems];
+MenuItem g_editor[kOurItems];
 // The File menu as Yongle's: Replay map, Load, Save, the screenshots, Delete, Exit to main menu, Exit game.
 MenuItem g_file[8];
 int g_fileCount = 0;
@@ -152,9 +162,10 @@ void Number(MenuItem *items, int n)
 
 void MakeOptions(const MenuItem *game)
 {
-    const MenuItem ours[] = {{0, kTextGeneral, &MenuGeneral, 0, 0},
-                             {0, kTextVideo, &MenuVideo, 0, 0},
-                             {0, kTextAudio, &MenuAudio, 0, 0}};
+    const MenuItem ours[kOurItems] = {{0, kTextGeneral, &MenuGeneral, 0, 0},
+                                      {0, kTextVideo, &MenuVideo, 0, 0},
+                                      {0, kTextAudio, &MenuAudio, 0, 0},
+                                      {0, kTextHotkeys, &MenuHotkeys, 0, 0}};
     int n = 0;
     for (const MenuItem &it : ours) {
         g_options[n++] = it;
@@ -178,10 +189,10 @@ void MakeOptions(const MenuItem *game)
         ++n;
     }
     Number(g_options, n);
-    for (int k = 0; k < 3; ++k) {
+    for (int k = 0; k < kOurItems; ++k) {
         g_editor[k] = ours[k];
     }
-    Number(g_editor, 3);
+    Number(g_editor, kOurItems);
 }
 
 void MakeFile(const MenuItem *game)
@@ -268,6 +279,7 @@ void TextNow(void *p)
         case kTextGeneral: c.result = mt::kMenuGeneral; break;
         case kTextVideo: c.result = mt::kMenuVideo; break;
         case kTextAudio: c.result = mt::kMenuAudio; break;
+        case kTextHotkeys: c.result = mt::kMenuHotkeys; break;
         case kTextAutosave: c.result = c.original(kOptionsGroup, game[kAutosaveRow].text); break;
         case kTextAutoDefend: c.result = c.original(kOptionsGroup, game[kAutoDefendRow].text); break;
         default: break;
@@ -295,7 +307,7 @@ int __cdecl Width_detour(int group)
     const int w = Original(o_Width, kMenuWidth)(group);
     if (g_optionsOn && group == kOptionsGroup) {
         if (g_optionsWidth == 0) {
-            g_optionsWidth = Tiles({mt::kMenuGeneral, mt::kMenuVideo, mt::kMenuAudio});
+            g_optionsWidth = Tiles({mt::kMenuGeneral, mt::kMenuVideo, mt::kMenuAudio, mt::kMenuHotkeys});
         }
         return std::max(w, g_optionsWidth);
     }
@@ -347,16 +359,16 @@ void OptionsIn()
     MakeOptions(GameItems(kOptionsItems));
     g_savedGame[1] = BarMenu(kGameBar, 1);
     BarMenu(kGameBar, 1).items = g_options; // .data: writable as it is
-    BarMenu(kGameBar, 1).count = 3 + kGameItems;
+    BarMenu(kGameBar, 1).count = kOurItems + kGameItems;
     for (int k = 0; k < 3; ++k) {
         Menu &m = BarMenu(kEditorBars[k], 1);
         g_savedEditor[k] = m;
         m.items = g_editor;
-        m.count = 3;
+        m.count = kOurItems;
     }
     const bool mainMenu = !g_testing && CallTo(kWebsiteOpen.address, reinterpret_cast<const void *>(&OpenOptions));
-    core_log("options window: the Options menus open it (General Settings, Video, Audio; in the game then the game's "
-             "Difficulty, Autosave, Auto Defend%s); the main menu's Activision Website is Options%s",
+    core_log("options window: the Options menus open it (General Settings, Video, Audio, Hotkeys; in the game then the "
+             "game's Difficulty, Autosave, Auto Defend%s); the main menu's Activision Website is Options%s",
              core::options::game_options::DifficultyAttached()
                  ? "; Difficulty opens General > Difficulty, Auto Defend not while enemies attack"
                  : "",

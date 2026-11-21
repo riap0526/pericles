@@ -360,6 +360,11 @@ std::string GameText(const char *text)
 
 } // namespace
 
+std::string GameNames(const char *text)
+{
+    return GameText(text);
+}
+
 int Register(const Item &item)
 {
     if (g_count >= kMaxItems) {

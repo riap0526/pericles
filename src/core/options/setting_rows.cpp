@@ -263,8 +263,9 @@ void Add(std::vector<Row> &rows, const char *section, const char *key)
     Row r;
     r.id = key;
     const option_text::Text *text = option_text::Find(section, key);
-    r.label = text && text->label ? text->label : it.label;
-    r.help = text && text->summary ? text->summary : it.help ? it.help : "";
+    // The shared texts name the game's product as {product} (the registry's own are filled in already).
+    r.label = text && text->label ? cs::GameNames(text->label) : it.label;
+    r.help = text && text->summary ? cs::GameNames(text->summary) : it.help ? it.help : "";
     r.restart = it.effect == cs::Effect::Restart && !(text && text->noRestartMark);
     r.relayout = it.effect == cs::Effect::Relayout;
     r.value = {&SettingGet, &SettingSet, &s};

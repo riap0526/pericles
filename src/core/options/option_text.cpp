@@ -147,6 +147,12 @@ const Text kShared[] = {
     {"audio", "master_volume", "The volume of all the music and sounds together. The four volumes below are set "
                                "within it. The checkbox switches them all off and on.",
      nullptr, 0},
+    // {product}: the game's product (filled in by core/options/setting_rows).
+    {"ui", "panel_key", "Opens and closes {product}'s panel for testing and finding problems. Most settings are in "
+                        "Options.",
+     nullptr, 0, false, "Debug panel"},
+    {"debug", "screenshot_key", "Saves the game's picture as a PNG file in the shots folder in {product}'s folder.",
+     nullptr, 0, false, "Save screenshot"},
     {"debug", "report_key", "When something odd is on the screen: marks the log and saves the picture shown, for a "
                             "problem report.",
      nullptr, 0, false, "Save report screenshot"},

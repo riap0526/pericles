@@ -1,6 +1,7 @@
 // Pericles's options window: core/options/options_host with Pericles's pages, drawn with games/zeus/painter, over the
-// game's last frame while the game is paused; its pause menu (games/zeus/game_menu) goes with it. No Hotkeys page
-// yet (the keys are set in the settings file or the debug panel).
+// game's last frame while the game is paused, with its Hotkeys window (core/options/hotkeys_page); its pause menu
+// (games/zeus/game_menu) goes with it. The debug panel then lists only the settings these windows do not, and the ones
+// to change there when something goes wrong.
 //
 // Threads: the game thread only.
 #pragma once
@@ -21,6 +22,7 @@ bool Available(); // attached and not switched off after an error
 // not available (the caller falls back to the game's own dialog).
 bool Open(int page, int category);
 bool OpenCategory(int page, const char *name);
+bool OpenHotkeys(); // the Hotkeys window alone (the Options menus' Hotkeys); false: not available
 // The pages and categories the menus open (BuildPages' order).
 constexpr int kPageGeneral = 0, kPageVideo = 1, kPageAudio = 2;
 
@@ -32,5 +34,8 @@ void OnPresent(unsigned long caller);
 
 // For the offline test (src/games/zeus/test_restore.cpp): the pages as the window would build them now.
 std::vector<core::options::Page> PagesForTest();
+std::vector<core::options::Page> KeyPagesForTest(); // the Hotkeys window's page
+bool ReservedKeyForTest(unsigned vk, unsigned mods); // a key nobody may choose there
+void ScienceNamesForTest(); // science_names taken as matching (the test has a fake there)
 
 } // namespace zeus::options_window

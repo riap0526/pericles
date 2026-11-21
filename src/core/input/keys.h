@@ -26,9 +26,12 @@ enum class Send {
     Call,    // the game layer's KeysGame::call(code): an action the game has no key for (Pericles's overlays)
 };
 
+// The Hotkeys window's sections, the same in both games (their titles in core/options/menu_text).
+enum Section { kArrows, kGlobal, kCity, kBuild, kOverlays, kBookmarks, kArmy, kSectionCount };
+
 struct ActionInfo {
     const char *key; // the setting's key in [keys]
-    int section;     // the game layer's section of the Hotkeys window
+    int section;     // its section of the Hotkeys window (Section)
     int textGroup;   // > 0: the name is the game's text (group, index)
     int textIndex;
 };

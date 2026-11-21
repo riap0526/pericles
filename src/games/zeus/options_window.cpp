@@ -1,15 +1,20 @@
 #include "games/zeus/options_window.h"
 
+#include "core/log.h"
 #include "core/options/game_options.h"
+#include "core/options/hotkeys_page.h"
 #include "core/options/menu_text.h"
 #include "core/options/options_host.h"
 #include "core/options/setting_rows.h"
 #include "core/ui/hotkey.h"
+#include "games/zeus/keys.h"
 #include "games/zeus/options_text.h"
 #include "games/zeus/site.h"
 
 #include <windows.h>
 
+#include <cctype>
+#include <string>
 #include <vector>
 
 namespace zeus::options_window {
@@ -27,9 +32,9 @@ using sr::Toggle;
 
 const Var<int> kEditorMode{0x665e2c}; // editor_mode: 1 in the editors
 
-// Yongle's pages with Pericles's settings, the game's own options among them (games/zeus/options_original). Not yet:
-// the Hotkeys page. The pages are built each time the window opens: in the editors the game speed is left out (the
-// editors do not run the game, so it does nothing there; game_speed_step 0x402430 ignores it too).
+// Yongle's pages with Pericles's settings, the game's own options among them (games/zeus/options_original). The pages
+// are built each time the window opens: in the editors the game speed is left out (the editors do not run the game,
+// so it does nothing there; game_speed_step 0x402430 ignores it too).
 std::vector<co::Page> BuildPages()
 {
     co::Page general{"General", {}};
@@ -127,30 +132,94 @@ std::vector<co::Page> BuildPages()
     return pages;
 }
 
-// Keys nobody may choose (for the Hotkeys page to come): Enter (the game's, and Alt+Enter ours), F5 (window or full
-// screen) and Shift+F7 (the resolution, for testing), which stay fixed.
-bool ReservedKey(unsigned vk, unsigned mods)
+// The Hotkeys window (core/options/hotkeys_page). The overlays' names are the game's own (Zeus_Text.eng group 14,
+// the same in Zeus_Editor_Text.eng), "See water" as "Water". The culture overlays 10-14 are named after the science
+// buildings in Poseidon's adventures and maps: the name is the one the game's overlay menu shows now, chosen as the menu
+// does (overlay_menu_build 0x5170a0 asks science_names(0) 0x4200f0 and then uses the texts 24, 21, 20, 23, 22). The
+// page is built each time it opens. science_names is __cdecl(flag), plain ret, the result in al; it only reads two
+// variables (the main menu's start button, the map's kind). Not as expected: Zeus's names.
+const Site kScienceNames{"science_names", 0x4200f0, {0x8b, 0x0d, 0xe0, 0xa4, 0x6a, 0x00, 0xb8, 0x01}};
+using ScienceNames_fn = bool(__cdecl *)(int flag);
+bool g_scienceNamesOk = false;
+
+constexpr int kOverlayGroup = 14, kFirstCulture = 10;
+constexpr int kScienceText[] = {24, 21, 20, 23, 22}; // overlays 10-14
+
+std::string OverlayName(int group, int index)
 {
-    return vk == VK_RETURN || (vk == VK_F5 && mods == 0) || (vk == VK_F7 && mods == core::ui::kModShift);
+    if (group == kOverlayGroup && index >= kFirstCulture && index < kFirstCulture + 5 && g_scienceNamesOk &&
+        Function<ScienceNames_fn>(kScienceNames)(0)) {
+        index = kScienceText[index - kFirstCulture];
+    }
+    const char *text = zeus::keys::GameText(group, index);
+    std::string word = core::options::hotkeys_page::OverlayWord(text ? text : "");
+    if (!word.empty()) {
+        word[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(word[0])));
+    }
+    return word;
 }
 
-// The debug panel lists every setting until the window has the game's own options and the Hotkeys page: no list of
-// settings kept there is needed yet.
-const char *const kEmergency[][2] = {{"video", "resolution"}};
+const core::options::hotkeys_page::KeyPageGame kKeyPageGame(&OverlayName);
+
+std::vector<co::Page> BuildKeyPages()
+{
+    return {core::options::hotkeys_page::Build(kKeyPageGame)};
+}
+
+// Keys nobody may choose: Enter (the game's, and Alt+Enter ours); the game's keys for development and cheating (Alt+D
+// the view's limits, Alt+Z and Alt+F11 the editor's terrain check and debug output, Ctrl+Alt+C the cheat box:
+// game_wndproc 0x5c4a90, cheat_key 0x42c700); ours that stay fixed: F5 (window or full screen) and Shift+F7 (the
+// resolution, for testing). The game's Ctrl+A/G/H/J and Numpad2 are left free: a flag the game never sets keeps them
+// from doing anything.
+bool ReservedKey(unsigned vk, unsigned mods)
+{
+    using core::ui::kModAlt;
+    using core::ui::kModCtrl;
+    using core::ui::kModShift;
+    return vk == VK_RETURN || (mods == kModAlt && (vk == 'D' || vk == 'Z' || vk == VK_F11)) ||
+           (vk == 'C' && mods == (kModCtrl | kModAlt)) || (vk == VK_F5 && mods == 0) ||
+           (vk == VK_F7 && mods == kModShift);
+}
+
+// The debug panel keeps the settings to change there when something goes wrong: the screen and the panel's own key
+// (Yongle's six).
+const char *const kEmergency[][2] = {{"video", "resolution"}, {"video", "scale"},   {"video", "window"},
+                                     {"video", "renderer"},   {"video", "scaling"}, {"ui", "panel_key"}};
 
 } // namespace
 
 void Attach(const core::options::pause_menu::PauseGame &pause)
 {
-    static const oh::OptionsGame game(pause, zeus::options_text::kOptionsTitle, &BuildPages, oh::kNoHotkeys,
-                                      &ReservedKey, kEmergency, 1, false);
+    static const oh::OptionsGame game(pause, zeus::options_text::kOptionsTitle, &BuildPages, &BuildKeyPages,
+                                      &ReservedKey, kEmergency,
+                                      static_cast<int>(sizeof(kEmergency) / sizeof(kEmergency[0])), true);
     zeus::options_text::Register(); // Pericles's own texts, before the shared ones
+    g_scienceNamesOk = Matches(kScienceNames);
+    if (!g_scienceNamesOk) {
+        core_log("options window: %s at 0x%lx does not match; the Hotkeys window names the culture overlays as in Zeus",
+                 kScienceNames.name, static_cast<unsigned long>(kScienceNames.address));
+    }
     oh::Attach(game);
 }
 
 std::vector<core::options::Page> PagesForTest()
 {
     return BuildPages();
+}
+
+std::vector<core::options::Page> KeyPagesForTest()
+{
+    return BuildKeyPages();
+}
+
+void ScienceNamesForTest()
+{
+    g_scienceNamesOk = true;
+}
+
+bool ReservedKeyForTest(unsigned vk, unsigned mods)
+{
+    return ReservedKey(vk, mods);
 }
 
 bool Available()
@@ -166,6 +235,11 @@ bool Open(int page, int category)
 bool OpenCategory(int page, const char *name)
 {
     return oh::OpenCategory(page, name);
+}
+
+bool OpenHotkeys()
+{
+    return oh::OpenHotkeys();
 }
 
 bool IsOpen()

@@ -190,6 +190,10 @@
 #include "games/zeus/game_menu.h"
 #include "core/ui/game_menu_layout.h"
 #include "core/options/game_options.h"
+#include "core/options/hotkeys_page.h"
+#include "core/options/setting_rows.h"
+#include "core/game.h"
+#include "games/zeus/options_text.h"
 #include "games/zeus/options_entry.h"
 #include "games/zeus/options_original.h"
 #include "games/zeus/display_options.h"
@@ -259,9 +263,20 @@ bool g_panelOpen = false, g_panelWantsFrames = false; // draw_only
 namespace core::ui {
 bool IsOpen() { return g_panelOpen; }
 bool WantsGameFrames() { return g_panelWantsFrames; }
-// core/options/options_host: the debug panel's list and a wait for a key (the panel is not under test)
-void SetListedElsewhere(const int *, int) {}
+// core/options/options_host: the debug panel's list (kept for debug_panel_list) and a wait for a key (the panel is not
+// under test)
+std::vector<int> g_listedElsewhere;
+int g_listedCalls = 0;
+void SetListedElsewhere(const int *indices, int count)
+{
+    g_listedElsewhere.assign(indices, indices + count);
+    ++g_listedCalls;
+}
 void SetOtherCapture(bool, unsigned) {}
+// games/zeus/keys: the panel's note on Zeus's own keys
+using GameKeyNote = const char *(*)(unsigned, unsigned);
+GameKeyNote g_gameKeyNote = nullptr;
+void SetGameKeyNote(GameKeyNote fn) { g_gameKeyNote = fn; }
 } // namespace core::ui
 
 int g_nativeCalls = 0, g_nativeFaultAt = 0; // NativeSize faults on that call (mode_size_fault)
@@ -2370,13 +2385,17 @@ void OverlayKeys()
     At<int>(aAllCategories) = 0;
     At<unsigned char>(aCategoryOpen) = 1;
     At<unsigned char>(aCategoryOpen + 2) = 1;
-    // Rebound: the default letter goes to the game (Zeus does nothing with it); no default: only once bound.
+    // Rebound: the default letter goes to the game (Zeus does nothing with it); another key works once bound.
     BindKey("overlay_supplies", "F5");
     Check(!k::Translate(WM_KEYDOWN, 'S', 1) && !k::Translate(WM_CHAR, 's', 1),
           "overlay keys: S bound to nothing: to the game as it is");
+    At<int>(aOverlayShown) = 0;
+    Check(k::Translate(WM_KEYDOWN, 'K', 1) && At<int>(aBuildCategory) == 10 && At<int>(aOverlayShown) == 19,
+          "overlay keys: K (the roads' default, Yongle's walkers letter) shows roads");
+    At<int>(aOverlayShown) = 0;
     BindKey("overlay_roads", "Q");
     Check(k::Translate(WM_KEYDOWN, 'Q', 1) && At<int>(aBuildCategory) == 10 && At<int>(aOverlayShown) == 19,
-          "overlay keys: roads (no default) bound to Q: shown");
+          "overlay keys: roads bound to Q: shown");
     // The editor: not translated.
     At<int>(aEditorModeK) = 1;
     const int shown = At<int>(aOverlayShown);
@@ -2740,15 +2759,21 @@ void OptionsMenus()
     using core::ui::game_menu_layout::MenuItem;
     auto menu = [](DWORD at) { return *reinterpret_cast<const Menu *>(at + g_imageShift); };
     const Menu o = menu(0x5eff10);
-    Check(o.count == 6 && o.items[0].text == 20 && o.items[1].text == 21 && o.items[2].text == 22 &&
-              o.items[3].text == 6 && o.items[4].text == 25 && o.items[5].text == 26 && o.items[5].y == 100 &&
-              reinterpret_cast<DWORD>(o.items[3].handler) == 0x401ec0 &&
-              reinterpret_cast<DWORD>(o.items[4].handler) == 0x402660 &&
-              reinterpret_cast<DWORD>(o.items[5].handler) == 0x5692d0,
-          "menus: Options: General, Video, Audio, the game's Difficulty, Autosave, Auto Defend (their handlers)");
-    Check(menu(0x5eff40).count == 3 && menu(0x5eff80).count == 3 && menu(0x5f0010).count == 3 &&
-              menu(0x5eff40).items[2].text == 22 && menu(0x5f0010).items[0].text == 20,
-          "menus: the editors' Options: General, Video, Audio");
+    Check(o.count == 7 && o.items[0].text == 20 && o.items[1].text == 21 && o.items[2].text == 22 &&
+              o.items[3].text == 23 && o.items[4].text == 6 && o.items[5].text == 25 && o.items[6].text == 26 &&
+              o.items[6].y == 120 && reinterpret_cast<DWORD>(o.items[4].handler) == 0x401ec0 &&
+              reinterpret_cast<DWORD>(o.items[5].handler) == 0x402660 &&
+              reinterpret_cast<DWORD>(o.items[6].handler) == 0x5692d0,
+          "menus: Options: General, Video, Audio, Hotkeys, the game's Difficulty, Autosave, Auto Defend (their "
+          "handlers)");
+    Check(menu(0x5eff40).count == 4 && menu(0x5eff80).count == 4 && menu(0x5f0010).count == 4 &&
+              menu(0x5eff40).items[2].text == 22 && menu(0x5f0010).items[0].text == 20 &&
+              menu(0x5eff80).items[3].text == 23 && menu(0x5eff80).items[3].handler == o.items[3].handler,
+          "menus: the editors' Options: General, Video, Audio, Hotkeys (the same item)");
+    Check(LogContains("the Options menus open it (General Settings, Video, Audio, Hotkeys;"),
+          "menus: the log lists Hotkeys");
+    o.items[3].handler(); // the window is not attached in this test: nothing, logged
+    Check(LogContains("the Options menu's Hotkeys does nothing"), "menus: Hotkeys without the window: nothing, logged");
     Check(At<DWORD>(0x5ee47c) != 0x4026a0 && LogContains("the message list's button opens it at General > Messages"),
           "menus: the message list's button opens General > Messages");
     const Menu f = menu(0x5eff00);
@@ -2761,6 +2786,7 @@ void OptionsMenus()
               f.items[7].handler == &zeus::game_menu::MenuExit,
           "menus: File: Replay map, Load, Save, the screenshots, Delete, Exit to main menu, Exit game (ours)");
     Check(std::strcmp(oe::MenuText(2, 20, &FakeLangGI), "General Settings") == 0 &&
+              std::strcmp(oe::MenuText(2, 23, &FakeLangGI), "Hotkeys") == 0 &&
               std::strcmp(oe::MenuText(1, 42, &FakeLangGI), "Replay map") == 0 &&
               std::strcmp(oe::MenuText(30, 2, &FakeLangGI), "Options") == 0 &&
               oe::MenuText(2, 3, &FakeLangGI) == nullptr && oe::MenuText(13, 2, &FakeLangGI) == nullptr,
@@ -2771,8 +2797,9 @@ void OptionsMenus()
     At<short>(0x5efd20 + 16 * 4 + 2) = 10; // the game's toggle writes OFF into its table
     Check(std::strcmp(oe::MenuText(2, 25, &FakeLangGI), "2,10") == 0, "menus: ... it follows the game's toggle");
     // An error in our texts (no game function to ask): the game's tables back, its texts from then on.
-    Check(oe::MenuText(2, 25, nullptr) == nullptr && menu(0x5eff10).count == 7 && menu(0x5eff00).count == 6 &&
-              menu(0x5eff40).count == 3 && LogContains("menus: our menu texts failed"),
+    Check(oe::MenuText(2, 25, nullptr) == nullptr && menu(0x5eff10).count == 7 &&
+              menu(0x5eff10).items == menu(0x5eff40).items && menu(0x5eff00).count == 6 &&
+              menu(0x5eff40).count == 3 && menu(0x5eff80).count == 2 && LogContains("menus: our menu texts failed"),
           "menus: an error: the game's own menus are back");
     Check(oe::MenuText(2, 20, &FakeLangGI) == nullptr, "menus: ... and our texts are off");
 }
@@ -3047,18 +3074,18 @@ void DifficultyOptions()
     oe::AttachForTest(true, true);
     using core::ui::game_menu_layout::Menu;
     const Menu o = *reinterpret_cast<const Menu *>(0x5eff10 + g_imageShift);
-    const DWORD h3 = reinterpret_cast<DWORD>(o.items[3].handler), h5 = reinterpret_cast<DWORD>(o.items[5].handler);
-    Check(o.count == 6 && o.items[3].text == 6 && h3 != 0x401ec0 && h3 != 0 && h5 != 0x5692d0 && h5 != 0 &&
-              reinterpret_cast<DWORD>(o.items[4].handler) == 0x402660,
+    const DWORD h4 = reinterpret_cast<DWORD>(o.items[4].handler), h6 = reinterpret_cast<DWORD>(o.items[6].handler);
+    Check(o.count == 7 && o.items[4].text == 6 && h4 != 0x401ec0 && h4 != 0 && h6 != 0x5692d0 && h6 != 0 &&
+              reinterpret_cast<DWORD>(o.items[5].handler) == 0x402660,
           "difficulty menu: Difficulty and Auto Defend are ours; Autosave the game's");
-    o.items[5].handler();
+    o.items[6].handler();
     Check(g_autoDefendToggles == 2 && At<unsigned char>(aAutoDefend) == 0, "difficulty menu: Auto Defend toggles");
     At<int>(aInvasionA) = 1;
-    o.items[5].handler();
+    o.items[6].handler();
     Check(g_autoDefendToggles == 2 && At<unsigned char>(aAutoDefend) == 0,
           "difficulty menu: ... not while enemies attack (not switched on)");
     At<int>(aInvasionA) = 0;
-    o.items[3].handler(); // the window is not attached in this test: nothing, logged
+    o.items[4].handler(); // the window is not attached in this test: nothing, logged
     Check(At<unsigned char>(aGameScreenK) == 1 && LogContains("the Options menu's Difficulty does nothing"),
           "difficulty menu: Difficulty without the window: nothing (not the game's dialog), logged");
 
@@ -3066,7 +3093,7 @@ void DifficultyOptions()
     At<unsigned char>(aGameScreenK) = 0x14;
     At<unsigned char>(aAutoDefend) = 1;
     At<int>(aInvasionB) = 2;
-    o.items[5].handler();
+    o.items[6].handler();
     Check(g_autoDefendToggles == 2 && At<unsigned char>(aAutoDefend) == 1,
           "difficulty menu: off the city screens, while enemies attack: still not switched off");
     At<int>(aInvasionB) = 0;
@@ -3080,7 +3107,7 @@ void DifficultyOptions()
               At<int>(aButtonParam) == 5,
           "difficulty: a fault in the game's step: the rows off, button_param back");
     At<int>(aInvasionB) = 2;
-    o.items[5].handler();
+    o.items[6].handler();
     Check(g_autoDefendToggles == 3 && At<unsigned char>(aAutoDefend) == 0 &&
               LogContains("the Options menu's Auto Defend is the game's own"),
           "difficulty menu: after the fault: Auto Defend is the game's own toggle, logged");
@@ -3726,6 +3753,265 @@ void DirectionFault()
     Check(LogContains("feature \"smooth scrolling (games/zeus/scroll)\" switched off") &&
               LogContains("scroll: smooth scrolling is off after an error"),
           "log: the feature off, the fallback");
+}
+
+// --- The Hotkeys window's page (core/options/hotkeys_page with games/zeus/options_window's overlay names), the keys
+// nobody may choose there, and the debug panel's note on a key in use (ours from the core, Zeus's own from
+// games/zeus/options_text).
+const char *const kGroup14[] = {"Normal",          "See Supplies",   "See Husbandry",   "See Industry",
+                                "See Distribution", "See water",      "See hygiene",     "See hazards",
+                                "See unrest",      "See taxes",      "See all culture", "See competitors",
+                                "See philosophers", "See athletes",   "See actors",      "See immortals",
+                                "See security",    "See appeal",     "See problems",    "See roads",
+                                "See astronomers", "See curators",   "See inventors",   "See scholars",
+                                "See all science"}; // Zeus_Text.eng group 14
+int g_overlayTexts = 0;
+const char *__cdecl FakeLangOverlays(int group, int index) // lang_get_string: __cdecl(group, index)
+{
+    if (group == 14 && index >= 0 && index < 25) {
+        ++g_overlayTexts;
+        return kGroup14[index];
+    }
+    return "the game's text";
+}
+
+bool g_scienceNames = false;
+int g_scienceFlag = -1;
+bool __cdecl FakeScienceNames(int flag) // science_names 0x4200f0: __cdecl(flag), the result in al
+{
+    g_scienceFlag = flag;
+    return g_scienceNames;
+}
+
+const core::options::Row *KeyRow(const std::vector<core::options::Row> &rows, const char *id)
+{
+    for (const core::options::Row &r : rows) {
+        if (r.id == id) {
+            return &r;
+        }
+    }
+    return nullptr;
+}
+
+void RegisterOurKeys() // the five of ours in Global hotkeys (core/config's and city_picture's own), when not there
+{
+    namespace cs = core::settings;
+    const struct {
+        const char *section, *key, *label;
+    } ours[] = {{"ui", "panel_key", "Debug panel: key"},
+                {"debug", "screenshot_key", "Screenshot: key"},
+                {"debug", "report_key", "Report screenshot: key"},
+                {"ui", "city_picture_key", "Full city screenshot: key"},
+                {"ui", "minimap_picture_key", "Minimap screenshot: key"}};
+    for (const auto &o : ours) {
+        if (cs::Find(o.section, o.key) >= 0) {
+            continue;
+        }
+        cs::Item it{};
+        it.section = o.section;
+        it.key = o.key;
+        it.label = o.label;
+        it.help = "";
+        it.type = cs::Type::Hotkey;
+        it.defaultValue = "";
+        it.effect = cs::Effect::Live;
+        it.inPanel = it.editable = true;
+        cs::Register(it);
+    }
+}
+
+const core_game_info kPericlesInfo = {"zeus", "Pericles", "dev", L"Pericles", L"zeus_engine.ini", "zeus_engine.ini",
+                                      1024, 768, nullptr, nullptr, nullptr, nullptr, nullptr};
+
+void KeyPage()
+{
+    namespace co = core::options;
+    namespace ow = zeus::options_window;
+    core_game_set(&kPericlesInfo);
+    SetupKeys();
+    Thunk(0x507bf0, reinterpret_cast<void *>(&FakeLangOverlays));
+    Thunk(0x4200f0, reinterpret_cast<void *>(&FakeScienceNames));
+    RegisterOurKeys();
+    zeus::options_text::Register();
+    // Without the game's texts (lang_get_string not hooked): the settings' own names.
+    auto pages = ow::KeyPagesForTest();
+    Check(pages.size() == 1 && pages[0].categories.size() == 1 && pages[0].name == "Hotkeys",
+          "key page: one page, one category, Hotkeys");
+    if (pages.size() != 1 || pages[0].categories.size() != 1) {
+        return;
+    }
+    const co::Row *supplies = KeyRow(pages[0].categories[0].rows, "overlay_supplies");
+    Check(supplies && supplies->label == "Overlay: supplies" && g_overlayTexts == 0,
+          "key page: without the game's texts: the setting's own name");
+    // A dry run (the debug panel's list at attach): no game text asked for.
+    zeus::keys::GameTextForTest();
+    core::options::setting_rows::SetDry(true);
+    ow::KeyPagesForTest();
+    core::options::setting_rows::SetDry(false);
+    Check(g_overlayTexts == 0, "key page: a dry run asks for no name");
+    pages = ow::KeyPagesForTest();
+    const auto &rows = pages[0].categories[0].rows;
+    int headers = 0, keys = 0;
+    for (const co::Row &r : rows) {
+        headers += r.kind == co::Kind::Header ? 1 : 0;
+        keys += r.kind == co::Kind::Key ? 1 : 0;
+    }
+    Check(rows[0].kind == co::Kind::Columns && rows[0].rightLabel == "Hotkey" && rows[0].rightLabel2 == "Alternative",
+          "key page: the column titles first");
+    const char *const sections[] = {"Arrow keys", "Global hotkeys", "City hotkeys", "Building menus",
+                                    "Overlays",   "Bookmarks",      "Army groups"};
+    bool order = headers == 7;
+    int h = 0;
+    for (const co::Row &r : rows) {
+        if (r.kind == co::Kind::Header && h < 7) {
+            order = order && r.label == sections[h++];
+        }
+    }
+    Check(order, "key page: Yongle's seven sections in order");
+    Check(keys == 63 + 5, "key page: 63 actions and our five keys");
+    size_t global = 0;
+    while (global < rows.size() && rows[global].label != "Global hotkeys") {
+        ++global;
+    }
+    const char *const ours[] = {"panel_key", "screenshot_key", "report_key", "city_picture_key", "minimap_picture_key",
+                                "open_options"};
+    bool first = global + 6 < rows.size();
+    for (int k = 0; first && k < 6; ++k) {
+        first = rows[global + 1 + k].id == ours[k];
+    }
+    Check(first, "key page: Global hotkeys: our five keys first, then Open Options");
+    const co::Row *panel = KeyRow(rows, "panel_key");
+    const co::Row *shot = KeyRow(rows, "screenshot_key");
+    Check(panel && panel->label == "Debug panel" &&
+              panel->help == "Opens and closes Pericles's panel for testing and finding problems. Most settings are "
+                             "in Options." &&
+              shot && shot->label == "Save screenshot" && shot->help.find("in Pericles's folder") != std::string::npos,
+          "key page: the debug panel and screenshot keys: the shared names, Pericles's in the descriptions");
+    // The culture overlays as the game's overlay menu names them now (science_names 0x4200f0 asked with 0).
+    const struct {
+        const char *id, *zeus, *poseidon;
+    } names[] = {{"overlay_supplies", "Supplies overlay", "Supplies overlay"},
+                 {"overlay_water", "Water overlay", "Water overlay"},
+                 {"overlay_culture", "All culture overlay", "All science overlay"},
+                 {"overlay_competitors", "Competitors overlay", "Curators overlay"},
+                 {"overlay_philosophers", "Philosophers overlay", "Astronomers overlay"},
+                 {"overlay_athletes", "Athletes overlay", "Scholars overlay"},
+                 {"overlay_actors", "Actors overlay", "Inventors overlay"},
+                 {"overlay_immortals", "Immortals overlay", "Immortals overlay"},
+                 {"overlay_roads", "Roads overlay", "Roads overlay"}};
+    auto named = [&](const std::vector<co::Row> &page, bool poseidon) {
+        bool ok = true;
+        for (const auto &n : names) {
+            const co::Row *r = KeyRow(page, n.id);
+            const char *want = poseidon ? n.poseidon : n.zeus;
+            if (!r || r->label != want) {
+                std::printf("    %s: %s\n", n.id, r ? r->label.c_str() : "(none)");
+                ok = false;
+            }
+        }
+        return ok;
+    };
+    Check(named(rows, false), "key page: science_names not as expected: Zeus's names, \"See water\" as \"Water overlay\"");
+    zeus::options_window::ScienceNamesForTest();
+    Check(named(ow::KeyPagesForTest()[0].categories[0].rows, false) && g_scienceFlag == 0,
+          "key page: a Zeus map (science_names(0) false): Zeus's names");
+    g_scienceNames = true;
+    Check(named(ow::KeyPagesForTest()[0].categories[0].rows, true),
+          "key page: a Poseidon map: the science names, as the game's overlay menu");
+    g_scienceNames = false;
+    // The Overlays section: Toggle current overlay, then the 19 in the game's category order (1-19).
+    size_t at = 0;
+    while (at < rows.size() && rows[at].label != "Overlays") {
+        ++at;
+    }
+    bool overlays = at + 20 < rows.size() && rows[at + 1].id == "toggle_overlay";
+    const char *const ids[] = {"overlay_supplies",     "overlay_husbandry", "overlay_industry", "overlay_distribution",
+                               "overlay_water",        "overlay_hygiene",   "overlay_hazards",  "overlay_unrest",
+                               "overlay_taxes",        "overlay_culture",   "overlay_competitors",
+                               "overlay_philosophers", "overlay_athletes",  "overlay_actors",   "overlay_immortals",
+                               "overlay_security",     "overlay_appeal",    "overlay_problems", "overlay_roads"};
+    for (int k = 0; overlays && k < 19; ++k) {
+        overlays = rows[at + 2 + k].id == ids[k];
+    }
+    Check(overlays, "key page: Overlays: Toggle current overlay first, then the game's category order");
+    Check(KeyRow(rows, "scroll_up") && KeyRow(rows, "army_recall_5") && !KeyRow(rows, "army_recall_6"),
+          "key page: the actions from the arrows to army group 5");
+}
+
+void ReservedKeys()
+{
+    using core::ui::kModAlt;
+    using core::ui::kModCtrl;
+    using core::ui::kModShift;
+    auto r = &zeus::options_window::ReservedKeyForTest;
+    Check(r(VK_RETURN, 0) && r(VK_RETURN, kModAlt) && r(VK_F5, 0) && r(VK_F7, kModShift),
+          "reserved keys: Enter, F5 and Shift+F7 (ours that stay fixed)");
+    Check(r('D', kModAlt) && r('Z', kModAlt) && r(VK_F11, kModAlt) && r('C', kModCtrl | kModAlt),
+          "reserved keys: the game's Alt+D, Alt+Z, Alt+F11 and Ctrl+Alt+C");
+    Check(!r('A', kModCtrl) && !r('G', kModCtrl) && !r('H', kModCtrl) && !r('J', kModCtrl) && !r(VK_NUMPAD2, 0) &&
+              !r(VK_F7, 0) && !r(VK_F5, kModShift) && !r('D', 0) && !r(VK_F11, 0) && !r('C', kModCtrl),
+          "reserved keys: the game's keys that never act (Ctrl+A/G/H/J, Numpad2) and others are free");
+}
+
+void KeyNotes()
+{
+    using core::ui::kModAlt;
+    using core::ui::kModCtrl;
+    using core::ui::kModShift;
+    namespace hp = core::options::hotkeys_page;
+    core_game_set(&kPericlesInfo);
+    auto note = [](unsigned vk, unsigned mods) {
+        const char *n = hp::KeyNote(vk, mods, &zeus::options_text::GameKeyNote);
+        return std::string(n ? n : "");
+    };
+    const std::string uses = "The game also uses this key; it no longer reaches the game.";
+    Check(note(VK_F5, 0) == "Pericles also uses this key to switch between window and full screen; that no longer "
+                            "works with it." &&
+              note(VK_RETURN, kModAlt) == note(VK_F5, 0),
+          "key note: F5 and Alt+Enter: ours (the core's words, Pericles)");
+    Check(note(VK_F7, kModShift) == "Pericles also uses this key to change the resolution; that no longer works with it.",
+          "key note: Shift+F7: ours");
+    Check(note('3', kModAlt) == uses && note('5', kModAlt) == uses && note('6', kModAlt).empty(),
+          "key note: Alt+1..5 (army groups) are Zeus's, Alt+6 is not");
+    Check(note('C', kModCtrl | kModAlt) == uses, "key note: Ctrl+Alt+C (the cheat box)");
+    Check(note('R', 0) == "The game also reacts to this key itself.", "key note: R: polled by the game");
+    Check(note('P', 0) == uses && note('M', 0) == uses && note('7', 0) == uses && note(VK_OEM_4, 0) == uses &&
+              note(VK_OEM_MINUS, 0) == uses && note(VK_F2, 0) == uses && note(VK_F8, 0) == uses &&
+              note(VK_SPACE, 0) == uses && note(VK_TAB, 0) == uses && note(VK_PRIOR, 0) == uses,
+          "key note: Zeus's game keys");
+    Check(note('Q', 0).empty() && note('W', 0).empty() && note(VK_F9, 0).empty() && note(VK_F12, 0).empty() &&
+              note(VK_INSERT, 0).empty() && note(VK_DELETE, 0).empty() && note('D', kModAlt).empty(),
+          "key note: letters other than P and M, F9..F12, Insert and Delete: nothing");
+    Check(hp::KeyNote('P', 0, nullptr) == nullptr && hp::KeyNote(VK_F5, 0, nullptr) != nullptr,
+          "key note: without the game's note: only ours");
+}
+
+// The debug panel's list (core/options/options_host with Pericles's windows): it leaves out what the options window
+// and the Hotkeys window list, except Yongle's six settings to change there when something goes wrong.
+void DebugPanelList()
+{
+    namespace cs = core::settings;
+    SetupGameMenu();
+    RegisterOurKeys();
+    zeus::options_text::Register();
+    auto has = [](const char *section, const char *key) {
+        const int i = cs::Find(section, key);
+        for (int k : core::ui::g_listedElsewhere) {
+            if (k == i) {
+                return true;
+            }
+        }
+        return false;
+    };
+    zeus::game_menu::AttachWithWindowForTest();
+    Check(core::ui::g_listedCalls == 1 && LogContains("the debug panel leaves out"),
+          "debug panel: the windows' settings are given to the panel at attach");
+    Check(has("keys", "scroll_up") && has("keys", "overlay_roads") && has("debug", "report_key") &&
+              has("ui", "city_picture_key"),
+          "debug panel: the Hotkeys window's keys are left out");
+    Check(!has("ui", "panel_key") && !has("video", "resolution") && !has("video", "window"),
+          "debug panel: ... but not the panel's own key and the screen's settings");
+    Check(!LogContains("the debug panel lists every setting"), "debug panel: not every setting");
 }
 
 struct Scenario {
@@ -5858,6 +6144,10 @@ const Scenario kScenarios[] = {
     {"layer1_keep_off", &Layer1KeepOff},
     {"layer1_fault", &Layer1Fault},
     {"key_bindings", &KeyBindings},
+    {"key_page", &KeyPage},
+    {"reserved_keys", &ReservedKeys},
+    {"key_notes", &KeyNotes},
+    {"debug_panel_list", &DebugPanelList},
     {"key_bindings_fault", &KeyBindingsFault},
     {"overlay_keys", &OverlayKeys},
     {"esc_and_pause", &EscAndPause},

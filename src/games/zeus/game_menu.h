@@ -40,6 +40,8 @@ void __cdecl MenuExit();
 // Offline tests only (src/games/zeus/test_restore.cpp): Attach without the byte checks and the hook (the fakes are
 // thunks at the game's addresses), and input_update_mouse's detour.
 void AttachForTest();
+// The same with the options window attached on it (the debug panel's list of what the windows show).
+void AttachWithWindowForTest();
 void InputMouseForTest();
 
 } // namespace zeus::game_menu

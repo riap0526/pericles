@@ -1,6 +1,6 @@
-// The texts for players of our pause menu, the options window's frame (Hotkeys, "keep this setting?") and the menu
-// items both games add or rename (shared, so the two games say the same). Moved from Yongle's
-// games/emperor/options_text for Pericles.
+// The texts for players of our pause menu, the options window's frame (Hotkeys, "keep this setting?"), the menu
+// items both games add or rename and the panel's notes on our own keys (shared, so the two games say the same).
+// Moved from Yongle's games/emperor/options_text for Pericles.
 #pragma once
 
 namespace core::options::menu_text {
@@ -30,5 +30,11 @@ extern const char *const kHotkeysTitle, *const kColumnAction, *const kColumnKey,
     *const kPressKey, *const kKeyNotChanged, *const kKeyNotUsable, *const kKeyInUse, *const kKeyReserved,
     *const kKeyClearHint, *const kKeyTip, *const kKeepTitle, *const kKeepCountdown, *const kKeep, *const kRevert;
 extern const char *const kOverlayName; // printf format: an overlay's name in the Hotkeys window
+// The Hotkeys window's section titles (core::input::keys::Section; "" for another number).
+const char *KeySection(int section);
+
+// The debug panel's note when one of our key settings is set to a key that stays ours ({product}: the game's product,
+// filled in by core/options/hotkeys_page).
+extern const char *const kKeyNoteWindow, *const kKeyNoteResolution;
 
 } // namespace core::options::menu_text

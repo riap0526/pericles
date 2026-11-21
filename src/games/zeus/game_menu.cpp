@@ -622,6 +622,12 @@ void AttachForTest()
     g_attached = true;
 }
 
+void AttachWithWindowForTest()
+{
+    zeus::options_window::Attach(PauseGame());
+    g_attached = true;
+}
+
 void InputMouseForTest()
 {
     InputMouse_detour();

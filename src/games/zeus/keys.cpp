@@ -4,11 +4,13 @@
 
 #include "games/zeus/game_menu.h"
 #include "games/zeus/options_entry.h"
+#include "games/zeus/options_text.h"
 #include "games/zeus/options_window.h"
 
 #include "core/diag/guard.h"
 #include "core/input/keys.h"
 #include "core/log.h"
+#include "core/ui/settings_view.h"
 
 #include <initializer_list>
 
@@ -29,136 +31,140 @@ constexpr bool kEditorToo = true; // the editor's map has it too (game_wndproc: 
 // overlay letters of its own (ours: OverlayKey), no F9 help, army groups 1-5 only (army_group_set 0x433ab0 / army_group_recall 0x433b60 return for
 // n > 5); Tab is Zeus's own (0x516d30: the sidebar's Info / Overview).
 const Def kDefs[] = {
-    {Item{"keys", "scroll_up", "Scroll up", "", Type::Hotkey, "Up", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "scroll_up", "Scroll up", "", Type::Hotkey, "Up", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_UP, false, {"scroll_up", kArrows, kNoText, 0}, kEditorToo},
-    {Item{"keys", "scroll_down", "Scroll down", "", Type::Hotkey, "Down", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "scroll_down", "Scroll down", "", Type::Hotkey, "Down", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_DOWN, false, {"scroll_down", kArrows, kNoText, 0}, kEditorToo},
-    {Item{"keys", "scroll_left", "Scroll left", "", Type::Hotkey, "Left", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "scroll_left", "Scroll left", "", Type::Hotkey, "Left", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_LEFT, false, {"scroll_left", kArrows, kNoText, 0}, kEditorToo},
-    {Item{"keys", "scroll_right", "Scroll right", "", Type::Hotkey, "Right", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "scroll_right", "Scroll right", "", Type::Hotkey, "Right", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_RIGHT, false, {"scroll_right", kArrows, kNoText, 0}, kEditorToo},
-    {Item{"keys", "open_options", "Open Options", "", Type::Hotkey, "F6", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "open_options", "Open Options", "", Type::Hotkey, "F6", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Options, 0, false, {"open_options", kGlobal, kNoText, 0}},
-    {Item{"keys", "speed_down", "Decrease game speed", "", Type::Hotkey, "LeftBracket", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "speed_down", "Decrease game speed", "", Type::Hotkey, "LeftBracket", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, '[', false, {"speed_down", kCity, kNoText, 0}},
-    {Item{"keys", "speed_up", "Increase game speed", "", Type::Hotkey, "RightBracket", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "speed_up", "Increase game speed", "", Type::Hotkey, "RightBracket", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, ']', false, {"speed_up", kCity, kNoText, 0}},
-    {Item{"keys", "pause", "Toggle pause", "", Type::Hotkey, "P", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "pause", "Toggle pause", "", Type::Hotkey, "P", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, 'p', false, {"pause", kCity, kNoText, 0}},
-    {Item{"keys", "rotate_map_left", "Rotate map left", "", Type::Hotkey, "PageUp", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "rotate_map_left", "Rotate map left", "", Type::Hotkey, "PageUp", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_PRIOR, false, {"rotate_map_left", kCity, kNoText, 0}, kEditorToo},
-    {Item{"keys", "rotate_map_right", "Rotate map right", "", Type::Hotkey, "PageDown", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "rotate_map_right", "Rotate map right", "", Type::Hotkey, "PageDown", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_NEXT, false, {"rotate_map_right", kCity, kNoText, 0}, kEditorToo},
-    {Item{"keys", "rotate_map_north", "Rotate map to north", "", Type::Hotkey, "Home", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "rotate_map_north", "Rotate map to north", "", Type::Hotkey, "Home", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_HOME, false, {"rotate_map_north", kCity, kNoText, 0}, kEditorToo},
     // Zeus only polls R (its WM_KEYDOWN R flips 0x160ac8c, which nothing reads); sent the same way as Yongle's.
-    {Item{"keys", "rotate_building", "Rotate building", "", Type::Hotkey, "R", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "rotate_building", "Rotate building", "", Type::Hotkey, "R", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Rotate, 'R', false, {"rotate_building", kCity, kNoText, 0}},
-    {Item{"keys", "hold_preview", "Hold building preview", "", Type::Hotkey, "M", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "hold_preview", "Hold building preview", "", Type::Hotkey, "M", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, 'm', false, {"hold_preview", kCity, kNoText, 0}},
-    {Item{"keys", "sidebar_overview", "Toggle sidebar overview", "", Type::Hotkey, "Tab", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "sidebar_overview", "Toggle sidebar overview", "", Type::Hotkey, "Tab", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_TAB, false, {"sidebar_overview", kCity, kNoText, 0}},
-    {Item{"keys", "category_1", "Building menu 1", "", Type::Hotkey, "1", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "category_1", "Building menu 1", "", Type::Hotkey, "1", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, '1', false, {"category_1", kBuild, kNoText, 0}},
-    {Item{"keys", "category_2", "Building menu 2", "", Type::Hotkey, "2", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "category_2", "Building menu 2", "", Type::Hotkey, "2", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, '2', false, {"category_2", kBuild, kNoText, 0}},
-    {Item{"keys", "category_3", "Building menu 3", "", Type::Hotkey, "3", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "category_3", "Building menu 3", "", Type::Hotkey, "3", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, '3', false, {"category_3", kBuild, kNoText, 0}},
-    {Item{"keys", "category_4", "Building menu 4", "", Type::Hotkey, "4", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "category_4", "Building menu 4", "", Type::Hotkey, "4", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, '4', false, {"category_4", kBuild, kNoText, 0}},
-    {Item{"keys", "category_5", "Building menu 5", "", Type::Hotkey, "5", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "category_5", "Building menu 5", "", Type::Hotkey, "5", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, '5', false, {"category_5", kBuild, kNoText, 0}},
-    {Item{"keys", "category_6", "Building menu 6", "", Type::Hotkey, "6", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "category_6", "Building menu 6", "", Type::Hotkey, "6", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, '6', false, {"category_6", kBuild, kNoText, 0}},
-    {Item{"keys", "category_7", "Building menu 7", "", Type::Hotkey, "7", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "category_7", "Building menu 7", "", Type::Hotkey, "7", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, '7', false, {"category_7", kBuild, kNoText, 0}},
-    {Item{"keys", "category_8", "Building menu 8", "", Type::Hotkey, "8", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "category_8", "Building menu 8", "", Type::Hotkey, "8", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, '8', false, {"category_8", kBuild, kNoText, 0}},
-    {Item{"keys", "category_9", "Building menu 9", "", Type::Hotkey, "9", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "category_9", "Building menu 9", "", Type::Hotkey, "9", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, '9', false, {"category_9", kBuild, kNoText, 0}},
-    {Item{"keys", "category_10", "Building menu 10", "", Type::Hotkey, "0", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "category_10", "Building menu 10", "", Type::Hotkey, "0", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, '0', false, {"category_10", kBuild, kNoText, 0}},
-    {Item{"keys", "category_11", "Building menu 11", "", Type::Hotkey, "Minus", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "category_11", "Building menu 11", "", Type::Hotkey, "Minus", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, '-', false, {"category_11", kBuild, kNoText, 0}},
-    {Item{"keys", "toggle_overlay", "Toggle current overlay", "", Type::Hotkey, "Space", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "toggle_overlay", "Toggle current overlay", "", Type::Hotkey, "Space", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, ' ', false, {"toggle_overlay", kOverlays, kNoText, 0}},
     // The overlays: the game has no keys for them, so they are ours (Send::Call, code = the overlay's
     // number). Their names are Zeus_Text.eng's group 14 (index = the number); in Poseidon's adventures the culture
-    // overlays 10-14 are the science ones (the game's texts 20-24), hence both names. The same names and default
-    // letters as Yongle's where the game's word is the same; no default for the ones only Zeus has.
-    {Item{"keys", "overlay_supplies", "Overlay: supplies", "", Type::Hotkey, "S", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    // overlays 10-14 are the science ones (the game's texts 24, 21, 20, 23, 22: the overlay menu 0x5170a0), hence both
+    // names. In the order of the game's building categories (0x63e2e0), within one by number: 1-19 as they are. The
+    // same names and default letters as Yongle's where the game's word is the same; the ones only Zeus has take the
+    // letter of Yongle's overlay at the same place in the game's overlay menus (Emperor's entertainment category:
+    // festivals L, musicians N, acrobats O; its religion category's first, ancestral, A; walkers K for the roads).
+    // None of these letters is a key of Zeus's in the city.
+    {Item{"keys", "overlay_supplies", "Overlay: supplies", "", Type::Hotkey, "S", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Call, 1, false, {"overlay_supplies", kOverlays, 14, 1}},
-    {Item{"keys", "overlay_husbandry", "Overlay: husbandry", "", Type::Hotkey, "G", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "overlay_husbandry", "Overlay: husbandry", "", Type::Hotkey, "G", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Call, 2, false, {"overlay_husbandry", kOverlays, 14, 2}},
-    {Item{"keys", "overlay_industry", "Overlay: industry", "", Type::Hotkey, "I", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "overlay_industry", "Overlay: industry", "", Type::Hotkey, "I", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Call, 3, false, {"overlay_industry", kOverlays, 14, 3}},
-    {Item{"keys", "overlay_distribution", "Overlay: distribution", "", Type::Hotkey, "J", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "overlay_distribution", "Overlay: distribution", "", Type::Hotkey, "J", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Call, 4, false, {"overlay_distribution", kOverlays, 14, 4}},
-    {Item{"keys", "overlay_water", "Overlay: water", "", Type::Hotkey, "W", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "overlay_water", "Overlay: water", "", Type::Hotkey, "W", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Call, 5, false, {"overlay_water", kOverlays, 14, 5}},
-    {Item{"keys", "overlay_hygiene", "Overlay: hygiene", "", Type::Hotkey, "H", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "overlay_hygiene", "Overlay: hygiene", "", Type::Hotkey, "H", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Call, 6, false, {"overlay_hygiene", kOverlays, 14, 6}},
-    {Item{"keys", "overlay_hazards", "Overlay: hazards", "", Type::Hotkey, "Z", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "overlay_hazards", "Overlay: hazards", "", Type::Hotkey, "Z", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Call, 7, false, {"overlay_hazards", kOverlays, 14, 7}},
-    {Item{"keys", "overlay_unrest", "Overlay: unrest", "", Type::Hotkey, "U", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "overlay_unrest", "Overlay: unrest", "", Type::Hotkey, "U", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Call, 8, false, {"overlay_unrest", kOverlays, 14, 8}},
-    {Item{"keys", "overlay_taxes", "Overlay: taxes", "", Type::Hotkey, "X", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "overlay_taxes", "Overlay: taxes", "", Type::Hotkey, "X", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Call, 9, false, {"overlay_taxes", kOverlays, 14, 9}},
-    {Item{"keys", "overlay_culture", "Overlay: all culture or science", "", Type::Hotkey, "E", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "overlay_culture", "Overlay: all culture or science", "", Type::Hotkey, "E", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Call, 10, false, {"overlay_culture", kOverlays, 14, 10}},
-    {Item{"keys", "overlay_competitors", "Overlay: competitors or curators", "", Type::Hotkey, "", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "overlay_competitors", "Overlay: competitors or curators", "", Type::Hotkey, "L", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Call, 11, false, {"overlay_competitors", kOverlays, 14, 11}},
-    {Item{"keys", "overlay_philosophers", "Overlay: philosophers or astronomers", "", Type::Hotkey, "", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "overlay_philosophers", "Overlay: philosophers or astronomers", "", Type::Hotkey, "N", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Call, 12, false, {"overlay_philosophers", kOverlays, 14, 12}},
-    {Item{"keys", "overlay_athletes", "Overlay: athletes or scholars", "", Type::Hotkey, "", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "overlay_athletes", "Overlay: athletes or scholars", "", Type::Hotkey, "O", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Call, 13, false, {"overlay_athletes", kOverlays, 14, 13}},
-    {Item{"keys", "overlay_actors", "Overlay: actors or inventors", "", Type::Hotkey, "Semicolon", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "overlay_actors", "Overlay: actors or inventors", "", Type::Hotkey, "Semicolon", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Call, 14, false, {"overlay_actors", kOverlays, 14, 14}},
-    {Item{"keys", "overlay_immortals", "Overlay: immortals", "", Type::Hotkey, "", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "overlay_immortals", "Overlay: immortals", "", Type::Hotkey, "A", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Call, 15, false, {"overlay_immortals", kOverlays, 14, 15}},
-    {Item{"keys", "overlay_security", "Overlay: security", "", Type::Hotkey, "V", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "overlay_security", "Overlay: security", "", Type::Hotkey, "V", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Call, 16, false, {"overlay_security", kOverlays, 14, 16}},
-    {Item{"keys", "overlay_appeal", "Overlay: appeal", "", Type::Hotkey, "D", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "overlay_appeal", "Overlay: appeal", "", Type::Hotkey, "D", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Call, 17, false, {"overlay_appeal", kOverlays, 14, 17}},
-    {Item{"keys", "overlay_problems", "Overlay: problems", "", Type::Hotkey, "Y", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "overlay_problems", "Overlay: problems", "", Type::Hotkey, "Y", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Call, 18, false, {"overlay_problems", kOverlays, 14, 18}},
-    {Item{"keys", "overlay_roads", "Overlay: roads", "", Type::Hotkey, "", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "overlay_roads", "Overlay: roads", "", Type::Hotkey, "K", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Call, 19, false, {"overlay_roads", kOverlays, 14, 19}},
-    {Item{"keys", "bookmark_go_1", "Go to bookmark 1", "", Type::Hotkey, "F1", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "bookmark_go_1", "Go to bookmark 1", "", Type::Hotkey, "F1", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_F1, false, {"bookmark_go_1", kBookmarks, kNoText, 0}, kEditorToo},
-    {Item{"keys", "bookmark_go_2", "Go to bookmark 2", "", Type::Hotkey, "F2", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "bookmark_go_2", "Go to bookmark 2", "", Type::Hotkey, "F2", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_F2, false, {"bookmark_go_2", kBookmarks, kNoText, 0}, kEditorToo},
-    {Item{"keys", "bookmark_go_3", "Go to bookmark 3", "", Type::Hotkey, "F3", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "bookmark_go_3", "Go to bookmark 3", "", Type::Hotkey, "F3", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_F3, false, {"bookmark_go_3", kBookmarks, kNoText, 0}, kEditorToo},
-    {Item{"keys", "bookmark_go_4", "Go to bookmark 4", "", Type::Hotkey, "F4", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "bookmark_go_4", "Go to bookmark 4", "", Type::Hotkey, "F4", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_F4, false, {"bookmark_go_4", kBookmarks, kNoText, 0}, kEditorToo},
-    {Item{"keys", "bookmark_set_1", "Set bookmark 1", "", Type::Hotkey, "Ctrl+F1", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "bookmark_set_1", "Set bookmark 1", "", Type::Hotkey, "Ctrl+F1", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_F1, true, {"bookmark_set_1", kBookmarks, kNoText, 0}, kEditorToo},
-    {Item{"keys", "bookmark_set_2", "Set bookmark 2", "", Type::Hotkey, "Ctrl+F2", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "bookmark_set_2", "Set bookmark 2", "", Type::Hotkey, "Ctrl+F2", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_F2, true, {"bookmark_set_2", kBookmarks, kNoText, 0}, kEditorToo},
-    {Item{"keys", "bookmark_set_3", "Set bookmark 3", "", Type::Hotkey, "Ctrl+F3", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "bookmark_set_3", "Set bookmark 3", "", Type::Hotkey, "Ctrl+F3", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_F3, true, {"bookmark_set_3", kBookmarks, kNoText, 0}, kEditorToo},
-    {Item{"keys", "bookmark_set_4", "Set bookmark 4", "", Type::Hotkey, "Ctrl+F4", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "bookmark_set_4", "Set bookmark 4", "", Type::Hotkey, "Ctrl+F4", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_F4, true, {"bookmark_set_4", kBookmarks, kNoText, 0}, kEditorToo},
-    {Item{"keys", "army_set_1", "Set army group 1", "", Type::Hotkey, "Ctrl+1", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "army_set_1", "Set army group 1", "", Type::Hotkey, "Ctrl+1", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, '1', true, {"army_set_1", kArmy, kNoText, 0}},
-    {Item{"keys", "army_set_2", "Set army group 2", "", Type::Hotkey, "Ctrl+2", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "army_set_2", "Set army group 2", "", Type::Hotkey, "Ctrl+2", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, '2', true, {"army_set_2", kArmy, kNoText, 0}},
-    {Item{"keys", "army_set_3", "Set army group 3", "", Type::Hotkey, "Ctrl+3", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "army_set_3", "Set army group 3", "", Type::Hotkey, "Ctrl+3", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, '3', true, {"army_set_3", kArmy, kNoText, 0}},
-    {Item{"keys", "army_set_4", "Set army group 4", "", Type::Hotkey, "Ctrl+4", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "army_set_4", "Set army group 4", "", Type::Hotkey, "Ctrl+4", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, '4', true, {"army_set_4", kArmy, kNoText, 0}},
-    {Item{"keys", "army_set_5", "Set army group 5", "", Type::Hotkey, "Ctrl+5", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "army_set_5", "Set army group 5", "", Type::Hotkey, "Ctrl+5", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, '5', true, {"army_set_5", kArmy, kNoText, 0}},
-    {Item{"keys", "army_recall_1", "Recall army group 1", "", Type::Hotkey, "Alt+1", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "army_recall_1", "Recall army group 1", "", Type::Hotkey, "Alt+1", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::SysKey, '1', false, {"army_recall_1", kArmy, kNoText, 0}},
-    {Item{"keys", "army_recall_2", "Recall army group 2", "", Type::Hotkey, "Alt+2", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "army_recall_2", "Recall army group 2", "", Type::Hotkey, "Alt+2", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::SysKey, '2', false, {"army_recall_2", kArmy, kNoText, 0}},
-    {Item{"keys", "army_recall_3", "Recall army group 3", "", Type::Hotkey, "Alt+3", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "army_recall_3", "Recall army group 3", "", Type::Hotkey, "Alt+3", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::SysKey, '3', false, {"army_recall_3", kArmy, kNoText, 0}},
-    {Item{"keys", "army_recall_4", "Recall army group 4", "", Type::Hotkey, "Alt+4", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "army_recall_4", "Recall army group 4", "", Type::Hotkey, "Alt+4", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::SysKey, '4', false, {"army_recall_4", kArmy, kNoText, 0}},
-    {Item{"keys", "army_recall_5", "Recall army group 5", "", Type::Hotkey, "Alt+5", Effect::Live, true, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+    {Item{"keys", "army_recall_5", "Recall army group 5", "", Type::Hotkey, "Alt+5", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::SysKey, '5', false, {"army_recall_5", kArmy, kNoText, 0}},
 };
 
@@ -352,6 +358,8 @@ void RegisterSettings()
 void Attach()
 {
     core::input::keys::Install();
+    // The panel's note for a game key chosen for one of our keys (here, not with a feature that may not attach).
+    core::ui::SetGameKeyNote(&zeus::options_text::GameKeyNote);
     g_overlaySites = true;
     for (const Site *s : {&kOverlaySelect, &kSetCategory, &kCategoryAvailable}) {
         if (!Matches(*s)) {
@@ -381,12 +389,19 @@ bool LangHooked()
     return o_LangGetString != nullptr;
 }
 
+static bool g_langForTest = false; // GameTextForTest: the game's lang_get_string is a fake at its address
+
 const char *GameText(int group, int index)
 {
-    if (!o_LangGetString) {
+    if (!o_LangGetString && !g_langForTest) {
         return nullptr;
     }
     return Original(o_LangGetString, kLangGetString)(group, index);
+}
+
+void GameTextForTest()
+{
+    g_langForTest = true;
 }
 
 void OverlaySitesForTest()

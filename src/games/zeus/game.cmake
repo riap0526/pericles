@@ -66,7 +66,7 @@ macro(game_add_tests)
         src/games/zeus/game_menu.cpp src/games/zeus/painter.cpp src/core/options/pause_menu.cpp
         src/core/options/menu.cpp src/core/options/menu_text.cpp src/core/options/option_text.cpp
         src/core/options/game_options.cpp src/core/options/display_dialog.cpp
-        src/core/options/setting_rows.cpp src/core/options/options_host.cpp src/core/options/window.cpp src/core/display/common_sizes.cpp
+        src/core/options/setting_rows.cpp src/core/options/hotkeys_page.cpp src/core/options/options_host.cpp src/core/options/window.cpp src/core/display/common_sizes.cpp
         src/games/zeus/options_window.cpp src/games/zeus/options_text.cpp src/games/zeus/options_entry.cpp
         src/games/zeus/options_original.cpp src/games/zeus/display_options.cpp
         src/games/zeus/sound.cpp src/core/sound/sound.cpp src/core/sound/master_volume.cpp

@@ -136,6 +136,7 @@ set(CORE_SOURCES
     src/core/options/game_options.cpp
     src/core/options/display_dialog.cpp
     src/core/options/setting_rows.cpp
+    src/core/options/hotkeys_page.cpp
     src/core/options/options_host.cpp
     src/core/ui/scroll_repeat.cpp
     src/core/ui/settings_view.cpp
@@ -452,6 +453,15 @@ add_executable(test_options_host proxy/ddraw/test_options_host.cpp src/core/opti
     src/core/ui/hotkey.cpp src/core/diag/guard.cpp src/core/log.cpp)
 target_include_directories(test_options_host PRIVATE src)
 target_link_options(test_options_host PRIVATE -static)
+
+# Offline test of core/options/hotkeys_page: the Hotkeys window's page from a fake action table and the debug panel's
+# note on a key in use.
+add_executable(test_hotkeys_page proxy/ddraw/test_hotkeys_page.cpp src/core/options/hotkeys_page.cpp
+    src/core/options/setting_rows.cpp src/core/options/option_text.cpp src/core/options/menu_text.cpp
+    src/core/input/keys.cpp src/core/settings/settings.cpp src/core/settings/ini_text.cpp src/core/ui/hotkey.cpp
+    src/core/diag/guard.cpp src/core/log.cpp src/core/platform/files.cpp src/core/game.cpp)
+target_include_directories(test_hotkeys_page PRIVATE src)
+target_link_options(test_hotkeys_page PRIVATE -static)
 
 # Offline test of core/ui/scroll_repeat: held scroll arrows at 20 lines a second on a fake of the games' buttons
 # function (a click one line, two scroll bars in a pass, types put back).
