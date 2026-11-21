@@ -26,6 +26,7 @@
 #include "core/ui/settings_view.h"
 #include "games/zeus/anim_clock.h"
 #include "games/zeus/diag.h"
+#include "games/zeus/display_options.h"
 #include "games/zeus/fullscreen.h"
 #include "games/zeus/resolution.h"
 #include "games/zeus/scroll.h"
@@ -316,6 +317,7 @@ void __cdecl GameFrame_detour()
     g_lastFrameMs = frameStart;
     zeus::resolution::OnLoop(); // the 1024x768 frame of the front-end screens, the configured resolution
     zeus::fullscreen::OnLoop(); // the front-end screens framed (the menus pass here too)
+    zeus::display_options::OnLoop(); // the Display options dialog closed without OK: the settings put back
     DecideCountingFrame();
     zeus::diag::FrameBegin();
     core::diag::GameFrameBegin(); // frame check: presents within one frame
@@ -915,6 +917,17 @@ bool PutBackDrawing(void (*fn)(void *), void *ctx)
     }
     WithDrawnState([&] { fn(ctx); }, true);
     return core::diag::Enabled(g_drawnFeature); // a fault in its copy or put-back switched it off
+}
+
+// Outside any city drawing the copy buffer is free in every frame (the frame's own drawing has put its copy back),
+// so the drawing copies and puts back on its own whether the frame counts or not.
+bool PutBackDrawingOutside(void (*fn)(void *), void *ctx)
+{
+    if (!g_drawnCopy || !core::diag::Enabled(g_drawnFeature) || g_renderDepth != 0) {
+        return false;
+    }
+    WithDrawnState([&] { fn(ctx); }, true);
+    return core::diag::Enabled(g_drawnFeature);
 }
 
 bool PrepareForTest()

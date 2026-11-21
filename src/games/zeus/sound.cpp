@@ -5,6 +5,7 @@
 #include "core/sound/layer1.h"
 #include "core/sound/master_volume.h"
 #include "core/sound/sound.h"
+#include "games/zeus/options_original.h"
 
 // Evidence (Zeus.exe 2.1.4.0, SHA256 382bcd28...0a57):
 // read with Ghidra and measured from outside the game.
@@ -238,10 +239,11 @@ void Attach()
         pause = true;
     }
     core::sound::Attach(kGame, pause, probe);
-    // The master volume: before game_main, so every volume the game sets goes through it. Zeus sets its stream
-    // volumes through _AIL_set_stream_volume on live handles only, all of them in the master volume's list, so the
-    // game needs to set nothing again when ours changes [inferred: checked by ear in the test].
-    static const core::sound::master_volume::VolumeGame kVolume(&core::sound::master_volume::NoGameVolumes);
+    // The master volume: before game_main, so every volume the game sets goes through it. When ours changes, the
+    // game's music, speech and ambient volumes are handed to its sound manager again, as Yongle's (options_original,
+    // once the game's own options are attached; Zeus sets its stream volumes on live handles only, all of them in the
+    // master volume's list, so this is the same either way).
+    static const core::sound::master_volume::VolumeGame kVolume(&zeus::options_original::ReapplyVolumes);
     core::sound::master_volume::Attach(kVolume);
 }
 

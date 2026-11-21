@@ -158,6 +158,7 @@ using Config_fn = int(__cdecl *)();
 using ViewportInit_fn = void(__cdecl *)(int, int, int, int, int, int, int, int);
 Mode_fn o_ModeSize;
 Config_fn o_ConfigLoad;
+void (*g_afterConfigLoad)() = nullptr;
 Void_fn o_SidebarPos, o_ViewportWide, o_ViewportNarrow;
 
 // The game's own mode change (as its F7). It does nothing on screens 0x0f, 0x0e, 0x21 and 0x05; the core tries again.
@@ -194,6 +195,9 @@ int __cdecl ConfigLoad_detour()
                  "instead",
                  *kScreenMode, *kScreenMode == 1 ? "640x480" : *kScreenMode == 2 ? "800x600" : "unknown");
         *kScreenMode = 3;
+    }
+    if (g_afterConfigLoad) {
+        g_afterConfigLoad();
     }
     return r;
 }
@@ -1168,12 +1172,11 @@ bool g_installed = false; // Attach succeeded: the game is in our mode 3
 } // namespace
 
 // F6 (the game's 800x600) is blocked while our resolution is installed: it would take the game out of our mode 3 (as
-// Yongle's). The key bindings (core/input/keys) block it first; this is for when they are off after an error. Not when
-// the game posted it itself (lParam 0: the Display options dialog's 800 x 600 button, the game's own way until our
-// buttons replace it). Shift+F7 cycles our resolution.
+// Yongle's). The key bindings (core/input/keys) block it first; this is for when they are off after an error. Also when
+// the game posts it itself (lParam 0: the Display options dialog's 800 x 600 button). Shift+F7 cycles our resolution.
 bool KeyFilter(UINT message, WPARAM key, LPARAM l)
 {
-    if (g_installed && message == WM_KEYDOWN && key == VK_F6 && l != 0) {
+    if (g_installed && message == WM_KEYDOWN && key == VK_F6) {
         static long logs = 0;
         if (++logs <= 5) {
             core_log("zeus: resolution: F6 (800x600) ignored: with our resolutions the game stays in mode 3");
@@ -1181,6 +1184,16 @@ bool KeyFilter(UINT message, WPARAM key, LPARAM l)
         return true;
     }
     return switching::CycleKey(message, key, l);
+}
+
+bool ConfigLoadHooked()
+{
+    return o_ConfigLoad != nullptr;
+}
+
+void SetAfterConfigLoad(void (*after)())
+{
+    g_afterConfigLoad = after;
 }
 
 bool SettingsChanged(const core_config *cfg)

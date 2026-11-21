@@ -41,6 +41,8 @@ set(GAME_SOURCES
     src/games/zeus/options_window.cpp
     src/games/zeus/options_text.cpp
     src/games/zeus/options_entry.cpp
+    src/games/zeus/options_original.cpp
+    src/games/zeus/display_options.cpp
 )
 
 # The offline tests of this game layer (run by src/games/zeus/tests.ps1 through proxy/ddraw/run_tests.ps1).
@@ -63,8 +65,10 @@ macro(game_add_tests)
         src/games/zeus/keys.cpp src/core/input/keys.cpp
         src/games/zeus/game_menu.cpp src/games/zeus/painter.cpp src/core/options/pause_menu.cpp
         src/core/options/menu.cpp src/core/options/menu_text.cpp src/core/options/option_text.cpp
+        src/core/options/game_options.cpp src/core/options/display_dialog.cpp
         src/core/options/setting_rows.cpp src/core/options/options_host.cpp src/core/options/window.cpp src/core/display/common_sizes.cpp
         src/games/zeus/options_window.cpp src/games/zeus/options_text.cpp src/games/zeus/options_entry.cpp
+        src/games/zeus/options_original.cpp src/games/zeus/display_options.cpp
         src/games/zeus/sound.cpp src/core/sound/sound.cpp src/core/sound/master_volume.cpp
         src/core/sound/ambient_rate.cpp src/core/sound/layer1.cpp
         src/games/zeus/fullscreen.cpp src/core/display/framed_screens.cpp src/core/display/framing.cpp

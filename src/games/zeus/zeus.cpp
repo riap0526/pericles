@@ -13,10 +13,12 @@
 #include "games/zeus/city_picture.h"
 #include "games/zeus/debug_log.h"
 #include "games/zeus/diag.h"
+#include "games/zeus/display_options.h"
 #include "games/zeus/fullscreen.h"
 #include "games/zeus/intro.h"
 #include "games/zeus/keys.h"
 #include "games/zeus/options_entry.h"
+#include "games/zeus/options_original.h"
 #include "games/zeus/sound.h"
 #include "games/zeus/notice.h"
 #include "games/zeus/resolution.h"
@@ -213,8 +215,19 @@ extern "C" void zeus_attach(void)
     // The key bindings (core/display asks them before the key filter). After city_picture, which checks
     // lang_get_string's first bytes before calling it: the pause banner's hook changes them.
     // Esc and the pause menu (drawn with the game's art in screen_present; before keys, whose Esc it is).
-    zeus::game_menu::Attach(zeus::painter::Attach(), zeus::timing::PresentHooked());
+    const bool painter = zeus::painter::Attach();
+    zeus::game_menu::Attach(painter, zeus::timing::PresentHooked());
     zeus::keys::Attach();
+    // The game's own options for the window (their texts through keys' lang_get_string hook).
+    zeus::options_original::Attach();
+    // Our display settings in the game's Display options dialog (drawn with the painter, its texts through keys'
+    // lang_get_string hook); only with our resolution, whose settings it changes.
+    if (layout) {
+        zeus::display_options::Attach(painter);
+    }
+    else {
+        core_log("display options: not installed (our resolution is not): the game's own dialog stays");
+    }
     // The Options and File menus and the main menu's Options (our texts through keys' lang_get_string hook; after
     // game_menu, whose confirmations the File menu uses, and city_picture, whose screenshots it adds).
     zeus::options_entry::Attach();

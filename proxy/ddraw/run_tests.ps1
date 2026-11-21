@@ -13,7 +13,11 @@
 #   test_options core/options: the options window with a fake painter (no DLL)
 #   test_options_host core/options/options_host: the window in a game on a fake game layer (Hotkeys over it, the
 #               pause menu, an error while drawing) (no DLL)
-#   test_ini    core/settings/ini_text: changing values in the ini, keeping everything else (no DLL)
+#   test_game_options core/options/game_options: the game's own options as rows on a fake game, a new player's
+#               speeds (no DLL; makes and removes test_game_options_tmp\)
+#   test_display_dialog core/options/display_dialog: the Display options dialog on a fake game layer (scale steps,
+#               what it draws, its buttons, Cancel / OK / closed without OK) (no DLL; writes and removes engine.ini)
+#   test_ini   core/settings/ini_text: changing values in the ini, keeping everything else (no DLL)
 #   test_settings the settings model: load, requests, callbacks, saving (no DLL; rewrites the ini next to it,
 #               which is put back to the default at the end)
 #   test_scroll core/scroll: cruise speed, easing, stop (no DLL; ~4 s)
@@ -119,6 +123,8 @@ Run 'test_files' 'emulated' @()
 Run 'test_hotkey' 'emulated' @()
 Run 'test_options' 'emulated' @()
 Run 'test_options_host' 'emulated' @()
+Run 'test_game_options' 'emulated' @()
+Run 'test_display_dialog' 'emulated' @()
 Run 'test_ini' 'emulated' @()
 Run 'test_settings' 'emulated' @()
 Run 'test_scroll' 'emulated' @()

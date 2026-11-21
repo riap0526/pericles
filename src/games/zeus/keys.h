@@ -21,6 +21,9 @@ void RegisterSettings();
 void Attach();
 // lang_get_string is hooked here (the pause banner; games/zeus/options_entry's menu texts go through the same hook).
 bool LangHooked();
+// The game's own text (lang_get_string as the game has it: without our menu texts and the banner's keys); nullptr
+// when the hook is not installed. Game thread.
+const char *GameText(int group, int index);
 
 // The offline tests (src/games/zeus/test_restore.cpp): the detours (lang_get_string); the overlay keys' functions
 // taken as matching (the test's copy of the game has fakes there).

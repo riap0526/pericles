@@ -6,6 +6,9 @@
 #pragma once
 
 #include "core/options/pause_menu.h"
+#include "core/options/window.h"
+
+#include <vector>
 
 namespace zeus::options_window {
 
@@ -26,5 +29,8 @@ bool IsOpen(); // the window or the pause menu: the game is paused and draws fra
 // Before the game's frame is presented: the window (or the pause menu) over it. caller: the game address
 // screen_present returns to.
 void OnPresent(unsigned long caller);
+
+// For the offline test (src/games/zeus/test_restore.cpp): the pages as the window would build them now.
+std::vector<core::options::Page> PagesForTest();
 
 } // namespace zeus::options_window

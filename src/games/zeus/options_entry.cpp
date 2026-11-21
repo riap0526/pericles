@@ -58,8 +58,14 @@ constexpr int kMainMenuGroup = 30, kTextWebsite = 2; // "Activision Website"
 // 0x5efd62, 0x5efd72; config_load at start-up too): ours show the number the game's entry has now.
 constexpr int kAutosaveRow = 4, kAutoDefendRow = 5;
 
-// The game's dialogs, the fall-back when our window is not available: Speed, Display, Sound options.
-const DWORD kSpeedDialog = 0x4023d0, kDisplayDialog = 0x401db0, kSoundDialog = 0x401f90;
+// The game's dialogs, the fall-back when our window is not available: Speed, Display, Sound options, Messages.
+const DWORD kSpeedDialog = 0x4023d0, kDisplayDialog = 0x401db0, kSoundDialog = 0x401f90, kMessagesDialog = 0x4026a0;
+// The game's Options items in our menu: Difficulty, Autosave, Auto Defend (Display, Sound and Speed are in our window's
+// pages, Messages in General > Messages).
+constexpr int kFirstGameItem = 3, kGameItems = 3;
+// The message list's "Click to change how messages are received" (messages_text_buttons 0x5ee458, button 1: its
+// left-click handler at +0x24 = 0x5ee47c is the game's Messages dialog 0x4026a0): our General > Messages.
+const DWORD kMessagesButtonHandler = 0x5ee47c;
 
 core::diag::Feature g_texts{"menu texts (games/zeus/options_entry)"};
 bool g_testing = false; // AttachForTest: the main menu's code is not patched
@@ -84,6 +90,13 @@ void __cdecl MenuAudio()
     }
 }
 
+void __cdecl MessagesButton()
+{
+    if (!ow::OpenCategory(ow::kPageGeneral, mt::kCategoryMessages)) {
+        reinterpret_cast<Handler_fn>(kMessagesDialog)();
+    }
+}
+
 void __cdecl MenuCityShot()
 {
     core::capture::city_picture::RequestCity(); // the menu has put the city screen back before calling (0x431eb0)
@@ -94,11 +107,10 @@ void __cdecl MenuMinimapShot()
 }
 
 // Our tables (filled at Attach from the game's: its handlers and parameters as they are). The game's Options: General
-// Settings, Video, Audio, then for now the game's Display, Sound and Speed options (until the window has them), then
-// its Difficulty, Autosave, Auto Defend and Messages. The editors: ours and the game's first 3 or 2 (Display, Sound
-// (, Speed)), as their menus showed.
-MenuItem g_options[3 + kOptionsCount];
-MenuItem g_editor3[6], g_editor2[5];
+// Settings, Video, Audio, then the game's Difficulty, Autosave and Auto Defend. The editors: General Settings, Video,
+// Audio (their menus had the game's Display, Sound (, Speed), which the window's pages have).
+MenuItem g_options[3 + kGameItems];
+MenuItem g_editor[3];
 // The File menu as Yongle's: Replay map, Load, Save, the screenshots, Delete, Exit to main menu, Exit game.
 MenuItem g_file[8];
 int g_fileCount = 0;
@@ -121,7 +133,7 @@ void MakeOptions(const MenuItem *game)
     for (const MenuItem &it : ours) {
         g_options[n++] = it;
     }
-    for (int k = 0; k < kOptionsCount; ++k) {
+    for (int k = kFirstGameItem; k < kFirstGameItem + kGameItems; ++k) {
         g_options[n] = game[k];
         if (k == kAutosaveRow) {
             g_options[n].text = kTextAutosave;
@@ -133,16 +145,9 @@ void MakeOptions(const MenuItem *game)
     }
     Number(g_options, n);
     for (int k = 0; k < 3; ++k) {
-        g_editor3[k] = g_editor2[k] = ours[k];
+        g_editor[k] = ours[k];
     }
-    for (int k = 0; k < 3; ++k) {
-        g_editor3[3 + k] = game[k];
-    }
-    for (int k = 0; k < 2; ++k) {
-        g_editor2[3 + k] = game[k];
-    }
-    Number(g_editor3, 6);
-    Number(g_editor2, 5);
+    Number(g_editor, 3);
 }
 
 void MakeFile(const MenuItem *game)
@@ -308,18 +313,25 @@ void OptionsIn()
     MakeOptions(GameItems(kOptionsItems));
     g_savedGame[1] = BarMenu(kGameBar, 1);
     BarMenu(kGameBar, 1).items = g_options; // .data: writable as it is
-    BarMenu(kGameBar, 1).count = 3 + kOptionsCount;
+    BarMenu(kGameBar, 1).count = 3 + kGameItems;
     for (int k = 0; k < 3; ++k) {
         Menu &m = BarMenu(kEditorBars[k], 1);
         g_savedEditor[k] = m;
-        const bool three = m.count == 3;
-        m.items = three ? g_editor3 : g_editor2;
-        m.count = three ? 6 : 5;
+        m.items = g_editor;
+        m.count = 3;
     }
     const bool mainMenu = !g_testing && CallTo(kWebsiteOpen.address, reinterpret_cast<const void *>(&OpenOptions));
-    core_log("options window: the Options menus open it (General Settings, Video, Audio; the game's own after them "
-             "for now), in the game and the editors; the main menu's Activision Website is Options%s",
+    core_log("options window: the Options menus open it (General Settings, Video, Audio; in the game then the game's "
+             "Difficulty, Autosave, Auto Defend); the main menu's Activision Website is Options%s",
              mainMenu ? "" : " (not changed: the code could not be written)");
+    Handler_fn &messagesButton = *reinterpret_cast<Handler_fn *>(kMessagesButtonHandler + g_imageShift);
+    if (reinterpret_cast<DWORD>(messagesButton) == kMessagesDialog) {
+        messagesButton = &MessagesButton; // .data
+        core_log("options window: the message list's button opens it at General > Messages");
+    }
+    else {
+        core_log("options window: the message list's button is not as expected; it opens the game's Messages");
+    }
 }
 
 bool FileWanted()

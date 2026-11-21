@@ -1,9 +1,12 @@
 #include "games/zeus/options_window.h"
 
+#include "core/options/game_options.h"
+#include "core/options/menu_text.h"
 #include "core/options/options_host.h"
 #include "core/options/setting_rows.h"
 #include "core/ui/hotkey.h"
 #include "games/zeus/options_text.h"
+#include "games/zeus/site.h"
 
 #include <windows.h>
 
@@ -15,14 +18,18 @@ namespace {
 namespace co = core::options;
 namespace oh = core::options::options_host;
 namespace sr = core::options::setting_rows;
+namespace go = core::options::game_options;
 using sr::Add;
 using sr::Header;
 using sr::Resolve;
 using sr::ShownIf;
 using sr::Toggle;
 
-// Yongle's pages with Pericles's settings. Not yet: the game's own options (game and scroll speed, the four volumes,
-// autosave, messages) and the Hotkeys page; a category with no rows is left out.
+const Var<int> kEditorMode{0x665e2c}; // editor_mode: 1 in the editors
+
+// Yongle's pages with Pericles's settings, the game's own options among them (games/zeus/options_original). Not yet:
+// the Hotkeys page. The pages are built each time the window opens: in the editors the game speed is left out (the
+// editors do not run the game, so it does nothing there; game_speed_step 0x402430 ignores it too).
 std::vector<co::Page> BuildPages()
 {
     co::Page general{"General", {}};
@@ -35,6 +42,7 @@ std::vector<co::Page> BuildPages()
     }
     {
         co::Category c{"Speed", {}};
+        if (!sr::Dry()) go::SpeedRows(c.rows, *kEditorMode != 1);
         Add(c.rows, "gameplay", "keep_speed");
         Add(c.rows, "gameplay", "full_speed");
         Header(c.rows, "Scrolling");
@@ -43,6 +51,20 @@ std::vector<co::Page> BuildPages()
         Add(c.rows, "gameplay", "drag_scroll");
         Add(c.rows, "gameplay", "edge_scroll_width");
         general.categories.push_back(std::move(c));
+    }
+    {
+        co::Category c{"Autosave", {}};
+        if (!sr::Dry()) go::AutosaveRows(c.rows);
+        if (!c.rows.empty()) {
+            general.categories.push_back(std::move(c));
+        }
+    }
+    {
+        co::Category c{core::options::menu_text::kCategoryMessages, {}};
+        if (!sr::Dry()) go::MessageRows(c.rows);
+        if (!c.rows.empty()) {
+            general.categories.push_back(std::move(c));
+        }
     }
     co::Page display{"Video", {}};
     {
@@ -83,6 +105,7 @@ std::vector<co::Page> BuildPages()
     auto &rows = sound.categories[0].rows;
     Add(rows, "audio", "master_volume");
     Toggle(rows, "audio", "master_sound");
+    if (!sr::Dry()) go::SoundRows(rows);
     Header(rows, "More");
     Add(rows, "audio", "ambient_sounds");
     Add(rows, "audio", "nature_sounds");
@@ -114,6 +137,11 @@ void Attach(const core::options::pause_menu::PauseGame &pause)
                                       &ReservedKey, kEmergency, 1, false);
     zeus::options_text::Register(); // Pericles's own texts, before the shared ones
     oh::Attach(game);
+}
+
+std::vector<core::options::Page> PagesForTest()
+{
+    return BuildPages();
 }
 
 bool Available()

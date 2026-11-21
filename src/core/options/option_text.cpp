@@ -74,6 +74,11 @@ CHOICES(kAmbient,
 
 CHOICES(kMinimapScale, {"1", "", "1x"}, {"2", "", "2x"}, {"4", "", "4x"});
 
+CHOICES(kMessageModes,
+        {"full", "The whole message, written out in full."},
+        {"condensed", "A shorter message, in fewer and plainer words."},
+        {"off", "No message of this kind."});
+
 // The settings both games have, in both games' words.
 const Text kShared[] = {
     {"ui", "info_window", "Where the window opens when you right-click a building. Applies to the next window you open.",
@@ -150,6 +155,20 @@ const Text kShared[] = {
      nullptr, 0, false, "Save full city screenshot"},
     {"ui", "minimap_picture_key", "Saves the minimap of the whole map as a picture in the shots folder.", nullptr, 0,
      false, "Save minimap screenshot"},
+    // The game's own options (core/options/game_options).
+    {"game", "game_speed", "How fast the game runs.", nullptr, 0, false, "Game speed"},
+    {"game", "scroll_speed", "How fast the view moves when you scroll the city.", nullptr, 0, false, "Scroll speed"},
+    {"game", "autosave", "The game saves your city by itself from time to time, as its own Autosave option does.",
+     nullptr, 0, false, "Autosave"},
+    {"game", "messages", nullptr, kMessageModes, N(kMessageModes)}, // no tooltip on the kinds' names
+    {"game", "music", "The music. The slider sets its volume.", nullptr, 0, false, "Music"},
+    {"game", "speech", "The spoken voices. The slider sets their volume.", nullptr, 0, false, "Speech"},
+    {"game", "sound_effects", "The sounds of the buildings, the people and the buttons. The slider sets their "
+                              "volume.",
+     nullptr, 0, false, "General sounds"},
+    {"game", "ambient_volume", "The city's background sounds: birds, water, workshops. The slider sets their volume; "
+                               "how often they play is set below.",
+     nullptr, 0, false, "Ambient sounds"},
 };
 
 #undef CHOICES

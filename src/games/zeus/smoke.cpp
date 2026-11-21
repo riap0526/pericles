@@ -3,6 +3,8 @@
 #include "core/capture/city_picture.h"
 #include "core/log.h"
 #include "core/ui/notice.h"
+#include "games/zeus/display_options.h"
+#include "games/zeus/options_original.h"
 #include "games/zeus/site.h"
 
 #include <cstdio>
@@ -100,7 +102,8 @@ bool Lose(char *why, int size)
 } // namespace
 
 const char kActions[] =
-    "win lose notice notice_long notice_bracket notice_red zoom_50 zoom_75 zoom_125 picture_city picture_minimap";
+    "win lose notice notice_long notice_bracket notice_red zoom_50 zoom_75 zoom_125 picture_city picture_minimap "
+    "message_kinds display_options";
 
 bool Action(const char *name, char *why, int size)
 {
@@ -138,6 +141,18 @@ bool Action(const char *name, char *why, int size)
     }
     if (std::strcmp(name, "picture_minimap") == 0) {
         core::capture::city_picture::RequestMinimap();
+        return true;
+    }
+    if (std::strcmp(name, "message_kinds") == 0) {
+        zeus::options_original::LogMessageKinds();
+        return true;
+    }
+    // The Display options dialog, which play reaches only when the options window cannot open.
+    if (std::strcmp(name, "display_options") == 0) {
+        if (!zeus::display_options::OpenForTest()) {
+            std::snprintf(why, size, "our Display options dialog is not installed");
+            return false;
+        }
         return true;
     }
     if (std::strcmp(name, "win") == 0) {

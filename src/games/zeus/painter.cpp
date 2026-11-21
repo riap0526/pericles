@@ -222,6 +222,15 @@ void BeginDraw()
     g_painter.oy = *kDialogY;
 }
 
+// menu_button_frame_draw 0x512d80 (kind 2) draws through 0x59fba0 with its state argument as it is: image group 0x0e
+// + 0x1a + 3 x state; the Display options dialog passes 1 for the button under the mouse, else 2 (0x59afa2..0x59afc6)
+// [confirmed: disassembly].
+void DialogButton(int x, int y, int w, bool hovered)
+{
+    const int base = ArtId(kButton) + kStripFirst + 3 * (hovered ? 1 : 2);
+    tl::WalkPieces(g_painter.ox + x, g_painter.oy + y, w, [&](int i, int xx, int yy) { Image(base + i, xx, yy); });
+}
+
 void DialogOrigin(int *x, int *y)
 {
     *x = *kDialogX;

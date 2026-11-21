@@ -45,6 +45,11 @@ void WideTopBar();
 // is ours (the game does not see it).
 bool KeyFilter(UINT message, WPARAM key, LPARAM l);
 
+// config_load (it reads Zeus.inf) is hooked here; then after calls the given function after the original returns
+// (options_original: a new player's speeds). Start-up.
+bool ConfigLoadHooked();
+void SetAfterConfigLoad(void (*after)());
+
 // For the offline tests (src/games/zeus/test_restore.cpp): the detours by site; the state Attach would set (without
 // hooks).
 const Detour *Detours(int *count);

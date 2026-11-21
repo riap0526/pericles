@@ -190,10 +190,15 @@
 #include "games/zeus/game_menu.h"
 #include "core/ui/game_menu_layout.h"
 #include "games/zeus/options_entry.h"
+#include "games/zeus/options_original.h"
+#include "games/zeus/display_options.h"
+#include "core/options/display_dialog.h"
+#include "games/zeus/options_window.h"
 #include "games/zeus/painter.h"
 #include "core/options/menu.h"
 #include "core/options/menu_text.h"
 #include "core/options/pause_menu.h"
+#include "core/options/window.h"
 #include "core/ui/notice.h"
 #include "games/zeus/intro.h"
 #include "games/zeus/keys.h"
@@ -2182,8 +2187,8 @@ void KeyBindings()
           "keys: F6 (Open Options): taken; the window is not attached here, so it says so (nothing to the game)");
     Check(k::Translate(WM_KEYDOWN, VK_F7, 1) && k::Translate(WM_KEYDOWN, VK_F8, 1) && g_keysSentCount == 0,
           "keys: F7, F8 from the keyboard never reach the game");
-    Check(!k::Translate(WM_KEYDOWN, VK_F6, 0) && !k::Translate(WM_KEYDOWN, VK_F7, 0) && g_keysSentCount == 0,
-          "keys: F6, F7 the game posted itself (lParam 0, the Display options buttons): the game's");
+    Check(k::Translate(WM_KEYDOWN, VK_F6, 0) && k::Translate(WM_KEYDOWN, VK_F7, 0) && g_keysSentCount == 0,
+          "keys: F6, F7 the game posted itself (lParam 0, the Display options buttons): not the game's either");
     Check(!k::Translate(WM_KEYDOWN, VK_ESCAPE, 1), "keys: Esc: the game's");
     g_keysSentCount = 0;
     Check(k::Translate(WM_KEYDOWN, 'R', 1) && SentOne(WM_KEYDOWN, 'R') &&
@@ -2728,20 +2733,23 @@ void OptionsMenus()
     for (int k = 0; k < 7; ++k) {
         PutItem(0x5efd20 + 16 * k, options[k], optionHandlers[k]);
     }
+    At<DWORD>(0x5ee47c) = 0x4026a0; // the message list's button: the game's Messages dialog
     oe::AttachForTest(true, true);
     using core::ui::game_menu_layout::Menu;
     using core::ui::game_menu_layout::MenuItem;
     auto menu = [](DWORD at) { return *reinterpret_cast<const Menu *>(at + g_imageShift); };
     const Menu o = menu(0x5eff10);
-    Check(o.count == 10 && o.items[0].text == 20 && o.items[1].text == 21 && o.items[2].text == 22 &&
-              o.items[3].text == 1 && o.items[5].text == 3 && o.items[6].text == 6 && o.items[7].text == 25 &&
-              o.items[8].text == 26 && o.items[9].text == 13 && o.items[9].y == 180 &&
-              reinterpret_cast<DWORD>(o.items[7].handler) == 0x402660,
-          "menus: Options: General, Video, Audio, the game's Display, Sound, Speed, Difficulty, Autosave, Auto "
-          "Defend, Messages (their handlers)");
-    Check(menu(0x5eff40).count == 6 && menu(0x5eff80).count == 5 && menu(0x5f0010).count == 5 &&
-              menu(0x5eff40).items[5].text == 3 && menu(0x5eff80).items[4].text == 2,
-          "menus: the editors' Options: ours and the game's first three / two");
+    Check(o.count == 6 && o.items[0].text == 20 && o.items[1].text == 21 && o.items[2].text == 22 &&
+              o.items[3].text == 6 && o.items[4].text == 25 && o.items[5].text == 26 && o.items[5].y == 100 &&
+              reinterpret_cast<DWORD>(o.items[3].handler) == 0x401ec0 &&
+              reinterpret_cast<DWORD>(o.items[4].handler) == 0x402660 &&
+              reinterpret_cast<DWORD>(o.items[5].handler) == 0x5692d0,
+          "menus: Options: General, Video, Audio, the game's Difficulty, Autosave, Auto Defend (their handlers)");
+    Check(menu(0x5eff40).count == 3 && menu(0x5eff80).count == 3 && menu(0x5f0010).count == 3 &&
+              menu(0x5eff40).items[2].text == 22 && menu(0x5f0010).items[0].text == 20,
+          "menus: the editors' Options: General, Video, Audio");
+    Check(At<DWORD>(0x5ee47c) != 0x4026a0 && LogContains("the message list's button opens it at General > Messages"),
+          "menus: the message list's button opens General > Messages");
     const Menu f = menu(0x5eff00);
     const short want[] = {42, 3, 4, 40, 41, 6, 43, 5};
     bool order = f.count == 8;
@@ -2766,6 +2774,378 @@ void OptionsMenus()
               menu(0x5eff40).count == 3 && LogContains("menus: our menu texts failed"),
           "menus: an error: the game's own menus are back");
     Check(oe::MenuText(2, 20, &FakeLangGI) == nullptr, "menus: ... and our texts are off");
+}
+
+namespace co = core::options;
+
+// --- The game's own options (games/zeus/options_original on core/options/game_options). The sound manager's methods
+// are __thiscall (ecx the manager, the callee pops): the fakes are __fastcall with ecx and an unused edx, the same.
+struct SoundCall {
+    std::string what;
+    int a, b;
+};
+std::vector<SoundCall> g_soundCalls;
+void __fastcall FakeChannelVolume(void *, void *, int stream, int v) { g_soundCalls.push_back({"channel", stream, v}); }
+void __fastcall FakeMusicVolume(void *, void *, int v) { g_soundCalls.push_back({"music", v, 0}); }
+void __fastcall FakeSpeechVolume(void *, void *, int v) { g_soundCalls.push_back({"speech", v, 0}); }
+void __fastcall FakeAmbientVolume(void *, void *, int v) { g_soundCalls.push_back({"ambient", v, 0}); }
+void __fastcall FakeChannelStop(void *, void *, int stream) { g_soundCalls.push_back({"stop", stream, 0}); }
+void __fastcall FakeEndAll3d(void *, void *) { g_soundCalls.push_back({"end3d", 0, 0}); }
+int g_autosaveToggles = 0;
+void __cdecl FakeAutosaveToggle()
+{
+    ++g_autosaveToggles;
+    At<int>(0xf2a7f4) = At<int>(0xf2a7f4) ? 0 : 1;
+}
+
+const co::Category *FindCategory(const std::vector<co::Page> &pages, int page, const char *name)
+{
+    for (const co::Category &c : pages[page].categories) {
+        if (c.name == name) {
+            return &c;
+        }
+    }
+    return nullptr;
+}
+
+const co::Row *FindRow(const co::Category &c, const char *id)
+{
+    for (const co::Row &r : c.rows) {
+        if (r.id == id) {
+            return &r;
+        }
+    }
+    return nullptr;
+}
+
+// Not attached (the game's functions are not where Attach looks in this test): no rows of the game's own options,
+// the window's pages are built as before.
+void OriginalOptionsMissing()
+{
+    namespace oo = zeus::options_original;
+    Check(!oo::Attach() && LogContains("the game's own options are left out"),
+          "game options: functions not as expected: not attached, logged");
+    Check(LogContains("config_load at 0x5c44c0 does not match: a new player starts at the game's own speeds"),
+          "game options: ... config_load not there: the new player's speeds are left as they are, logged");
+    const auto pages = zeus::options_window::PagesForTest();
+    const co::Category *speed = FindCategory(pages, 0, "Speed");
+    Check(speed && !FindRow(*speed, "game_speed") && !FindRow(*speed, "scroll_speed") &&
+              !FindCategory(pages, 0, "Autosave") && !FindCategory(pages, 0, "Messages") &&
+              !FindRow(pages[2].categories[0], "music"),
+          "game options: ... no speed, autosave, message or sound rows; the pages are built");
+}
+
+void OriginalOptions()
+{
+    namespace oo = zeus::options_original;
+    SetupKeys(); // editor_mode 0
+    Thunk(0x5c8670, reinterpret_cast<void *>(&FakeChannelVolume));
+    Thunk(0x5c8480, reinterpret_cast<void *>(&FakeMusicVolume));
+    Thunk(0x5c8440, reinterpret_cast<void *>(&FakeSpeechVolume));
+    Thunk(0x5c84c0, reinterpret_cast<void *>(&FakeAmbientVolume));
+    Thunk(0x5c85c0, reinterpret_cast<void *>(&FakeChannelStop));
+    Thunk(0x5a24a0, reinterpret_cast<void *>(&FakeEndAll3d));
+    Thunk(0x402660, reinterpret_cast<void *>(&FakeAutosaveToggle));
+    At<int>(0xf2a774) = 90; // game_speed
+    At<int>(0xf2a778) = 60; // scroll_speed
+    At<int>(0xf2a7f4) = 0;  // autosave on
+    At<int>(0xf284a4) = 17; // the message kinds, as both games have it at run time
+    for (int k = 0; k < 20; ++k) {
+        At<unsigned char>(0xf2a7fc + k) = 2;
+        At<unsigned char>(0x916ae4 + k) = 2;
+    }
+    At<unsigned char>(0xf2a7fc + 3) = 0; // kind 3 Off
+    const DWORD on[] = {0xf2a76c, 0xf2a76d, 0xf2a76b, 0xf2a7c8}, vol[] = {0xf2a7d0, 0xf2a7d4, 0xf2a7cc, 0xf2a7d8};
+    const int vols[] = {50, 100, 80, 80};
+    for (int k = 0; k < 4; ++k) {
+        At<unsigned char>(on[k]) = 1;
+        At<int>(vol[k]) = vols[k];
+    }
+    At<int>(0xf2aa98) = 0; // sounds_3d_on (our sound layer keeps it off)
+    oo::AttachForTest();
+
+    auto pages = zeus::options_window::PagesForTest();
+    const co::Category *speed = FindCategory(pages, 0, "Speed");
+    Check(speed && speed->rows.size() >= 2 && speed->rows[0].id == "game_speed" && speed->rows[1].id == "scroll_speed" &&
+              speed->rows[0].defaultValue == 80 && speed->rows[1].defaultValue == 50,
+          "game options: Speed starts with game and scroll speed (defaults 80 / 50)");
+    const co::Category *autosave = FindCategory(pages, 0, "Autosave");
+    const co::Category *messages = FindCategory(pages, 0, "Messages");
+    Check(autosave && autosave->rows.size() == 1 && messages && messages->rows.size() == 17,
+          "game options: Autosave, and Messages with a row per kind (17)");
+    const co::Row *music = FindRow(pages[2].categories[0], "music");
+    const co::Row *ambient = FindRow(pages[2].categories[0], "ambient_volume");
+    Check(music && ambient && FindRow(pages[2].categories[0], "speech") &&
+              FindRow(pages[2].categories[0], "sound_effects"),
+          "game options: Audio has music, speech, general and ambient sounds");
+
+    // Values as the game has them, and written as its dialogs write them.
+    const co::Row &game = speed->rows[0];
+    Check(game.value.get(game.value.ctx) == 90, "game options: the game speed read (90)");
+    game.value.set(game.value.ctx, 70);
+    Check(At<int>(0xf2a774) == 70, "game options: ... written (70)");
+    const co::Row &kind3 = messages->rows[3];
+    Check(kind3.value.get(kind3.value.ctx) == 2, "game options: kind 3 Off shown as the third choice");
+    kind3.value.set(kind3.value.ctx, 1);
+    Check(At<unsigned char>(0xf2a7fc + 3) == 1, "game options: ... Condensed written as the game's 1");
+    const co::Row &as = autosave->rows[0];
+    as.value.set(as.value.ctx, 0);
+    Check(g_autosaveToggles == 1 && At<int>(0xf2a7f4) == 1, "game options: autosave off through the game's toggle");
+    as.value.set(as.value.ctx, 0);
+    Check(g_autosaveToggles == 1, "game options: ... off again: not toggled");
+
+    g_soundCalls.clear();
+    music->value.set(music->value.ctx, 35);
+    Check(At<int>(0xf2a7d0) == 35 && g_soundCalls.size() == 2 && g_soundCalls[0].what == "channel" &&
+              g_soundCalls[0].a == 0 && g_soundCalls[0].b == 35 && g_soundCalls[1].what == "music" &&
+              g_soundCalls[1].a == 35,
+          "game options: the music volume handed on as the Sound options' Cancel does (stream 0, then music)");
+    g_soundCalls.clear();
+    music->toggle.set(music->toggle.ctx, 0);
+    Check(At<unsigned char>(0xf2a76c) == 0 && g_soundCalls.size() == 1 && g_soundCalls[0].what == "stop" &&
+              g_soundCalls[0].a == 0,
+          "game options: music off: its stream stopped");
+    g_soundCalls.clear();
+    music->toggle.set(music->toggle.ctx, 1);
+    Check(At<unsigned char>(0xf2a76c) == 1 && g_soundCalls.empty(), "game options: music on: only the switch");
+    g_soundCalls.clear();
+    ambient->toggle.set(ambient->toggle.ctx, 0);
+    Check(g_soundCalls.size() == 1 && g_soundCalls[0].a == 2, "game options: ambient off, 3D sounds off: stream 2 only");
+    At<int>(0xf2aa98) = 1;
+    g_soundCalls.clear();
+    ambient->toggle.set(ambient->toggle.ctx, 0);
+    Check(g_soundCalls.size() == 2 && g_soundCalls[1].what == "end3d",
+          "game options: ... with the 3D sounds on, also sound_end_all_3d");
+    At<int>(0xf2aa98) = 0;
+    g_soundCalls.clear();
+    oo::ReapplyVolumes();
+    Check(g_soundCalls.size() == 6 && g_soundCalls[1].what == "music" && g_soundCalls[3].what == "speech" &&
+              g_soundCalls[5].what == "ambient",
+          "game options: ReapplyVolumes: music, speech, ambient (two calls each), not the general sounds");
+
+    // 20 kinds: the 20th (index 19) is always Full in the game, no row.
+    At<int>(0xf284a4) = 25;
+    pages = zeus::options_window::PagesForTest();
+    messages = FindCategory(pages, 0, "Messages");
+    Check(messages && messages->rows.size() == 19, "game options: 25 kinds: at most 20, less the fixed one (19 rows)");
+    // The editors: no game speed (it does nothing there), the scroll speed stays.
+    At<int>(aEditorModeK) = 1;
+    pages = zeus::options_window::PagesForTest();
+    speed = FindCategory(pages, 0, "Speed");
+    Check(speed && !FindRow(*speed, "game_speed") && FindRow(*speed, "scroll_speed"),
+          "game options: in the editors: the scroll speed without the game speed");
+    At<int>(aEditorModeK) = 0;
+
+    // A new player (no Save\*.dat next to this test, the game's 90 / 60): 80 / 50, once.
+    At<int>(0xf2a774) = 90;
+    At<int>(0xf2a778) = 60;
+    oo::AfterInfRead();
+    Check(At<int>(0xf2a774) == 80 && At<int>(0xf2a778) == 50 && LogContains("a new player (no player file"),
+          "game options: a new player: 80 / 50, logged");
+    At<int>(0xf2a774) = 90;
+    oo::AfterInfRead();
+    Check(At<int>(0xf2a774) == 90, "game options: ... checked once only");
+}
+
+// --- The Display options dialog (games/zeus/display_options on core/options/display_dialog).
+// (dd_width / dd_height: aDdWidth, aDdHeight above.)
+constexpr DWORD aDdPushes[] = {0x5154d3, 0x5154f1, 0x51550f}, aDdHover = 0x781844, aDdReturn = 0xf9f9a8,
+                aDdDone = 0x10dfee8;
+const BYTE kDdPushBytes[7] = {0x6a, 0x04, 0x68, 0x28, 0xd5, 0x5e, 0x00};
+int g_ddCloses = 0, g_ddBackgrounds = 0, g_ddScreenDraws = 0, g_ddOriginalDraws = 0, g_ddScreenSeen = 0;
+void __cdecl FakeDdClose() // display_options_close: back to options_return_screen
+{
+    ++g_ddCloses;
+    At<unsigned char>(aGameScreenK) = static_cast<unsigned char>(At<int>(aDdReturn));
+}
+void __cdecl FakeDdBackground(int) { ++g_ddBackgrounds; }
+void __cdecl FakeDdScreenDraw()
+{
+    ++g_ddScreenDraws;
+    g_ddScreenSeen = At<unsigned char>(aGameScreenK);
+    At<int>(aDdHover) = 0; // the city screen's own hover handling
+}
+void __cdecl FakeDdOriginalDraw() { ++g_ddOriginalDraws; }
+int __cdecl FakeTextDrawFault(const char *, int, int, int, int, int)
+{
+    *static_cast<volatile int *>(nullptr) = 1;
+    return 0;
+}
+
+BYTE *DdBytes(DWORD address) // the copy's code bytes at a game address
+{
+    return reinterpret_cast<BYTE *>(address + g_imageShift);
+}
+
+bool DdPushes(BYTE count, DWORD table)
+{
+    for (DWORD at : aDdPushes) {
+        const BYTE *p = DdBytes(at);
+        DWORD t = 0;
+        std::memcpy(&t, p + 3, 4);
+        if (p[0] != 0x6a || p[1] != count || p[2] != 0x68 || t != table) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void SetupDisplayDialog()
+{
+    SetupGameMenu(); // the painter's fakes (image groups, text widths), screen 1, dialog_offset (0, 0)
+    Thunk(0x508800, reinterpret_cast<void *>(&FakeTextDrawM));
+    Thunk(0x5acf50, reinterpret_cast<void *>(&FakeImageDrawM));
+    Thunk(0x59fcf0, reinterpret_cast<void *>(&FakeClipResetM));
+    Thunk(0x401f70, reinterpret_cast<void *>(&FakeDdClose));
+    Thunk(0x513b30, reinterpret_cast<void *>(&FakeDdBackground));
+    Thunk(0x514020, reinterpret_cast<void *>(&FakeDdScreenDraw));
+    Thunk(0x59af60, reinterpret_cast<void *>(&FakeDdOriginalDraw));
+    for (DWORD at : aDdPushes) {
+        std::memcpy(DdBytes(at), kDdPushBytes, sizeof(kDdPushBytes));
+    }
+    At<int>(aDdWidth) = 1896;
+    At<int>(aDdHeight) = 1066;
+    At<int>(aDdHover) = 0;
+    At<int>(aDdReturn) = 1;
+    At<unsigned char>(aGameScreenK) = 0x0a;
+}
+
+// Not installed: without the painter, or without the game's texts (lang_get_string not hooked here).
+void DisplayDialogMissing()
+{
+    namespace d = zeus::display_options;
+    Check(!d::Attach(false) && LogContains("our drawing of the game's art is not available; the game's own dialog stays"),
+          "display options: no painter: the game's own dialog, logged");
+    Check(!d::Attach(true) && LogContains("lang_get_string is not hooked (the dialog's texts); the game's own dialog"),
+          "display options: no game texts: the game's own dialog, logged");
+    Check(!d::OpenForTest(), "display options: ... the smoke action says so");
+}
+
+void DisplayDialog()
+{
+    namespace d = zeus::display_options;
+    namespace dd = core::options::display_dialog;
+    SetupDisplayDialog();
+    if (!zeus::timing::PrepareForTest()) {
+        Check(false, "the copy buffer");
+        return;
+    }
+    Check(d::AttachForTest(), "display options: installed on the copy");
+    int n = 0;
+    const zeus::Detour *det = d::Detours(&n);
+    const auto draw = reinterpret_cast<void(__cdecl *)()>(det[0].detour);
+    // The table handed to the game's three button functions: ours, 9 records as the core lays them out.
+    const BYTE *first = DdBytes(aDdPushes[0]);
+    DWORD table = 0;
+    std::memcpy(&table, first + 3, 4);
+    Check(n == 1 && DdPushes(dd::kItemCount, table) && table != 0x5ed528,
+          "display options: the three pushes hand the game our table of 9");
+    struct Rec {
+        short x1, y1, x2, y2;
+        void(__cdecl *onRelease)();
+        void(__cdecl *onClick)();
+        BYTE b[4];
+        int param, param2;
+    };
+    const Rec *recs = reinterpret_cast<const Rec *>(table);
+    bool same = true;
+    for (int i = 0; i < dd::kItemCount; ++i) {
+        const dd::Item &it = dd::Items()[i];
+        same = same && recs[i].x1 == it.x && recs[i].y1 == it.y && recs[i].x2 == it.x + it.w &&
+               recs[i].y2 == it.y + it.h && recs[i].onRelease == dd::HandlerOf(it.id) && recs[i].b[3] == 1 &&
+               recs[i].param == it.id;
+    }
+    Check(same, "display options: ... each record the core's rectangle, handler, left button and id");
+
+    // Drawn: the panel and buttons through the painter, our texts centred (the game's texts need lang_get_string's
+    // hook, not installed here), 0x10dfee8 = 0x32 as the game's own drawing.
+    g_texts.clear();
+    At<int>(aDdDone) = 0;
+    draw();
+    bool ok100 = false, okOk = false, status = false;
+    for (const DrawnText &t : g_texts) {
+        ok100 = ok100 || std::strcmp(t.text, "100%") == 0;
+        okOk = okOk || std::strcmp(t.text, "OK") == 0;
+        status = status || std::strcmp(t.text, "Resolution: 1896 x 1066") == 0;
+    }
+    Check(ok100 && okOk && status && At<int>(aDdDone) == 0x32 && g_ddOriginalDraws == 0,
+          "display options: drawn by us (100%, OK, Resolution: 1896 x 1066), the game's drawing not called");
+    Check(LogContains("display options: opened"), "display options: ... opened, logged");
+
+    // Laid out again behind it (another size) from the city: the city drawn again once, as screen 1, inside a
+    // drawing that never counts; the dialog's screen and hover back afterwards.
+    At<int>(aDdWidth) = 2048;
+    At<int>(aDdHeight) = 1152;
+    At<int>(aDdHover) = 8;
+    draw();
+    Check(g_ddBackgrounds == 1 && g_ddScreenDraws == 1 && g_ddScreenSeen == 1 &&
+              At<unsigned char>(aGameScreenK) == 0x0a && At<int>(aDdHover) == 8,
+          "display options: laid out again: the city behind drawn once (as screen 1), the dialog and hover back");
+    draw();
+    Check(g_ddScreenDraws == 1, "display options: ... once");
+
+    // Cancel (record 9): the game's close, back to the city; closed: nothing put back (nothing changed).
+    recs[dd::kCancelButton - 1].onRelease();
+    Check(g_ddCloses == 1 && At<unsigned char>(aGameScreenK) == 1, "display options: Cancel: the game's close");
+    d::OnLoop();
+
+    // An error while drawing: the game's own table and drawing from then on.
+    At<unsigned char>(aGameScreenK) = 0x0a;
+    Thunk(0x508800, reinterpret_cast<void *>(&FakeTextDrawFault));
+    draw();
+    Check(DdPushes(4, 0x5ed528) && g_ddOriginalDraws == 1 &&
+              LogContains("display options: the game's own dialog from now on (drawing failed)"),
+          "display options: a fault while drawing: the game's table and drawing back, logged");
+    draw();
+    Check(g_ddOriginalDraws == 2, "display options: ... and stay");
+}
+
+// The game's drawing of the city behind the dialog faults: only that drawing ends (the dialog's screen and hover put
+// back); timing's drawing around it still puts back and its depth is as before (a later drawing outside the city can
+// be made); our dialog stays and is drawn; the city is not drawn behind it again.
+void __cdecl FakeDdScreenDrawFault()
+{
+    ++g_ddScreenDraws;
+    At<int>(aDdHover) = 0;
+    At<unsigned char>(aTiles + 7) += 1; // the city's drawing moved an animation on before it faulted
+    At<int>(aCounters) += 1;
+    *static_cast<volatile int *>(nullptr) = 1;
+}
+bool g_ddOutsideCalled = false;
+void DdOutside(void *) { g_ddOutsideCalled = true; }
+
+void DisplayDialogBehindFault()
+{
+    namespace d = zeus::display_options;
+    SetupDisplayDialog();
+    if (!zeus::timing::PrepareForTest()) {
+        Check(false, "the copy buffer");
+        return;
+    }
+    Thunk(0x514020, reinterpret_cast<void *>(&FakeDdScreenDrawFault));
+    Check(d::AttachForTest(), "display options: installed on the copy");
+    int n = 0;
+    const auto draw = reinterpret_cast<void(__cdecl *)()>(d::Detours(&n)[0].detour);
+    draw(); // opened
+    const Drawn before = ReadDrawn();
+    At<int>(aDdWidth) = 2048;
+    At<int>(aDdHeight) = 1152;
+    At<int>(aDdHover) = 8;
+    g_texts.clear();
+    draw();
+    Check(g_ddScreenDraws == 1 && At<unsigned char>(aGameScreenK) == 0x0a && At<int>(aDdHover) == 8,
+          "display options: the city behind faults: the dialog's screen and hover put back");
+    Check(LogContains("drawing the city behind the dialog failed") && !g_texts.empty() && g_ddOriginalDraws == 0 &&
+              DdPushes(core::options::display_dialog::kItemCount, *reinterpret_cast<DWORD *>(DdBytes(0x5154d3) + 3)),
+          "display options: ... logged; our dialog still drawn, our table stays");
+    Check(Same(ReadDrawn(), before) && zeus::timing::DrawnWorking(),
+          "display options: ... timing put the city's state back and stays on");
+    Check(zeus::timing::PutBackDrawingOutside(&DdOutside, nullptr) && g_ddOutsideCalled,
+          "display options: ... timing's drawing depth as before (a drawing outside the city can be made)");
+    At<int>(aDdWidth) = 1896;
+    At<int>(aDdHeight) = 1066;
+    draw();
+    Check(g_ddScreenDraws == 1, "display options: ... laid out again: the city not drawn behind any more");
 }
 
 // city_cancel_tool faults: Esc off (the game's own from then on), nothing of ours open.
@@ -5344,6 +5724,11 @@ const Scenario kScenarios[] = {
     {"esc_editor", &EscEditor},
     {"esc_fault", &EscFault},
     {"options_menus", &OptionsMenus},
+    {"original_options", &OriginalOptions},
+    {"original_options_missing", &OriginalOptionsMissing},
+    {"display_dialog", &DisplayDialog},
+    {"display_dialog_missing", &DisplayDialogMissing},
+    {"display_dialog_behind_fault", &DisplayDialogBehindFault},
     {"overlay_keys_fault", &OverlayKeysFault},
     {"framed_screens", &FramedScreens},
     {"framed_setting", &FramedSetting},

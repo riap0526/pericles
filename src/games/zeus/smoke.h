@@ -21,6 +21,9 @@ extern const char kActions[];
 //         no red font: shown as the others).
 //   zoom_50, zoom_75, zoom_125
 //         the zoom box with that percent (core::ui::notice::Zoom): made once, then rewritten in place.
+//   message_kinds
+//         the game's message kinds written to the log (games/zeus/options_original): the count its Messages dialog
+//         reads, each kind's value, default and name.
 // false with why when it cannot be done.
 bool Action(const char *name, char *why, int size);
 

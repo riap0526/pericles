@@ -297,8 +297,9 @@ bool OverlayKey(unsigned overlay)
 }
 
 // The options key opens Pericles's options window (General), in the city, the menus and the editors. Esc closes
-// windows and opens the pause menu (games/zeus/game_menu). The Display options dialog's 800 x 600 / 1024 x 768 buttons
-// post F6/F7 to the game (lParam 0): passed until our own buttons replace them.
+// windows and opens the pause menu (games/zeus/game_menu). The game's display mode keys F6 and F7 never reach the game,
+// also when its Display options dialog's 800 x 600 / 1024 x 768 buttons post them (lParam 0): with our resolutions the
+// game stays in mode 3 (as Yongle's).
 bool OpenOptions()
 {
     return zeus::options_window::Open(zeus::options_window::kPageGeneral, 0);
@@ -308,7 +309,7 @@ const core::input::keys::KeysGame &Game()
 {
     static const core::input::keys::KeysGame game(kDefs, kCount, &CityScreen, &EditorScreen, kKeyCtrl.ptr(),
                                                   &OpenOptions, &zeus::game_menu::Escape,
-                                                  &OverlayKey, true);
+                                                  &OverlayKey, false);
     return game;
 }
 
@@ -378,6 +379,14 @@ void Attach()
 bool LangHooked()
 {
     return o_LangGetString != nullptr;
+}
+
+const char *GameText(int group, int index)
+{
+    if (!o_LangGetString) {
+        return nullptr;
+    }
+    return Original(o_LangGetString, kLangGetString)(group, index);
 }
 
 void OverlaySitesForTest()

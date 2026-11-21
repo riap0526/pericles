@@ -50,6 +50,12 @@ void DrawCityNotCounting(int x, int y, int z);
 bool PictureDrawingNow();
 bool PutBackDrawing(void (*fn)(void *), void *ctx);
 
+// For games/zeus/display_options (the city drawn again behind the Display options dialog, outside the frame's own
+// city drawing): fn(ctx) as one drawing that never counts and puts itself back, in any frame. False (fn not called)
+// when the put-back is not working or a city drawing is under way, or (fn called) when a fault in the put-back
+// switched it off.
+bool PutBackDrawingOutside(void (*fn)(void *), void *ctx);
+
 // Offline tests only (src/games/zeus/test_restore.cpp): the detours above by site name; the copy buffer of the
 // drawn-frame animations without the site checks of Attach; whether each feature is still on.
 const Detour *Detours(int *count);

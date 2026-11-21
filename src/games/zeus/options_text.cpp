@@ -50,10 +50,6 @@ const Text kTexts[] = {
                                "recreated in stereo: now and then in the city, one comes down from above, moves around "
                                "you for a while and rises away again, at the ambient sounds volume.",
      nullptr, 0},
-    // The game's own four volumes are not in this window yet.
-    {"audio", "master_volume", "The volume of all the music and sounds together. The checkbox switches them all off "
-                               "and on.",
-     nullptr, 0},
 };
 
 #undef CHOICES

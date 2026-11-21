@@ -21,6 +21,10 @@ core::options::MenuLook MenuLook();
 // Before drawing: the game's clip reset to the screen, the origin at the game's dialog_offset.
 void BeginDraw();
 
+// A text button of the game's own dialogs (20 high, w a multiple of 16) as the Display options dialog draws its
+// buttons: the darker bar under the mouse. In the painter's coordinates (after BeginDraw).
+void DialogButton(int x, int y, int w, bool hovered);
+
 // The game's dialog_offset (where its 640 x 480 dialogs start on the screen).
 void DialogOrigin(int *x, int *y);
 
