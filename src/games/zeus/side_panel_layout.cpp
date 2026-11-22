@@ -138,10 +138,16 @@ bool TopFits(const Px *screenLeft, const Px *entry, int entryW)
     return off * 50 <= kTopCheckRows * kTopCheckW; // 98% or more
 }
 
-void MoveColumn(Px *screen, int pitch, const Px *backdrop, const Px *top)
+int MovedEndFor(int category)
 {
+    return category == kOverviewCategory ? kOverviewMovedEnd : kMovedEnd;
+}
+
+void MoveColumn(Px *screen, int pitch, const Px *backdrop, const Px *top, int movedEnd)
+{
+    const int movedRows = movedEnd - kMovedFirst;
     // Top down: each row is read (kShift rows below) before anything is written over it.
-    for (int dst = 0; dst < kMovedRows; ++dst) {
+    for (int dst = 0; dst < movedRows; ++dst) {
         const int src = dst + kShift;
         Px *to = screen + dst * pitch;
         const Px *from = screen + src * pitch;
@@ -153,7 +159,7 @@ void MoveColumn(Px *screen, int pitch, const Px *backdrop, const Px *top)
             to[x] = p == was[x] ? under[x] : p;
         }
     }
-    for (int y = kMovedRows; y < kColumnRows; ++y) {
+    for (int y = movedRows; y < kPutBackEnd; ++y) {
         const Px *b = backdrop + y * kColumnW;
         Px *to = screen + y * pitch;
         for (int x = 0; x < kColumnW; ++x) {
@@ -162,9 +168,9 @@ void MoveColumn(Px *screen, int pitch, const Px *backdrop, const Px *top)
     }
 }
 
-bool DrawnBelow(const Px *screen, int pitch, const Px *backdrop)
+bool DrawnBelow(const Px *screen, int pitch, const Px *backdrop, int movedEnd)
 {
-    for (int y = kMovedEnd; y < kColumnRows; ++y) {
+    for (int y = movedEnd; y < kPutBackEnd; ++y) {
         for (int x = 0; x < kColumnW; ++x) {
             if (screen[y * pitch + x] != backdrop[y * kColumnW + x]) {
                 return true;
@@ -187,7 +193,7 @@ void Backdrop::Take(const Px *screen, int pitch, const Where &w)
 
 void Backdrop::PutBack(Px *screen, int pitch) const
 {
-    for (int y = 0; y < kColumnRows; ++y) {
+    for (int y = 0; y < kPutBackEnd; ++y) {
         for (int x = 0; x < kColumnW; ++x) {
             screen[y * pitch + x] = px_[y * kColumnW + x];
         }
@@ -361,6 +367,184 @@ int WrapLines(const unsigned char *text, int limit, int (*width)(unsigned char c
 bool MessageFits(int y, int lines, int lineHeight)
 {
     return y + lines * (5 + lineHeight) <= kTextBottom;
+}
+
+int AutoDefendTop(int overlayButtons)
+{
+    return overlayButtons * 20 + 0x106; // the drawing's base (0x100 in the changed code) + 6, Auto Defend's y 0
+}
+
+int AutoDefendSourceRow(int r)
+{
+    // Rows 0..2, row 2 ten more times, rows 3..25, row 25 ten more times, rows 26..27.
+    constexpr int a = kAutoDefendRowA, b = kAutoDefendRowB, n = kAutoDefendRepeat;
+    if (r <= a) {
+        return r;
+    }
+    if (r <= a + n) {
+        return a;
+    }
+    if (r <= b + n) {
+        return r - n;
+    }
+    if (r <= b + 2 * n) {
+        return b;
+    }
+    return r - 2 * n;
+}
+
+void StretchAutoDefend(Px *at, int pitch)
+{
+    Px drawn[kAutoDefendH][kAutoDefendW];
+    for (int y = 0; y < kAutoDefendH; ++y) {
+        for (int x = 0; x < kAutoDefendW; ++x) {
+            drawn[y][x] = at[y * pitch + x];
+        }
+    }
+    for (int y = 0; y < kAutoDefendTallH; ++y) {
+        const Px *from = drawn[AutoDefendSourceRow(y)];
+        for (int x = 0; x < kAutoDefendW; ++x) {
+            at[y * pitch + x] = from[x];
+        }
+    }
+}
+
+int RequestRows(int count)
+{
+    return count < kMaxRequests ? count : kMaxRequests;
+}
+
+void RequestTable(const unsigned char *first, unsigned char *out)
+{
+    for (int k = 0; k < kMaxRequests; ++k) {
+        unsigned char *r = out + k * kRequestRowSize;
+        for (int i = 0; i < kRequestRowSize; ++i) {
+            r[i] = first[i];
+        }
+        const short y1 = static_cast<short>(k * kRequestRowH), y2 = static_cast<short>((k + 1) * kRequestRowH);
+        r[2] = static_cast<unsigned char>(y1 & 0xff);
+        r[3] = static_cast<unsigned char>((y1 >> 8) & 0xff);
+        r[6] = static_cast<unsigned char>(y2 & 0xff);
+        r[7] = static_cast<unsigned char>((y2 >> 8) & 0xff);
+        for (int i = 0; i < 4; ++i) {
+            r[kRequestRowIndex + i] = static_cast<unsigned char>((k >> (8 * i)) & 0xff);
+        }
+    }
+}
+
+bool ExtraRequest(int hover, int *index)
+{
+    const int k = hover - kFirstRequestHover;
+    if (k < kGameRequests || k >= kMaxRequests) {
+        return false;
+    }
+    *index = k;
+    return true;
+}
+
+bool ReportRequestTip(int screen, int dialog, int hover)
+{
+    return screen == 7 && dialog == kCityOverviewReport && hover >= kFirstReportRequest &&
+           hover <= kLastReportRequest;
+}
+
+namespace {
+
+constexpr Picture kPictures[] = {{604, 158, 0}, {610, 146, 1}, {614, 146, 0}};
+
+} // namespace
+
+int FrameTop(const Px *sidebar, int pitch, int height)
+{
+    for (int y = kFrameSearchTop; y <= kFrameSearchLast && y < height; ++y) {
+        if ((sidebar[y * pitch + kFrameColumn] & 0x1f) <= 13) {
+            return y;
+        }
+    }
+    return kPictures[0].frameTop;
+}
+
+Picture PictureOf(int frameTop)
+{
+    for (const Picture &p : kPictures) {
+        if (p.frameTop == frameTop) {
+            return p;
+        }
+    }
+    return kPictures[0];
+}
+
+int WorldFrameLeft(const Picture &p)
+{
+    return p.frameTop == kZeusWorldFrameTop ? kWorldEdgeW : kWorldEdgeW + 1;
+}
+
+namespace {
+
+// Back and forth over n rows from row `first`: first .. first + n - 1, then the same back up, and again.
+int Mirrored(int first, int n, int i)
+{
+    const int j = i % (2 * n);
+    return first + (j < n ? j : 2 * n - 1 - j);
+}
+
+} // namespace
+
+WorldSource WorldSourceOf(int col, int y, const Picture &p, bool stone)
+{
+    if (col < kWorldEdgeW || col >= kSidebarW || y < kWorldKeepEnd || y >= kLayoutH) {
+        return WorldSource{WorldSource::Drawn, -1};
+    }
+    const int left = WorldFrameLeft(p), frameEnd = kWorldKeepEnd + p.frameH; // the frame's rows end here
+    const bool beside = y < frameEnd;
+    if (beside && col >= left && col < left + kWorldFrameW) {
+        return WorldSource{WorldSource::Own, p.frameTop + (y - kWorldKeepEnd)};
+    }
+    if (stone && p.frameTop != kZeusWorldFrameTop) {
+        return WorldSource{WorldSource::Stone, Mirrored(0, kStoneRows, y - kWorldKeepEnd)};
+    }
+    const int shadowTop = p.frameTop + p.frameH, shadowRows = kLayoutH - shadowTop;
+    if (beside || shadowRows <= 0) {
+        return WorldSource{WorldSource::Drawn, -1};
+    }
+    return WorldSource{WorldSource::Own, Mirrored(shadowTop, shadowRows, y - frameEnd)};
+}
+
+int LayOutWorldSidebar(Px *sidebar, int pitch, int height, const Px *stone)
+{
+    const int top = FrameTop(sidebar, pitch, height);
+    const Picture p = PictureOf(top);
+    // The rows read (from the frame's top on) overlap the rows written (567..767): copied first.
+    constexpr int kFirst = kFrameSearchTop, kRows = kLayoutH - kFirst;
+    static Px from[kRows][kSidebarW];
+    for (int y = 0; y < kRows; ++y) {
+        const Px *s = sidebar + (kFirst + y) * pitch;
+        for (int x = 0; x < kSidebarW; ++x) {
+            from[y][x] = s[x];
+        }
+    }
+    for (int y = kWorldKeepEnd; y < kLayoutH; ++y) {
+        Px *to = sidebar + y * pitch;
+        for (int x = 0; x < kSidebarW; ++x) {
+            const WorldSource s = WorldSourceOf(x, y, p, stone != nullptr);
+            if (s.kind == WorldSource::Own && s.row >= kFirst) {
+                to[x] = from[s.row - kFirst][x];
+            }
+            else if (s.kind == WorldSource::Stone) {
+                to[x] = stone[s.row * kSidebarW + x];
+            }
+        }
+    }
+    return top;
+}
+
+void CallBytes(unsigned long at, unsigned long target, unsigned char out[5])
+{
+    const unsigned long rel = target - (at + 5);
+    out[0] = 0xe8;
+    for (int i = 0; i < 4; ++i) {
+        out[1 + i] = static_cast<unsigned char>((rel >> (8 * i)) & 0xff);
+    }
 }
 
 int MessageList::At(int y) const

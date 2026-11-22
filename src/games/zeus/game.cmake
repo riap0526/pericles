@@ -74,7 +74,8 @@ macro(game_add_tests)
     # parts of the DLL they call that are not under test (output, panel, games/zeus/diag) are stubbed in the test.
     add_executable(test_restore src/games/zeus/test_restore.cpp
         src/games/zeus/timing.cpp src/games/zeus/anim_clock.cpp src/games/zeus/state_check.cpp
-        src/games/zeus/resolution.cpp src/games/zeus/world_map.cpp src/games/zeus/intro.cpp
+        src/games/zeus/resolution.cpp src/games/zeus/side_panel_layout.cpp src/games/zeus/world_map.cpp
+        src/games/zeus/intro.cpp
         src/games/zeus/keys.cpp src/core/input/keys.cpp
         src/games/zeus/game_menu.cpp src/games/zeus/painter.cpp src/core/options/pause_menu.cpp
         src/core/options/menu.cpp src/core/options/menu_text.cpp src/core/options/option_text.cpp

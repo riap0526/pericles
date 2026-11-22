@@ -60,6 +60,20 @@
 //   units_rules  the row every pixel comes from (the edge's top, moved, mirrored, as drawn), every pixel of a move
 //   units        the command buttons', clickable rows', texts' and insets' code and data ours, the game's in the
 //                editors and with original (the panel not moved, the game's own minimap drawn), ours again
+//
+// The category panels in the taller column and the world map's sidebar:
+//   panel_rules  Auto Defend's 48 rows (rows 2 and 25 repeated) and its stretch in place, the moved rows by category,
+//                the requests listed (up to 8), our 8 request rows, which hover numbers are ours, the report's
+//                tooltip rule, a call's bytes
+//   world_rules  the frame found (Zeus's, Poseidon's, none), every pixel of the laid-out sidebar against the rule
+//                written out on its own (the frame moved, its shadow rows mirrored, the edges as drawn)
+//   panels       Military's Auto Defend 48 rows high (not in state 2); the Overview category's inset down to row 453
+//                and nothing left after another category; its input on our rows (where, how many, hover, click), not
+//                the build buttons'; the 4th to 8th request's tooltip; the City Overview report's tooltip below the
+//                cursor and everything else as the game draws it
+//   world        the world and campaign maps' picture calls: the game's drawing first, then laid out (Zeus's and
+//                Poseidon's); not on a screen it does not fit; original and the editors the game's code
+//   panel_fault  a fault in the requests' input: off, every change back (the world map's too), the game's own
 #include "core/diag/guard.h"
 #include "core/log.h"
 #include "games/zeus/side_panel.h"
@@ -218,10 +232,15 @@ int __cdecl FakeGroup()
     return 68;
 }
 
+constexpr DWORD aHoverRow = 0xf2a72c, aDialogOffsetY = 0xf2a6a8;
+int g_drawHoverRow = 0, g_drawOffsetY = 0; // the tooltip's mouse row and dialog_offset_y while the game drew it
+
 void __cdecl FakeDraw()
 {
     ++g_calls.draw;
     g_calls.drawnText = At<int>(aTipText);
+    g_drawHoverRow = At<int>(aHoverRow);
+    g_drawOffsetY = At<int>(aDialogOffsetY);
 }
 
 void __cdecl FakeNameBar()
@@ -264,9 +283,13 @@ struct Drawn {
     int id, x, y;
 };
 std::vector<Drawn> g_drawn; // every image_draw
+void (*g_onImageDraw)(int id, int x, int y) = nullptr; // paints what the game would (the world map's picture)
 
 void __fastcall FakeImageDraw(void *self, void *, int id, int x, int y, int a, int b, int c)
 {
+    if (g_onImageDraw) {
+        g_onImageDraw(id, x, y);
+    }
     g_drawn.push_back(Drawn{id, x, y});
     ++g_calls.imageDraw;
     g_calls.imageDrawThis = self;
@@ -355,12 +378,32 @@ void __cdecl FakeInner(int x, int y, int cols, int rows)
     std::memcpy(g_col.innerArgs, a, sizeof(a));
     Fill(x, y, cols * 16, rows * 16, kPanelPx);
 }
+// Auto Defend as the game draws it (18 x 28, every row its own colour) and the Overview category's 8th request row.
+unsigned short AutoDefendPx(int x, int row)
+{
+    return static_cast<unsigned short>(0x5000 + row * 32 + x);
+}
+constexpr DWORD aAutoDefend = 0x63ed68 + 3 * 0x28; // Military's 4th button record (its state at +0x18)
+constexpr int kOverviewLowRow = 440;                // drawn there by the Overview category (the game's place)
+
 void __cdecl FakeCategoryDraw()
 {
     ++g_col.categoryDraw;
     Fill(kSx + 60, 200, 40, 10, kCategoryPx);
     if (g_drawBelow) {
         Fill(kSx + 60, 340, 4, 4, kCategoryPx);
+    }
+    const int category = At<int>(aCategory);
+    if (category == 8 && At<unsigned char>(aAutoDefend + 0x18) != 2) {
+        const int top = At<int>(aOverlayCount) * 20 + 0x106;
+        for (int row = 0; row < 28; ++row) {
+            for (int x = 0; x < 18; ++x) {
+                Px(kSx + 0x46 + 86 + x, top + row) = AutoDefendPx(x, row);
+            }
+        }
+    }
+    if (category == 10) {
+        Fill(kSx + 60, kOverviewLowRow, 4, 4, kCategoryPx);
     }
 }
 void __cdecl FakeBuildDraw()
@@ -599,12 +642,57 @@ BYTE *__fastcall FakeImageGroup(void *, void *, int group)
     return group == 0x84 ? reinterpret_cast<BYTE *>(g_insetEntry) : nullptr;
 }
 
+// ---- the category panels in the taller column: the game's functions they call or replace ----
+
+constexpr DWORD aRequestCount = 0x916e08, aListHover = 0x78183c, aRequestRows = 0x65b878;
+struct PanelCalls {
+    int overviewInput, mouseOver, handleClick, tipKind;
+    int overArgs[4], clickArgs[4];
+    DWORD overTable, clickTable;
+    int tipIndex;
+};
+PanelCalls g_pc;
+int g_mouseOverResult = 0, g_clickResult2 = 0, g_tipKindResult = 0;
+bool g_mouseOverFaults = false;
+
+int __cdecl FakeOverviewInput()
+{
+    ++g_pc.overviewInput;
+    return 0;
+}
+int __cdecl FakeMouseOver(int x, int y, void *table, int count)
+{
+    ++g_pc.mouseOver;
+    if (g_mouseOverFaults) {
+        *reinterpret_cast<volatile int *>(0x10) = 1;
+    }
+    const int a[4] = {x, y, 0, count};
+    std::memcpy(g_pc.overArgs, a, sizeof(a));
+    g_pc.overTable = reinterpret_cast<DWORD>(table);
+    return g_mouseOverResult;
+}
+int __cdecl FakeHandleClick(int x, int y, void *table, int count)
+{
+    ++g_pc.handleClick;
+    const int a[4] = {x, y, 0, count};
+    std::memcpy(g_pc.clickArgs, a, sizeof(a));
+    g_pc.clickTable = reinterpret_cast<DWORD>(table);
+    return g_clickResult2;
+}
+int __cdecl FakeTipKind(int index)
+{
+    ++g_pc.tipKind;
+    g_pc.tipIndex = index;
+    return g_tipKindResult;
+}
+
 // The code the side panel changes, as the game has it.
 struct GameBytes {
     DWORD at;
     BYTE b[9];
     int n;
     BYTE ours[9];
+    bool call = false; // ours: a call of the side panel's own function (where it is in the DLL)
 };
 const GameBytes kGameBytes[] = {
     {0x515138, {0x6a, 0x11, 0x68, 0x40, 0xdc, 0x63, 0x00}, 7, {0x6a, 0x0f, 0x68, 0x40, 0xdc, 0x63, 0x00}},
@@ -640,12 +728,52 @@ const GameBytes kGameBytes[] = {
     {0x525e78, {0x68, 0x68, 0x01, 0x00, 0x00}, 5, {0x68, 0xde, 0x00, 0x00, 0x00}},
     {0x5257e8, {0xe8, 0xb3, 0x9a, 0x07, 0x00}, 5, {0x0f, 0x1f, 0x44, 0x00, 0x00}},
     {0x525e66, {0xe8, 0x35, 0x94, 0x07, 0x00}, 5, {0x0f, 0x1f, 0x44, 0x00, 0x00}},
+    // Military: the lower block's two bases (0xe0 -> 0x100, 0xe6 -> 0x106) and Auto Defend's height (28 -> 48).
+    {0x51b306, {0x8d, 0x3c, 0x95, 0xe0, 0x00, 0x00, 0x00}, 7, {0x8d, 0x3c, 0x95, 0x00, 0x01, 0x00, 0x00}},
+    {0x51b5f2, {0x8d, 0x34, 0x95, 0xe6, 0x00, 0x00, 0x00}, 7, {0x8d, 0x34, 0x95, 0x06, 0x01, 0x00, 0x00}},
+    {0x63ede6, {0x1c, 0x00}, 2, {0x30, 0x00}},
+    // Overview: up to 8 requests drawn, "(more)" from the 9th.
+    {0x5b7222, {0x83, 0xf9, 0x03}, 3, {0x83, 0xf9, 0x08}},
+    {0x5b7229, {0xb8, 0x03, 0x00, 0x00, 0x00}, 5, {0xb8, 0x08, 0x00, 0x00, 0x00}},
+    {0x5b7611, {0x83, 0xf9, 0x03}, 3, {0x83, 0xf9, 0x08}},
+    // The world map sidebar: Back to City 570 -> 738, the question mark 572 -> 740, the picture's two calls.
+    {0x5ef48a, {0x3a, 0x02}, 2, {0xe2, 0x02}},
+    {0x5ef4b2, {0x3c, 0x02}, 2, {0xe4, 0x02}},
+    {0x597eca, {0xe8, 0x81, 0x50, 0x01, 0x00}, 5, {}, true},
+    {0x421ceb, {0xe8, 0x60, 0xb2, 0x18, 0x00}, 5, {}, true},
 };
 
-// Every changed byte is ours (true) or every byte the game's (false).
+// Where the 5-byte call at `at` goes (in the running image).
+DWORD CallTarget(DWORD at)
+{
+    DWORD rel = 0;
+    for (int i = 0; i < 4; ++i) {
+        rel |= static_cast<DWORD>(At<BYTE>(at + 1 + static_cast<DWORD>(i))) << (8 * i);
+    }
+    return at + g_imageShift + 5 + rel;
+}
+
+// The world map sidebar's picture as its two calls draw it now (ours while active).
+using Picture_fn = void(__fastcall *)(void *images, void *, int id, int x, int y, int a, int b, int c);
+Picture_fn PictureCall(DWORD at)
+{
+    return reinterpret_cast<Picture_fn>(CallTarget(at));
+}
+
+// Every changed byte is ours (true) or every byte the game's (false). Ours for a call: a call of one function of the
+// DLL (not image_draw), the same from both places.
 bool CodeIs(bool ours)
 {
+    DWORD target = 0;
     for (const GameBytes &g : kGameBytes) {
+        if (ours && g.call) {
+            const DWORD t = CallTarget(g.at);
+            if (At<BYTE>(g.at) != 0xe8 || t == 0x5acf50 + g_imageShift || (target != 0 && t != target)) {
+                return false;
+            }
+            target = t;
+            continue;
+        }
         for (int i = 0; i < g.n; ++i) {
             const BYTE want = ours ? g.ours[i] : g.b[i];
             if (At<BYTE>(g.at + static_cast<DWORD>(i)) != want) {
@@ -767,6 +895,23 @@ void Setup()
     Thunk(0x517a20, reinterpret_cast<void *>(&FakeRotate));
     Thunk(0x40fcf0, reinterpret_cast<void *>(&FakeImageGroup));
     Thunk(0x58ea90, reinterpret_cast<void *>(&FakeUnitsMinimap));
+    Thunk(0x5b7680, reinterpret_cast<void *>(&FakeOverviewInput));
+    Thunk(0x432300, reinterpret_cast<void *>(&FakeMouseOver));
+    Thunk(0x4321e0, reinterpret_cast<void *>(&FakeHandleClick));
+    Thunk(0x5b6eb0, reinterpret_cast<void *>(&FakeTipKind));
+    // The game's 3 request rows (0x1c bytes: 0, 20k, 123, 20k + 20, request_fulfill, 0x401000, +0x13 3, +0x14 k).
+    for (int k = 0; k < 3; ++k) {
+        const DWORD r = aRequestRows + static_cast<DWORD>(k * 0x1c);
+        At<short>(r + 0) = 0;
+        At<short>(r + 2) = static_cast<short>(20 * k);
+        At<short>(r + 4) = 123;
+        At<short>(r + 6) = static_cast<short>(20 * k + 20);
+        At<DWORD>(r + 8) = 0x5b6e50;
+        At<DWORD>(r + 0xc) = 0x401000;
+        At<BYTE>(r + 0x13) = 3;
+        At<int>(r + 0x14) = k;
+    }
+    At<unsigned char>(aAutoDefend + 0x18) = 1;
     // The message box's arrows as the game has them (x -1; y 2 and 31 below the box's y).
     At<short>(aArrows + 0) = -1;
     At<short>(aArrows + 2) = 2;
@@ -836,7 +981,7 @@ Tip Frame(int hover)
 void Sites()
 {
     const int n = sp::SiteCountForTest();
-    Check(n == 74, "74 checks (19 hooked, 26 called, 29 code and data changes)");
+    Check(n == 88, "88 checks (20 hooked, 29 called, 39 code and data changes)");
     for (int k = 0; k < n; ++k) {
         Check(sp::AttachForTest(k) == 0, "a site that does not match: nothing installed");
         Check(!sp::Active(), "not active");
@@ -849,7 +994,7 @@ void Sites()
         Update();
         Check(g_calls.update == 1, "update: the game's own");
     }
-    Check(sp::AttachForTest(-1) == 19, "all match: 19 hooks");
+    Check(sp::AttachForTest(-1) == 20, "all match: 20 hooks");
     Check(sp::Active(), "active");
 }
 
@@ -1154,7 +1299,8 @@ void ColumnMove()
     std::vector<lay::Px> first;
     for (int frame = 0; frame < 6; ++frame) {
         bd.PutBack(screen.data(), W);
-        Check(std::memcmp(screen.data(), back.data(), back.size() * 2) == 0, "put back: the backdrop");
+        Check(std::memcmp(screen.data(), back.data(), static_cast<size_t>(W) * lay::kPutBackEnd * 2) == 0,
+              "put back: the backdrop");
         for (int y = 50; y < 70; ++y) { // something drawn in the game's place
             for (int x = 10; x < 40; ++x) {
                 screen[y * W + x] = 0x1111;
@@ -1167,7 +1313,7 @@ void ColumnMove()
         else if (frame == 2 || frame == 4) {
             Check(screen == first, "the same frame after frame: no drift, no trail");
         }
-        for (int y = 0; y < R; ++y) {
+        for (int y = 0; y < lay::kPutBackEnd; ++y) {
             for (int x = 0; x < W; ++x) {
                 const lay::Px p = screen[y * W + x];
                 lay::Px want;
@@ -1460,7 +1606,7 @@ void ColumnFault()
 void CodeSites()
 {
     const int n = sp::SiteCountForTest(), patches = sp::PatchCountForTest();
-    Check(patches == 29 && n == 45 + 29, "45 sites and 29 code and data changes");
+    Check(patches == 39 && n == 49 + 39, "49 sites and 39 code and data changes");
     ColumnSetup();
     for (int k = 0; k < n; ++k) {
         Check(sp::AttachForTest(k) == 0, "one that does not match: nothing installed");
@@ -1988,6 +2134,483 @@ void BoxFault()
     Check(g_box.listDraw == 1 && g_box.listInput == 1 && g_box.minimapHover == 1, "afterwards the game's own");
 }
 
+// ---- the category panels in the taller column ----
+
+// The rows of the game's 28 that the 48 rows of the tall Auto Defend show, written out.
+std::vector<int> TallRows()
+{
+    std::vector<int> want;
+    for (int r = 0; r <= 2; ++r) {
+        want.push_back(r);
+    }
+    want.insert(want.end(), 10, 2);
+    for (int r = 3; r <= 25; ++r) {
+        want.push_back(r);
+    }
+    want.insert(want.end(), 10, 25);
+    want.push_back(26);
+    want.push_back(27);
+    return want;
+}
+
+void PanelRules()
+{
+    const std::vector<int> want = TallRows();
+    bool rows = want.size() == 48;
+    for (int r = 0; r < 48 && rows; ++r) {
+        rows = lay::AutoDefendSourceRow(r) == want[static_cast<size_t>(r)];
+    }
+    Check(rows, "Auto Defend 48 rows high: rows 2 and 25 ten more times each, the rest in order");
+    Check(lay::AutoDefendTop(1) == 282 && lay::AutoDefendTop(1) + 48 == 330,
+          "Auto Defend from row 282 with one overlay button: its bottom 2 rows above the panel's (332)");
+    constexpr int W = 30, H = 60;
+    std::vector<lay::Px> b(W * H, 0x7777);
+    for (int y = 0; y < 28; ++y) {
+        for (int x = 0; x < 18; ++x) {
+            b[(5 + y) * W + 3 + x] = AutoDefendPx(x, y);
+        }
+    }
+    lay::StretchAutoDefend(&b[5 * W + 3], W);
+    bool ok = true;
+    for (int y = 0; y < H; ++y) {
+        for (int x = 0; x < W; ++x) {
+            lay::Px w = 0x7777;
+            if (x >= 3 && x < 21 && y >= 5 && y < 53) {
+                w = AutoDefendPx(x - 3, want[static_cast<size_t>(y - 5)]);
+            }
+            ok = ok && b[y * W + x] == w;
+        }
+    }
+    Check(ok, "stretched in place: 18 x 48, nothing beside or below it touched");
+
+    Check(lay::MovedEndFor(10) == 454 && lay::MovedEndFor(0) == 333 && lay::MovedEndFor(8) == 333,
+          "moved rows: 25..453 for the Overview category, 25..332 for the others");
+    Check(lay::RequestRows(0) == 0 && lay::RequestRows(3) == 3 && lay::RequestRows(8) == 8 &&
+              lay::RequestRows(12) == 8,
+          "requests listed and clicked: up to 8");
+    BYTE first[0x1c] = {};
+    const short f[4] = {0, 0, 123, 20};
+    std::memcpy(first, f, sizeof(f));
+    const DWORD actions[2] = {0x5b6e50, 0x401000};
+    std::memcpy(first + 8, actions, sizeof(actions));
+    first[0x13] = 3;
+    BYTE t[8 * 0x1c];
+    lay::RequestTable(first, t);
+    bool table = true;
+    for (int k = 0; k < 8; ++k) {
+        const BYTE *r = t + k * 0x1c;
+        short s[4];
+        DWORD a[2];
+        int index = -1, last = -1;
+        std::memcpy(s, r, sizeof(s));
+        std::memcpy(a, r + 8, sizeof(a));
+        std::memcpy(&index, r + 0x14, 4);
+        std::memcpy(&last, r + 0x18, 4);
+        table = table && s[0] == 0 && s[1] == 20 * k && s[2] == 123 && s[3] == 20 * k + 20 && a[0] == 0x5b6e50 &&
+                a[1] == 0x401000 && r[0x13] == 3 && index == k && last == 0;
+    }
+    Check(table, "8 request rows as the game's: 123 x 20 each, 20 rows apart, request_fulfill, their index at 0x14");
+    int index = -1;
+    Check(!lay::ExtraRequest(0x642, &index) && !lay::ExtraRequest(0x63f, &index) && !lay::ExtraRequest(0x648, &index),
+          "the game's 3 requests and numbers beyond the 8th: not ours");
+    Check(lay::ExtraRequest(0x643, &index) && index == 3 && lay::ExtraRequest(0x647, &index) && index == 7,
+          "the 4th to the 8th request (hover 0x643..0x647): ours, index 3..7");
+    Check(lay::ReportRequestTip(7, 0xd, 0x6a4) && lay::ReportRequestTip(7, 0xd, 0x6ab) &&
+              !lay::ReportRequestTip(7, 0xd, 0x6a3) && !lay::ReportRequestTip(7, 0xd, 0x6ac) &&
+              !lay::ReportRequestTip(7, 2, 0x6a4) && !lay::ReportRequestTip(1, 0xd, 0x6a4),
+          "the report's tooltip below the cursor: only the City Overview report's 8 requests");
+    BYTE call[5];
+    lay::CallBytes(0x597eca, 0x5acf50, call);
+    const BYTE game1[5] = {0xe8, 0x81, 0x50, 0x01, 0x00};
+    Check(std::memcmp(call, game1, 5) == 0, "a call's bytes: as the game's call of image_draw at 0x597eca");
+    lay::CallBytes(0x421ceb, 0x5acf50, call);
+    const BYTE game2[5] = {0xe8, 0x60, 0xb2, 0x18, 0x00};
+    Check(std::memcmp(call, game2, 5) == 0, "... and at 0x421ceb");
+}
+
+// The world map sidebar's picture as the game draws it (186 x 768, every pixel different from its neighbours above
+// and below; column 93's dark frame line at frameTop only, -1: none).
+lay::Px WorldPx(int col, int y, int frameTop)
+{
+    lay::Px p = static_cast<lay::Px>(0x8000 | ((y * 131 + col * 7) & 0x7fff));
+    if (col == 93) {
+        p = y == frameTop ? static_cast<lay::Px>(0x8000) : static_cast<lay::Px>(p | 0x10);
+    }
+    return p;
+}
+
+// Entry 1600's rows under its frame (the stone around Poseidon's frame): every pixel its own.
+lay::Px StonePx(int col, int r)
+{
+    return static_cast<lay::Px>(0x0400 + r * 200 + col);
+}
+std::vector<lay::Px> Stone()
+{
+    std::vector<lay::Px> s(186 * 6);
+    for (int r = 0; r < 6; ++r) {
+        for (int x = 0; x < 186; ++x) {
+            s[r * 186 + x] = StonePx(x, r);
+        }
+    }
+    return s;
+}
+
+// The layout written out on its own: rows 563..566 and the beaded edge (columns 0..10) as drawn; the frame (170
+// columns from `left`, rows frameTop..) from 567. Zeus's (or without the stone): beside the frame as drawn, below it
+// (columns 11..185) the rows under the frame, then the same back up, and again. Poseidon's with the stone: everything
+// else from column 11 the stone's rows 0..5, 5..0, 0.. from row 567.
+lay::Px WorldExpected(int col, int y, int frameTop, int frameH, int paintedTop, int left, bool stone)
+{
+    if (y < 567 || col < 11) {
+        return WorldPx(col, y, paintedTop);
+    }
+    const bool beside = y < 567 + frameH;
+    if (beside && col >= left && col < left + 170) {
+        return WorldPx(col, frameTop + (y - 567), paintedTop);
+    }
+    if (stone && frameTop != 604) {
+        const int seq[12] = {0, 1, 2, 3, 4, 5, 5, 4, 3, 2, 1, 0};
+        return StonePx(col, seq[(y - 567) % 12]);
+    }
+    if (beside) {
+        return WorldPx(col, y, paintedTop);
+    }
+    std::vector<int> seq;
+    for (int r = frameTop + frameH; r < 768; ++r) {
+        seq.push_back(r);
+    }
+    for (int r = 767; r >= frameTop + frameH; --r) {
+        seq.push_back(r);
+    }
+    return WorldPx(col, seq[static_cast<size_t>(y - 567 - frameH) % seq.size()], paintedTop);
+}
+
+void WorldRules()
+{
+    struct Case {
+        int painted, top, h, left;
+        bool stone;
+        const char *what;
+    };
+    const Case cases[] = {
+        {604, 604, 158, 11, false, "Zeus's world map sidebar (frame 604..761, columns 11..180)"},
+        {604, 604, 158, 11, true, "Zeus's with the stone read: the same (its own rows under the frame)"},
+        {614, 614, 146, 12, true, "Poseidon's (frame 614..759, columns 12..181), around it Zeus's stone"},
+        {614, 614, 146, 12, false, "Poseidon's without the stone: its own rows under the frame"},
+        {-1, 604, 158, 11, true, "no frame found: as Zeus's"}};
+    constexpr int W = 186, H = 800;
+    const std::vector<lay::Px> stone = Stone();
+    for (const Case &c : cases) {
+        std::vector<lay::Px> s(W * H);
+        for (int y = 0; y < H; ++y) {
+            for (int x = 0; x < W; ++x) {
+                s[y * W + x] = WorldPx(x, y, c.painted);
+            }
+        }
+        Check(lay::FrameTop(s.data(), W, H) == c.top, c.what);
+        Check(lay::LayOutWorldSidebar(s.data(), W, H, c.stone ? stone.data() : nullptr) == c.top, c.what);
+        bool ok = true;
+        for (int y = 0; y < H && ok; ++y) {
+            for (int x = 0; x < W && ok; ++x) {
+                const lay::Px want =
+                    y < 768 ? WorldExpected(x, y, c.top, c.h, c.painted, c.left, c.stone) : WorldPx(x, y, c.painted);
+                ok = s[y * W + x] == want;
+            }
+        }
+        Check(ok, c.what);
+    }
+    const lay::Picture z = lay::PictureOf(604), p = lay::PictureOf(614);
+    using S = lay::WorldSource;
+    auto is = [](S s, S::Kind k, int row) { return s.kind == k && (k == S::Drawn || s.row == row); };
+    Check(lay::WorldFrameLeft(z) == 11 && lay::WorldFrameLeft(p) == 12, "the frame's first column: 11, Poseidon's 12");
+    Check(is(lay::WorldSourceOf(50, 566, z, false), S::Drawn, 0) && is(lay::WorldSourceOf(50, 567, z, false), S::Own, 604) &&
+              is(lay::WorldSourceOf(180, 724, z, false), S::Own, 761) &&
+              is(lay::WorldSourceOf(181, 600, z, false), S::Drawn, 0) &&
+              is(lay::WorldSourceOf(10, 600, z, false), S::Drawn, 0),
+          "Zeus's: the frame's columns 11..180 from 567 to 724, the edges beside it as drawn");
+    Check(is(lay::WorldSourceOf(50, 725, z, true), S::Own, 762) && is(lay::WorldSourceOf(185, 730, z, true), S::Own, 767) &&
+              is(lay::WorldSourceOf(50, 731, z, true), S::Own, 767) &&
+              is(lay::WorldSourceOf(50, 736, z, true), S::Own, 762) &&
+              is(lay::WorldSourceOf(5, 740, z, true), S::Drawn, 0) &&
+              is(lay::WorldSourceOf(50, 768, z, true), S::Drawn, 0),
+          "... below it 762..767, 767..762 (columns 11..185), with or without the stone");
+    Check(is(lay::WorldSourceOf(12, 567, p, true), S::Own, 614) && is(lay::WorldSourceOf(181, 712, p, true), S::Own, 759) &&
+              is(lay::WorldSourceOf(11, 567, p, true), S::Stone, 0) &&
+              is(lay::WorldSourceOf(182, 572, p, true), S::Stone, 5) &&
+              is(lay::WorldSourceOf(182, 573, p, true), S::Stone, 5) &&
+              is(lay::WorldSourceOf(50, 713, p, true), S::Stone, (713 - 567) % 12 < 6 ? (713 - 567) % 12 : 11 - (713 - 567) % 12) &&
+              is(lay::WorldSourceOf(10, 713, p, true), S::Drawn, 0),
+          "Poseidon's with the stone: its frame's columns 12..181, the stone's rows around and under it, the edge as "
+          "drawn");
+    Check(is(lay::WorldSourceOf(11, 600, p, false), S::Drawn, 0) && is(lay::WorldSourceOf(182, 600, p, false), S::Drawn, 0) &&
+              is(lay::WorldSourceOf(50, 713, p, false), S::Own, 760) &&
+              is(lay::WorldSourceOf(50, 721, p, false), S::Own, 767),
+          "Poseidon's without it: beside the frame as drawn, its 8 rows under the frame (760..767) below it");
+    Check(lay::PictureOf(610).dx == 1 && lay::PictureOf(611).frameTop == 604, "the city's Poseidon picture; another row");
+}
+
+// ---- the category panels and the world map: the hooks ----
+
+void Panels()
+{
+    ColumnSetup();
+    ColumnFrame(true);
+    Check(CodeIs(true), "active: the panels' code ours");
+
+    // Military: Auto Defend 48 rows high, moved up with the column.
+    g_overlayButtons = 1;
+    At<int>(aCategory) = 8;
+    ColumnFrame(false);
+    const std::vector<int> want = TallRows();
+    const int top = lay::AutoDefendTop(1) - 25;
+    bool tall = true;
+    for (int r = 0; r < 48; ++r) {
+        for (int x = 0; x < 18; ++x) {
+            tall = tall && Px(kSx + 156 + x, top + r) == AutoDefendPx(x, want[static_cast<size_t>(r)]);
+        }
+    }
+    Check(tall, "Military: Auto Defend 48 rows high from row 257 (the game's 282, moved up)");
+    At<unsigned char>(aAutoDefend + 0x18) = 2;
+    ColumnFrame(false);
+    Check(Px(kSx + 156, top + 3) != AutoDefendPx(0, 2), "its state 2 (not drawn): not stretched");
+    At<unsigned char>(aAutoDefend + 0x18) = 1;
+    g_overlayButtons = 2;
+
+    // Overview: its inset down to the old minimap's place (our tiles, not the game's whole ones), moved up.
+    At<int>(aCategory) = 10;
+    g_col = {};
+    g_drawn.clear();
+    ColumnFrame(false);
+    const lay::InfoPanel info = lay::InfoPanelFor(2);
+    bool topLeft = false, bottomLeft = false, bottomRight = false;
+    for (const Drawn &d : g_drawn) {
+        topLeft = topLeft || (d.id == kInsetBase && d.x == kSx + 50 && d.y == info.top);
+        bottomLeft = bottomLeft || (d.id == kInsetBase + 42 && d.x == kSx + 50 && d.y == 454 - 16);
+        bottomRight = bottomRight || (d.id == kInsetBase + 48 && d.x == kSx + 50 + 128 - 16 && d.y == 454 - 16);
+    }
+    Check(g_col.inner == 0 && topLeft && bottomLeft && bottomRight,
+          "Overview: the inset (sidebar_x + 50, its top) 128 wide down to row 453, not inner_panel_draw");
+    Check(Px(kSx + 60, kOverviewLowRow - 25) == kCategoryPx && Px(kSx + 60, kOverviewLowRow) ==
+                                                                     BackdropPx(kSx + 60, kOverviewLowRow),
+          "Overview: drawn at row 440 (the 8th request's place), seen at 415; rows 429..453 the backdrop");
+    At<int>(aCategory) = 0;
+    ColumnFrame(false);
+    bool clean = true;
+    for (int y = 308; y < 454; ++y) {
+        for (int x = 110; x < 186; ++x) {
+            clean = clean && Px(kSx + x, y) == BackdropPx(kSx + x, y);
+        }
+    }
+    Check(clean, "back to another category: rows 308..453 the backdrop again (nothing left of the Overview's)");
+
+    // Overview's input: our 8 rows.
+    using Input_fn = int(__cdecl *)();
+    const Input_fn input = Hook<Input_fn>("overview_panel_input");
+    At<int>(aRequestCount) = 12;
+    At<int>(aOverlayCount) = 2;
+    At<int>(aHover) = 0;
+    g_mouseOverResult = 5;
+    g_clickResult2 = 1;
+    g_pc = {};
+    Check(input() == 1 && g_pc.overviewInput == 0, "a request clicked: taken (not the game's input)");
+    const DWORD table = reinterpret_cast<DWORD>(sp::RequestTableForTest());
+    Check(g_pc.overArgs[0] == kSx + 0x37 && g_pc.overArgs[1] == 2 * 20 + 0xbb && g_pc.overArgs[3] == 8 &&
+              g_pc.overTable == table,
+          "the rows under the mouse: at (sidebar_x + 0x37, n x 20 + 0xbb), our table, 8 of 12");
+    Check(g_pc.handleClick == 1 && std::memcmp(g_pc.clickArgs, g_pc.overArgs, sizeof(g_pc.overArgs)) == 0 &&
+              g_pc.clickTable == table,
+          "clicked on the same rows");
+    Check(At<int>(aListHover) == 5 && At<int>(aHover) == 0x63f + 5, "the 5th request: the list's row and hover 0x644");
+    int y5 = -1, index5 = -1;
+    std::memcpy(&y5, sp::RequestTableForTest() + 4 * 0x1c + 2, 2);
+    std::memcpy(&index5, sp::RequestTableForTest() + 4 * 0x1c + 0x14, 4);
+    Check((y5 & 0xffff) == 80 && index5 == 4, "our table: the 5th row from 80, its index 4");
+    const int counts[4][2] = {{0, 0}, {3, 3}, {8, 8}, {12, 8}};
+    for (const auto &n : counts) {
+        At<int>(aRequestCount) = n[0];
+        input();
+        Check(g_pc.overArgs[3] == n[1], "the rows: min(count, 8)");
+    }
+    g_mouseOverResult = 0;
+    At<int>(aHover) = 7;
+    g_pc = {};
+    Check(input() == 0 && g_pc.handleClick == 0 && At<int>(aListHover) == 0 && At<int>(aHover) == 7,
+          "not on a row: no click asked, the list's row 0, the hover number as it was");
+    g_mouseOverResult = 2;
+    g_clickResult2 = 0;
+    Check(input() == 0 && At<int>(aHover) == 0x641, "hovered, not clicked: not taken");
+    g_mouseOverResult = 0;
+
+    // Through sidebar_panel_input: the Overview category does not ask the build buttons.
+    At<int>(aMouseX) = kSx + 100;
+    At<int>(aMouseY) = 200;
+    At<int>(aCategory) = 10;
+    g_buildInputResult = 1;
+    g_col = {};
+    PanelInput();
+    Check(g_col.buildInput == 0 && g_col.categoryInput == 1, "Overview: not the build buttons' input, its panel's");
+    At<int>(aCategory) = 1;
+    g_col = {};
+    Check(PanelInput() == 1 && g_col.buildInput == 1, "another category: the build buttons first");
+    g_buildInputResult = 0;
+
+    // The 4th to the 8th request's tooltip.
+    g_tipKindResult = 1;
+    At<int>(aTipText) = 0;
+    g_pc = {};
+    g_calls = {};
+    Check(ButtonText(0x643) == 1 && At<int>(aTipText) == 0xc2 && g_pc.tipIndex == 3 && g_calls.buttonText == 0,
+          "the 4th request: text 0xc1 + request_tip_kind(3)");
+    Check(Group() == 68, "... in the game's group");
+    Check(ButtonText(0x647) == 1 && g_pc.tipIndex == 7, "the 8th: request_tip_kind(7)");
+    g_tipKindResult = -1;
+    At<int>(aTipText) = 0;
+    Check(ButtonText(0x644) == 0 && At<int>(aTipText) == 0, "a request not found: no text");
+    g_calls = {};
+    ButtonText(0x642);
+    ButtonText(0x648);
+    Check(g_calls.buttonText == 2, "the game's 3 and beyond the 8th: the game's own");
+    g_tipKindResult = 0;
+
+    // The City Overview report's request tooltips below the cursor.
+    At<unsigned char>(aGameScreen) = 7;
+    At<int>(aDialog) = 0xd;
+    At<int>(aHoverRow) = 300;
+    At<int>(aDialogOffsetY) = 0;
+    At<int>(aTipText) = 0xc1;
+    const int hovers[2] = {0x6a4, 0x6ab};
+    for (int h : hovers) {
+        At<int>(aHover) = h;
+        g_calls = {};
+        Draw();
+        Check(g_calls.draw == 1 && g_drawHoverRow == 300 + 0x68 && g_drawOffsetY == 0x200,
+              "the report's request: drawn with the row + 0x68 and the offset + 0x200 (the mouse's + 40)");
+        Check(At<int>(aHoverRow) == 300 && At<int>(aDialogOffsetY) == 0, "... both put back afterwards");
+    }
+    struct Other {
+        unsigned char screen;
+        int dialog, hover;
+        const char *what;
+    };
+    const Other others[] = {{7, 2, 0x6a4, "another report: as the game draws it"},
+                            {7, 0xd, 0x19, "another hover number: as the game draws it"},
+                            {1, 0xd, 0x6a4, "the city screen: as the game draws it"}};
+    for (const Other &o : others) {
+        At<unsigned char>(aGameScreen) = o.screen;
+        At<int>(aDialog) = o.dialog;
+        At<int>(aHover) = o.hover;
+        Draw();
+        Check(g_drawHoverRow == 300 && g_drawOffsetY == 0, o.what);
+    }
+    At<unsigned char>(aGameScreen) = 1;
+    At<int>(aDialog) = 0;
+    At<int>(aHover) = 0;
+    At<int>(aTipText) = 0;
+}
+
+constexpr int kWorldPicture = 0x6400; // the world map sidebar's picture (an id of the fake image_draw)
+int g_worldFrame = 604;
+
+void PaintWorldPicture(int id, int x, int y)
+{
+    if (id != kWorldPicture) {
+        return;
+    }
+    for (int r = 0; r < 768; ++r) {
+        for (int c = 0; c < 186 && x + c < kW; ++c) {
+            Px(x + c, y + r) = WorldPx(c, r, g_worldFrame);
+        }
+    }
+}
+
+bool WorldOnScreen(int frameTop, int frameH, bool laidOut)
+{
+    const int left = frameTop == 604 ? 11 : 12;
+    for (int y = 0; y < 768; ++y) {
+        for (int x = 0; x < 186; ++x) {
+            const lay::Px want =
+                laidOut ? WorldExpected(x, y, frameTop, frameH, frameTop, left, true) : WorldPx(x, y, frameTop);
+            if (Px(kSx + x, y) != want) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+void World()
+{
+    ColumnSetup();
+    PanelDraw();
+    Check(CodeIs(true) && sp::WorldLayout(), "active: the world map sidebar's code ours");
+    At<unsigned char>(aGameScreen) = 0x14;
+    g_onImageDraw = &PaintWorldPicture;
+    const std::vector<lay::Px> stone = Stone();
+    sp::SetWorldStoneForTest(stone.data());
+    void *images = reinterpret_cast<void *>(aImages + g_imageShift);
+    struct Case {
+        DWORD call;
+        int frame, h;
+        const char *what;
+    };
+    const Case cases[] = {{0x597eca, 604, 158, "the world map (Zeus's picture): drawn, then laid out"},
+                          {0x421ceb, 614, 146,
+                           "the campaign map (Poseidon's picture): drawn, then laid out (Zeus's stone around it)"}};
+    for (const Case &c : cases) {
+        g_worldFrame = c.frame;
+        g_drawn.clear();
+        g_calls = {};
+        PictureCall(c.call)(images, nullptr, kWorldPicture, kSx, 0, 0, 0, 0);
+        Check(g_drawn.size() == 1 && g_drawn[0].id == kWorldPicture && g_drawn[0].x == kSx && g_drawn[0].y == 0 &&
+                  g_calls.imageDrawThis == images,
+              "the game's image_draw first, with its arguments");
+        Check(WorldOnScreen(c.frame, c.h, true), c.what);
+    }
+    g_worldFrame = 604;
+    PictureCall(0x597eca)(images, nullptr, kWorldPicture, kSx, 1, 0, 0, 0);
+    Check(Px(kSx + 50, 568) == WorldPx(50, 567, 604) && Px(kSx + 50, 731) == WorldPx(50, 730, 604),
+          "drawn lower than row 0: only drawn, not laid out");
+    At<int>(aDdHeight) = 700;
+    PictureCall(0x597eca)(images, nullptr, kWorldPicture, kSx, 0, 0, 0, 0);
+    At<int>(aDdHeight) = kH;
+    Check(WorldOnScreen(604, 158, false), "a screen lower than 768: only drawn");
+
+    // original, the editors: the game's code and table, not laid out.
+    sp::SetModeForTest("original", false);
+    Check(CodeIs(false) && !sp::WorldLayout(), "original: the game's code at once, not our layout");
+    sp::SetModeForTest("pericles", false);
+    Check(CodeIs(true) && sp::WorldLayout(), "pericles again: ours");
+    At<int>(aEditorMode) = 1;
+    Update();
+    Check(CodeIs(false) && !sp::WorldLayout(), "the editors: the game's code");
+    At<int>(aEditorMode) = 0;
+    Update();
+    Check(CodeIs(true), "back: ours");
+    g_onImageDraw = nullptr;
+    At<unsigned char>(aGameScreen) = 1;
+}
+
+// A fault in the Overview category's input: off, every change put back (the world map's too), the game's own.
+void PanelFault()
+{
+    ColumnSetup();
+    PanelDraw();
+    Check(CodeIs(true), "active");
+    At<int>(aCategory) = 10;
+    g_mouseOverFaults = true;
+    At<unsigned char>(aScreenRedraw) = 0;
+    using Input_fn = int(__cdecl *)();
+    Hook<Input_fn>("overview_panel_input")();
+    g_mouseOverFaults = false;
+    Check(!sp::Active() && !sp::WorldLayout() && CodeIs(false) && At<unsigned char>(aScreenRedraw) == 1,
+          "a fault in the requests' input: off, the game's code and data back (the world map's too), redrawn");
+    g_pc = {};
+    g_calls = {};
+    Hook<Input_fn>("overview_panel_input")();
+    ButtonText(0x643);
+    Check(g_pc.overviewInput == 1 && g_calls.buttonText == 1, "afterwards the game's own input and tooltips");
+}
+
 struct Scenario {
     const char *name;
     void (*run)();
@@ -2001,7 +2624,8 @@ const Scenario kScenarios[] = {
     {"input", &Input},          {"column_fault", &ColumnFault}, {"code_sites", &CodeSites},
     {"box_rules", &BoxRules},   {"box", &Box},             {"box_tall", &BoxTall},     {"army", &Army},
     {"army_no_backdrop", &ArmyNoBackdrop}, {"box_fault", &BoxFault}, {"units_rules", &UnitsRules},
-    {"units", &Units},
+    {"units", &Units},       {"panel_rules", &PanelRules}, {"world_rules", &WorldRules}, {"panels", &Panels},
+    {"world", &World},       {"panel_fault", &PanelFault},
 };
 
 } // namespace

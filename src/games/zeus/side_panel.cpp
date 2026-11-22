@@ -76,6 +76,28 @@
 //   x1, y1, x2, y2 as shorts; y1 335, 355, .. 415; drawn at the base 0x26, clicked at 0x1e by 0x514ab3 / 0x514f59),
 //   and the report button at (sidebar_x, 0xcd) + (157, 250), which does not move. Nothing in the exe writes those
 //   records' y (the content rewrites the buttons' pictures at +0xa and their state at +0x18).
+//
+// The category panels in the taller column:
+// - military_panel_draw 0x51b060 / military_panel_input 0x51b470 (no arguments, ret; only through
+//   sidebar_category_panel_draw 0x517000 / _input 0x517650) place their lower block from n x 20 + 0xe0 (0x51b306) and
+//   n x 20 + 0xe6 (0x51b5f2): buttons_draw(sidebar_x + 0x46, base + 6, 0x63ed68, 4) and the same table for the input;
+//   Auto Defend is its 4th record (86, 0) 18 x 28 (the height at 0x63ede6), one picture of Zeus_Interface entries
+//   1478..1481 whose rows 2 and 25 are plain; buttons_draw draws no picture for a state of 2. Only these two read the
+//   table.
+// - overview_panel_draw 0x5b6f00 lists the requests from y + 0x7f, 20 rows each, at most 3 (0x5b7222, 0x5b7229) and
+//   "(more)" below the last when there are more (0x5b7611). overview_panel_input 0x5b7680 (no arguments, ret, al):
+//   buttons_mouse_over 0x432300 (__cdecl x, y, table, count: the row from 1, 0 none) at (sidebar_x + 0x37,
+//   n x 20 + 0xbb) on the 3 rows of 0x65b878 (min(count 0x916e08, 3)), its answer to 0x78183c, hover 0x63f + it, then
+//   buttons_handle_click 0x4321e0 (__cdecl, the same 4). balloon_help_button_text answers 0x640..0x642 with
+//   0xc1 + request_tip_kind 0x5b6eb0 (__cdecl, the request's index; below 0: no text). The City Overview report's
+//   input 0x5b8630 takes 8 (0x65b8d0).
+// - balloon_help_draw 0x4f6ba0 places the tooltip on the report screen at 0xf2a72c - 0x40 (- 0x4a, - 0x36, - 0x3a
+//   for sidebar_dialog 1, 6, 7) and at dialog_offset_y 0xf2a6a8 + 0x1b0 from that row on (0x4f6d59..0x4f6d9c); those
+//   two are read nowhere else in it or in what it calls (0x509870, 0x509b20, 0x4f5300 and theirs).
+// - world_map_sidebar_draw 0x597e60 draws the sidebar's picture with image_draw (0x597eca), sets its buttons' states
+//   and draws them (table 0x5ef488: Back to City (39, 570), the question mark (13, 572); the only ones below row 562),
+//   then 0x5980c0 writes Back to City's text at its record's place; the world map's input (0x515c96..0x515d01) reads the
+//   same table. campaign_map_draw 0x421c70 draws the same picture (0x421ceb) and the same table.
 namespace zeus::side_panel {
 namespace {
 
@@ -144,25 +166,38 @@ const Site kRepeat{"buttons_repeat_update", 0x431c80, {0x53, 0x55, 0x8b, 0x6c, 0
 const Site kOpen{"message_open", 0x522bd0, {0x8b, 0x44, 0x24, 0x04, 0x8b, 0x0d, 0xf0, 0x37}};
 const Site kRotateDraw{"sidebar_rotate_draw", 0x517a20, {0x8b, 0x4c, 0x24, 0x04, 0x8b, 0x44, 0x24, 0x08}};
 const Site kImageGroup{"image_group_get", 0x40fcf0, {0x8b, 0x44, 0x24, 0x04, 0x8b, 0x91, 0x38, 0xcc}};
+// The category panels in the taller column: hooked.
+const Site kOverviewInput{"overview_panel_input", 0x5b7680, {0xa1, 0x34, 0xff, 0x0d, 0x01, 0x56, 0x57, 0x8d}};
+// Called.
+const Site kMouseOver{"buttons_mouse_over", 0x432300, {0x8b, 0x44, 0x24, 0x10, 0x53, 0x55, 0x33, 0xc9}};
+const Site kHandleClick{"buttons_handle_click", 0x4321e0, {0x8b, 0x44, 0x24, 0x10, 0x53, 0x55, 0x56, 0x33}};
+const Site kTipKindOf{"request_tip_kind", 0x5b6eb0, {0x8b, 0x44, 0x24, 0x04, 0x8b, 0x04, 0xc5, 0x10}};
 
 const Site *const kSites[] = {&kUpdate,     &kButtonText,   &kGroup,        &kDraw,         &kNameBar,
                               &kPanelDraw,  &kPanelInput,   &kReportInput,  &kOverviewToggle,
                               &kListDraw,   &kListInput,    &kMinimapHover, &kArmyContent,  &kShipContent,
                               &kBottomInput, &kFilter,      &kCityLoaded,   &kMessagesClear, &kUnitsMinimap,
+                              &kOverviewInput,
                               &kScienceNames, &kCost,       &kNumber,       &kImageId,      &kImageDraw,
                               &kOverlayDraw, &kInnerPanel,  &kCategoryDraw, &kBuildDraw,    &kText,
                               &kOverlayInput, &kCategoryInput, &kBuildInput, &kButtonsHover, &kButtonsUpdate,
                               &kMinimapDraw, &kMinimapClick, &kTextId,      &kTextGet,      &kWrapped,
                               &kCharWidth,  &kImageButtons, &kRepeat,       &kOpen,         &kRotateDraw,
-                              &kImageGroup};
+                              &kImageGroup, &kMouseOver,    &kHandleClick,  &kTipKindOf};
 constexpr int kSiteCount = static_cast<int>(sizeof(kSites) / sizeof(kSites[0]));
 
-// Bytes changed in the game's code while the side panel is active (put back otherwise).
+// The world map sidebar's picture drawn by the game (image_draw's arguments, __thiscall: the image manager in ecx, 6
+// on the stack, ret 0x18), then laid out (its two calls of image_draw call this one instead).
+void __fastcall WorldPicture(void *images, void *, int id, int x, int y, int a, int b, int c);
+
+// Bytes changed in the game's code while the side panel is active (put back otherwise). With `call`: ours is a
+// 5-byte call of that function, made where the code is.
 struct Patch {
     const char *name;
     DWORD address;
     int size;
     BYTE game[9], ours[9];
+    const void *call = nullptr;
 };
 // `push 0x11; push 0x63dc40` -> `push 0x0f`: the 17 sidebar buttons without the two tabs (the table's last two).
 #define TABS_PUSH(name, at)                                                                                        \
@@ -222,6 +257,26 @@ const Patch kPatches[] = {
     // the backdrop before the content.
     {"army panel: its inset", 0x5257e8, 5, {0xe8, 0xb3, 0x9a, 0x07, 0x00}, {0x0f, 0x1f, 0x44, 0x00, 0x00}},
     {"ship panel: its inset", 0x525e66, 5, {0xe8, 0x35, 0x94, 0x07, 0x00}, {0x0f, 0x1f, 0x44, 0x00, 0x00}},
+    // Military's lower block, 32 rows down against the information panel's bottom edge: the drawing's base
+    // (`lea edi, [edx*4 + 0xe0]`), the input's (`lea esi, [edx*4 + 0xe6]`), and Auto Defend's height (28 -> 48).
+    {"Military: its lower block drawn", 0x51b306, 7, {0x8d, 0x3c, 0x95, 0xe0, 0x00, 0x00, 0x00},
+     {0x8d, 0x3c, 0x95, 0x00, 0x01, 0x00, 0x00}},
+    {"Military: its lower block clicked", 0x51b5f2, 7, {0x8d, 0x34, 0x95, 0xe6, 0x00, 0x00, 0x00},
+     {0x8d, 0x34, 0x95, 0x06, 0x01, 0x00, 0x00}},
+    {"Military: Auto Defend's height", 0x63ede6, 2, {SHORT_BYTES(28)}, {SHORT_BYTES(lay::kAutoDefendTallH)}},
+    // Overview's requests drawn: up to 8 (`cmp ecx, 3`, `mov eax, 3`) and "(more)" from the 9th on (`cmp ecx, 3`).
+    {"Overview: the requests drawn", 0x5b7222, 3, {0x83, 0xf9, 0x03}, {0x83, 0xf9, 0x08}},
+    {"Overview: the requests drawn (at most)", 0x5b7229, 5, {0xb8, 0x03, 0x00, 0x00, 0x00},
+     {0xb8, 0x08, 0x00, 0x00, 0x00}},
+    {"Overview: more requests", 0x5b7611, 3, {0x83, 0xf9, 0x03}, {0x83, 0xf9, 0x08}},
+    // The world map sidebar's Back to City and question mark (y of records 0 and 1 of its table 0x5ef488) on the
+    // bottom row; its picture drawn and laid out (world map 0x597eca, campaign map 0x421ceb: `call image_draw`).
+    {"world map: Back to City's y", 0x5ef48a, 2, {SHORT_BYTES(570)}, {SHORT_BYTES(570 + lay::kWorldButtonShift)}},
+    {"world map: the question mark's y", 0x5ef4b2, 2, {SHORT_BYTES(572)}, {SHORT_BYTES(572 + lay::kWorldButtonShift)}},
+    {"world map: its sidebar's picture", 0x597eca, 5, {0xe8, 0x81, 0x50, 0x01, 0x00}, {},
+     reinterpret_cast<const void *>(&WorldPicture)},
+    {"campaign map: its sidebar's picture", 0x421ceb, 5, {0xe8, 0x60, 0xb2, 0x18, 0x00}, {},
+     reinterpret_cast<const void *>(&WorldPicture)},
 };
 #undef TABS_PUSH
 #undef UNITS_BUTTON_Y
@@ -238,6 +293,7 @@ Int_fn o_PanelDraw = nullptr;
 Int_fn o_PanelInput = nullptr;
 Int_fn o_ReportInput = nullptr;
 Void_fn o_OverviewToggle = nullptr;
+Int_fn o_OverviewInput = nullptr;
 
 // The box: the message box's functions take the message box (0x7815a0) in ecx, nothing on the stack (plain ret);
 // message_filter is __thiscall on the message options (0xf2a760) with the message (ret 4), its answer in eax.
@@ -342,6 +398,25 @@ constexpr int kToggleImage = 0x20c;        // the report button's picture (Zeus_
 constexpr DWORD kMinimapArgs = 0x7d3b08, kMinimapRect = 0x7d3b20;
 constexpr int kMinimapArgsSize = 16, kMinimapRectSize = 24;
 
+// The category panels in the taller column.
+constexpr DWORD kAutoDefendRecord = 0x63ed68 + 3 * kRecordSize; // Military's 4th button (0x28-byte records)
+constexpr DWORD kRequestRows = 0x65b878;   // the game's 3 request rows (0x1c bytes each)
+const Var<int> kRequestCount{0x916e08};    // the requests listed
+const Var<int> kListHover{0x78183c};       // the list row under the mouse (buttons_mouse_over's answer)
+const Var<int> kDialogOffsetY{0xf2a6a8};
+using MouseOver_fn = int(__cdecl *)(int x, int y, void *table, int count);
+using TipKind_fn = int(__cdecl *)(int index);
+alignas(4) BYTE g_requestTable[lay::kMaxRequests * lay::kRequestRowSize];
+bool g_requestTableSet = false;
+bool g_loggedWorld = false;
+// Entry 1600's rows under its frame (the lighter stone used around Poseidon's frame), read from the player's own
+// Zeus_Interface.sg3 in memory only.
+constexpr int kWorldEntry = 1600;
+struct Stone {
+    bool tried = false, ok = false;
+    std::vector<lay::Px> px; // kSidebarW x kStoneRows
+} g_stone;
+
 core::diag::Feature g_feature{"side panel (games/zeus/side_panel)"};
 bool g_installed = false;
 bool g_pericles = true;
@@ -409,8 +484,14 @@ bool WritePatches(bool ours)
 {
     bool ok = true;
     for (const Patch &p : kPatches) {
-        ok = core::site::PatchCode(p.address + g_imageShift, ours ? p.ours : p.game, static_cast<size_t>(p.size)) &&
-             ok;
+        const DWORD at = p.address + g_imageShift;
+        BYTE call[5];
+        const BYTE *bytes = ours ? p.ours : p.game;
+        if (ours && p.call) {
+            lay::CallBytes(at, reinterpret_cast<DWORD>(p.call), call);
+            bytes = call;
+        }
+        ok = core::site::PatchCode(at, bytes, static_cast<size_t>(p.size)) && ok;
     }
     return ok;
 }
@@ -535,8 +616,33 @@ int __cdecl Update_detour()
     return Original(o_Update, kUpdate)();
 }
 
+struct RequestTipCall {
+    int index;
+    int answered;
+};
+
 int __cdecl ButtonText_detour(int hover)
 {
+    RequestTipCall rq{0, 0};
+    if (ActiveNow() && lay::ExtraRequest(hover, &rq.index)) {
+        // The Overview category's 4th to 8th request, as the game answers for its first 3 (0x4f5f73..0x4f5fb9): the
+        // text 0xc1 + request_tip_kind(index) in the game's group; none when the request is not found.
+        g_memo.Forget();
+        if (core::diag::Guarded(
+                g_feature,
+                [](void *p) {
+                    RequestTipCall &c = *static_cast<RequestTipCall *>(p);
+                    const int kind = Function<TipKind_fn>(kTipKindOf)(c.index);
+                    if (kind >= 0) {
+                        *kTipText = lay::kRequestTipText + kind;
+                        c.answered = 1;
+                    }
+                },
+                &rq)) {
+            return rq.answered;
+        }
+        FallBack("a request's tooltip");
+    }
     if (Ready() && lay::Ours(hover)) {
         TextCall c{hover, false};
         if (Answer(c)) {
@@ -583,6 +689,25 @@ struct DrawCall {
 
 void __cdecl Draw_detour()
 {
+    if (ActiveNow() && lay::ReportRequestTip(*kGameScreen, *kSidebarDialog, *kHover)) {
+        // The City Overview report's requests: the tooltip below the cursor (the game's rule for the report screen
+        // given the row and the offset that make it the mouse's + 40; nothing else in its drawing reads them).
+        DrawCall c{0, {}};
+        if (core::diag::Guarded(
+                g_feature,
+                [](void *p) {
+                    DrawCall &c = *static_cast<DrawCall *>(p);
+                    c.r.Set(kHoverY.ptr(), *kHoverY + lay::kReportTipRow);
+                    c.r.Set(kDialogOffsetY.ptr(), *kDialogOffsetY + lay::kReportTipOffset);
+                    Original(o_Draw, kDraw)();
+                    c.r.Undo();
+                },
+                &c, &c.r)) {
+            return;
+        }
+        FallBack("the report's request tooltip");
+        return;
+    }
     int real = 0;
     if (g_installed && core::diag::Enabled(g_feature) && g_memo.RealText(*kTipText, &real)) {
         // Text 0 (Population): the real number only while the tooltip is drawn; balloon_help_end then finds our
@@ -1077,6 +1202,20 @@ constexpr int kNoBackdropLimit = 8;
 bool g_armyLaidOut = false; // an army panel's backdrop laid out since its content was last drawn
 int g_noArmyBackdrop = 0;
 
+// Military's Auto Defend as the game drew it (in its own place, before the column is moved), 48 rows high; not while
+// its state is 2 (not drawn), nor when it would not be in the moved rows.
+void StretchAutoDefend(const Screen16 &s)
+{
+    if (At<BYTE>(kAutoDefendRecord)[kRecordState] == 2) {
+        return;
+    }
+    const int top = lay::AutoDefendTop(*kOverlayCount);
+    if (top < lay::kMovedFirst || top + lay::kAutoDefendTallH > lay::kMovedEnd) {
+        return;
+    }
+    lay::StretchAutoDefend(s.column + top * s.pitch + (lay::kAutoDefendCol - lay::kColumnLeft), s.pitch);
+}
+
 // sidebar_panel_draw, the column moved up: the backdrop put back, the game's drawing in its own place (without the
 // title, the Overview category's minimap, the report button and the name bar), moved up, then the title, the build
 // buttons and the cost in the new place.
@@ -1109,16 +1248,27 @@ void DrawColumn(void *p)
     *kButtonsRedraw = 1; // the buttons drawn on every frame, over the backdrop put back
     Function<Void_fn>(kOverlayDraw)();
     const lay::InfoPanel info = lay::InfoPanelFor(*kOverlayCount);
-    Function<Inner_fn>(kInnerPanel)(*kSidebarX + kPanelX, info.top, kPanelCols, info.rows);
-    Function<Void_fn>(kCategoryDraw)();
-    if (!g_loggedBelow && lay::DrawnBelow(s.column, s.pitch, g_backdrop.Pixels())) {
-        g_loggedBelow = true;
-        core_log("side panel: category %d drew below the moved rows (rows %d..%d are the backdrop's)", *kCategory,
-                 lay::kMovedEnd, lay::kColumnRows - 1);
+    const int category = *kCategory, movedEnd = lay::MovedEndFor(category);
+    if (category == lay::kOverviewCategory) {
+        // Down to the old minimap's last row (not a whole number of the game's 16 px tiles).
+        const int x = *kSidebarX + kPanelX;
+        Inset(RECT{x, info.top, x + kPanelCols * 16, movedEnd});
     }
-    lay::MoveColumn(s.column, s.pitch, g_backdrop.Pixels(), g_top.fits == 1 ? g_top.px.data() : nullptr);
+    else {
+        Function<Inner_fn>(kInnerPanel)(*kSidebarX + kPanelX, info.top, kPanelCols, info.rows);
+    }
+    Function<Void_fn>(kCategoryDraw)();
+    if (category == lay::kMilitaryCategory) {
+        StretchAutoDefend(s);
+    }
+    if (!g_loggedBelow && lay::DrawnBelow(s.column, s.pitch, g_backdrop.Pixels(), movedEnd)) {
+        g_loggedBelow = true;
+        core_log("side panel: category %d drew below the moved rows (rows %d..%d are the backdrop's)", category,
+                 movedEnd, lay::kPutBackEnd - 1);
+    }
+    lay::MoveColumn(s.column, s.pitch, g_backdrop.Pixels(), g_top.fits == 1 ? g_top.px.data() : nullptr, movedEnd);
     DrawTitle();
-    if (*kCategory != lay::kOverviewCategory) {
+    if (category != lay::kOverviewCategory) {
         Function<Void_fn>(kBuildDraw)();
     }
     DrawBox();
@@ -1188,7 +1338,8 @@ void PanelInputNow(void *p)
         c.hit = true;
         return;
     }
-    if (Function<Int_fn>(kBuildInput)() & 0xff) {
+    // The Overview category has no build buttons (its requests from the 5th are where they would be).
+    if (*kCategory != lay::kOverviewCategory && (Function<Int_fn>(kBuildInput)() & 0xff)) {
         c.hit = true;
         return;
     }
@@ -1391,6 +1542,110 @@ void __cdecl UnitsMinimap_detour(int force)
     Original(o_UnitsMinimap, kUnitsMinimap)(force);
 }
 
+// overview_panel_input 0x5b7680 as the game has it (0x5b7680..0x5b76f7), with our table of 8 rows: the row under
+// the mouse (its answer kept for the list, hover number 0x63f + k), then the click on the same rows.
+void RequestsInput(void *p)
+{
+    bool &hit = *static_cast<bool *>(p);
+    if (!g_requestTableSet) {
+        lay::RequestTable(At<BYTE>(kRequestRows), g_requestTable);
+        g_requestTableSet = true;
+    }
+    const int x = *kSidebarX + 0x37, y = *kOverlayCount * 20 + 0xbb, n = lay::RequestRows(*kRequestCount);
+    const int over = Function<MouseOver_fn>(kMouseOver)(x, y, g_requestTable, n);
+    *kListHover = over;
+    if (over == 0) {
+        return;
+    }
+    *kHover = over + lay::kRequestHoverBase;
+    hit = Function<MouseOver_fn>(kHandleClick)(x, y, g_requestTable, n) != 0;
+}
+
+int __cdecl OverviewInput_detour()
+{
+    if (ActiveNow()) {
+        bool hit = false;
+        if (core::diag::Guarded(g_feature, &RequestsInput, &hit)) {
+            return hit ? 1 : 0;
+        }
+        FallBack("the Overview category's requests");
+    }
+    return Original(o_OverviewInput, kOverviewInput)();
+}
+
+const lay::Px *LoadStone()
+{
+    if (g_stone.tried) {
+        return g_stone.ok ? g_stone.px.data() : nullptr;
+    }
+    g_stone.tried = true;
+    wchar_t path[MAX_PATH];
+    DWORD len = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    while (len > 0 && path[len - 1] != L'\\') {
+        --len;
+    }
+    path[len] = L'\0';
+    if (len + sizeof(kInterfacePack) / sizeof(wchar_t) >= MAX_PATH) {
+        return nullptr;
+    }
+    std::wcscat(path, kInterfacePack);
+    core::assets::Sg3Pack pack;
+    std::vector<WORD> whole;
+    int w = 0, h = 0;
+    if (!pack.Open(path) || !pack.Size(kWorldEntry, &w, &h) || w != lay::kSidebarW || h != lay::kLayoutH ||
+        !pack.Decode565(kWorldEntry, 0, &whole)) {
+        core_log("side panel: Zeus_Interface entry %d (%dx%d) not read: Poseidon's world map sidebar keeps its own "
+                 "stone under its picture",
+                 kWorldEntry, w, h);
+        return nullptr;
+    }
+    g_stone.px.assign(whole.begin() + lay::kStoneTop * w, whole.begin() + (lay::kStoneTop + lay::kStoneRows) * w);
+    g_stone.ok = true;
+    return g_stone.px.data();
+}
+
+// The world map sidebar's picture laid out (on the screen it is drawn to; the campaign map draws it into the map
+// screen's layer, of the screen's size): only with the whole 186 x 768 sidebar on it.
+struct WorldCall {
+    int x, y;
+};
+
+void LayOutWorld(void *p)
+{
+    const WorldCall &c = *static_cast<WorldCall *>(p);
+    BYTE *px = *kDrawBuffer;
+    const int pitch = *kPitch, w = *kDdWidth, h = *kDdHeight;
+    if (!px || pitch <= 0 || (pitch & 1) || pitch < w * 2 || c.y != 0 || c.x < 0 || c.x + lay::kSidebarW > w ||
+        h < lay::kLayoutH) {
+        if (!g_loggedWorld) {
+            g_loggedWorld = true;
+            core_log("side panel: the world map sidebar's picture at (%d, %d) on %dx%d: not laid out (its buttons on "
+                     "the bottom row)",
+                     c.x, c.y, w, h);
+        }
+        return;
+    }
+    const lay::Px *stone = LoadStone();
+    const int top = lay::LayOutWorldSidebar(reinterpret_cast<lay::Px *>(px) + c.x, pitch / 2, h, stone);
+    if (!g_loggedWorld) {
+        g_loggedWorld = true;
+        core_log("side panel: the world map sidebar laid out (its frame from row %d%s)", top,
+                 top != lay::kZeusWorldFrameTop && stone ? "; around it the stone under Zeus's frame" : "");
+    }
+}
+
+void __fastcall WorldPicture(void *images, void *, int id, int x, int y, int a, int b, int c)
+{
+    Function<ImageDraw_fn>(kImageDraw)(images, id, x, y, a, b, c);
+    if (!ActiveNow()) {
+        return; // the game's code is put back at once when this changes; drawn as the game draws it
+    }
+    WorldCall w{x, y};
+    if (!core::diag::Guarded(g_feature, &LayOutWorld, &w)) {
+        FallBack("laying out the world map's sidebar");
+    }
+}
+
 const Detour kDetours[] = {
     {&kUpdate, reinterpret_cast<void *>(&Update_detour)},
     {&kButtonText, reinterpret_cast<void *>(&ButtonText_detour)},
@@ -1411,6 +1666,7 @@ const Detour kDetours[] = {
     {&kCityLoaded, reinterpret_cast<void *>(&CityLoaded_detour)},
     {&kMessagesClear, reinterpret_cast<void *>(&MessagesClear_detour)},
     {&kUnitsMinimap, reinterpret_cast<void *>(&UnitsMinimap_detour)},
+    {&kOverviewInput, reinterpret_cast<void *>(&OverviewInput_detour)},
 };
 constexpr int kHookCount = static_cast<int>(sizeof(kDetours) / sizeof(kDetours[0]));
 
@@ -1490,7 +1746,8 @@ bool Attach()
         !Install(kBottomInput, &BottomInput_detour, o_BottomInput) || !Install(kFilter, &Filter_detour, o_Filter) ||
         !Install(kCityLoaded, &CityLoaded_detour, o_CityLoaded) ||
         !Install(kMessagesClear, &MessagesClear_detour, o_MessagesClear) ||
-        !Install(kUnitsMinimap, &UnitsMinimap_detour, o_UnitsMinimap)) {
+        !Install(kUnitsMinimap, &UnitsMinimap_detour, o_UnitsMinimap) ||
+        !Install(kOverviewInput, &OverviewInput_detour, o_OverviewInput)) {
         // The hooks already in stay, but with the feature off every one of them calls the game's own.
         core::diag::Disable(g_feature, "a hook could not be installed");
         core_log("side panel: a hook could not be installed; the game's own side panel");
@@ -1504,6 +1761,11 @@ bool Attach()
 bool Active()
 {
     return ActiveNow();
+}
+
+bool WorldLayout()
+{
+    return g_installed && core::diag::Enabled(g_feature) && g_patched;
 }
 
 const Detour *Detours(int *count)
@@ -1583,6 +1845,18 @@ void SetModeForTest(const char *value, bool initial)
 bool BoxMessagesForTest()
 {
     return g_boxMessages;
+}
+
+const unsigned char *RequestTableForTest()
+{
+    return g_requestTable;
+}
+
+void SetWorldStoneForTest(const unsigned short *stone)
+{
+    g_stone.tried = true;
+    g_stone.ok = stone != nullptr;
+    g_stone.px.assign(stone ? stone : nullptr, stone ? stone + lay::kSidebarW * lay::kStoneRows : nullptr);
 }
 
 } // namespace zeus::side_panel

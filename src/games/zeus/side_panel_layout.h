@@ -134,11 +134,20 @@ private:
 
 // The column, in sidebar columns (x - sidebar_x) and screen rows (the 1024 layout's).
 constexpr int kColumnLeft = 50, kColumnRight = 186, kColumnW = kColumnRight - kColumnLeft;
-constexpr int kColumnRows = 424; // down to the build buttons' last row (421) and the first rows of their costs
-constexpr int kShift = 25;       // the tabs' rows (0..24)
+// The backdrop as taken (rows 0..471: down to the old minimap's place and the four round buttons below it, which the
+// game draws after the column), and the rows put back from it on every frame (0..453: the build buttons, their costs
+// and the Overview category's longer panel; the round buttons from row 435 are drawn again by the game afterwards).
+constexpr int kColumnRows = 472;
+constexpr int kPutBackEnd = 454;
+constexpr int kShift = 25; // the tabs' rows (0..24)
 // The rows moved (the game's rows 25..332: the title's place down to the information panel's new bottom edge) and
-// where they go (0..307); the rows below them (308..423) are the backdrop's, and the build buttons are drawn there.
+// where they go (0..307); the rows below them (308..453) are the backdrop's, and the build buttons are drawn there.
 constexpr int kMovedFirst = kShift, kMovedEnd = 333, kMovedRows = kMovedEnd - kMovedFirst;
+// The Overview category has no build buttons and no minimap of its own: its information panel goes on down to the old
+// minimap's last row (the game's row 453, 428 moved; the round buttons start at 435), and rows 25..453 are moved.
+constexpr int kOverviewMovedEnd = 454;
+// The rows moved for a category (kMovedEnd, or kOverviewMovedEnd for the Overview category).
+int MovedEndFor(int category);
 // The title: centered in 0x82 px from column 50, at y 0x1e in the game's place (5 moved); clicked and hovered over
 // its whole row above the overlay buttons.
 constexpr int kTitleX = kColumnLeft, kTitleW = 0x82, kTitleY = 0x1e - kShift;
@@ -177,12 +186,12 @@ using Px = unsigned short;
 bool TopFits(const Px *screenLeft, const Px *entry, int entryW);
 
 // The column on screen (`screen`: its first pixel at the column's left edge and row 0, `pitch` pixels a row):
-// rows kMovedFirst..kMovedEnd - 1 moved up by kShift, the pixels that equal the backdrop at the same place replaced
+// rows kMovedFirst..movedEnd - 1 moved up by kShift, the pixels that equal the backdrop at the same place replaced
 // by the backdrop at the new place (the tabs' rows from `top`, or, without it, the backdrop's next 25 rows), and the
-// rows below the moved ones put back from the backdrop.
-void MoveColumn(Px *screen, int pitch, const Px *backdrop, const Px *top);
-// Whether the game drew anything below the moved rows (rows kMovedEnd..kColumnRows - 1 differ from the backdrop).
-bool DrawnBelow(const Px *screen, int pitch, const Px *backdrop);
+// rows below the moved ones down to kPutBackEnd put back from the backdrop.
+void MoveColumn(Px *screen, int pitch, const Px *backdrop, const Px *top, int movedEnd = kMovedEnd);
+// Whether the game drew anything below the moved rows (rows movedEnd..kPutBackEnd - 1 differ from the backdrop).
+bool DrawnBelow(const Px *screen, int pitch, const Px *backdrop, int movedEnd = kMovedEnd);
 
 // The column as the backdrop left it, and where it was taken: put back only on the same screen.
 class Backdrop {
@@ -194,12 +203,13 @@ public:
             return sidebarX == o.sidebarX && width == o.width && height == o.height && pitch == o.pitch;
         }
     };
-    // Copies the column from screen (as MoveColumn's screen).
+    // Copies the column from screen (as MoveColumn's screen): rows 0..kColumnRows - 1.
     void Take(const Px *screen, int pitch, const Where &w);
     bool Has(const Where &w) const
     {
         return has_ && where_ == w;
     }
+    // Rows 0..kPutBackEnd - 1.
     void PutBack(Px *screen, int pitch) const;
     void Forget()
     {
@@ -288,6 +298,102 @@ constexpr int kUnitsInsetX = 14, kUnitsInsetY = 222, kUnitsInsetW = 160, kUnitsI
 int UnitsSourceRow(int col, int y);
 // The army panel on screen (`sidebar` as LowerHalf's) moved as above; rows below kUnitsEnd are not touched.
 void MoveUnits(Px *sidebar, int pitch);
+
+// ---- The category panels in the taller column ----
+//
+// Military (category 8, military_panel_draw 0x51b060 / military_panel_input 0x51b470): its lower block (three rows of
+// icons and texts, three text buttons and Auto Defend, table 0x63ed68) is placed from one base row, n x 20 + 0xe0 for
+// the drawing and + 0xe6 for the input (n: the overlay buttons); both bases are 32 rows lower in the game's code, so
+// that the block sits against the information panel's bottom edge as the game has it (2 rows above it). Auto Defend
+// (18 x 28 at (0x46 + 86, base + 6)) is drawn 48 rows high, as tall as the three buttons beside it: its pictures'
+// rows 2 and 25 are plain, so each is repeated 10 more times (the helmet, rows 4..22, in the middle, not scaled), and
+// its record's height is 48 (clicked and hovered over the same rows). Not while its state is 2 (the game draws
+// nothing then).
+constexpr int kMilitaryCategory = 8;
+constexpr int kAutoDefendCol = 0x46 + 86, kAutoDefendW = 18, kAutoDefendH = 28, kAutoDefendTallH = 48;
+constexpr int kAutoDefendRowA = 2, kAutoDefendRowB = 25, kAutoDefendRepeat = 10;
+// Auto Defend's first row on screen (the game's place, before the column is moved up) for n overlay buttons.
+int AutoDefendTop(int overlayButtons);
+// The row of the game's 28 that row r (0..47) of the tall button shows.
+int AutoDefendSourceRow(int r);
+// The 18 x 28 drawn at `at` (pitch pixels a row) made 48 rows high in place.
+void StretchAutoDefend(Px *at, int pitch);
+
+// Overview (category 10): up to 8 requests (the game lists 3 there, 8 in the City Overview report, whose input also
+// reads 8), each one clicked as the game's first 3 (its rows table 0x65b878 has 3 records with the report's table
+// right after it, so ours has 8). The rows' records (0x1c bytes, as buttons_mouse_over 0x432300 and
+// buttons_handle_click 0x4321e0 take them): x1, y1, x2, y2 (short), the actions at 8 and 0xc, the request's index at
+// 0x14. Hovered request k (from 1) is hover number 0x63f + k; balloon_help_button_text has a text only for 0x640..0x642
+// (0xc1 + request_tip_kind(k - 1)), ours the others up to the 8th.
+constexpr int kMaxRequests = 8, kGameRequests = 3;
+constexpr int kRequestRowSize = 0x1c, kRequestRowH = 20, kRequestRowIndex = 0x14;
+constexpr int kFirstRequestHover = 0x640, kRequestHoverBase = 0x63f, kRequestTipText = 0xc1;
+// The requests listed and clicked (the game's min(count, 3) with 8).
+int RequestRows(int count);
+// The request rows' table: 8 records like the game's first (`first`), each kRequestRowH lower with its own index.
+void RequestTable(const unsigned char *first, unsigned char *out);
+// A hover number of a request beyond the game's 3 (up to the 8th): true, and its index from 0.
+bool ExtraRequest(int hover, int *index);
+
+// The City Overview report's tooltip (balloon_help_draw 0x4f6ba0): on the report screen the game puts it at the
+// mouse's y - 0x40 (the tooltip's mouse row 0xf2a72c), and from dialog_offset_y + 0x1b0 on at that row, so that it
+// covers the title above the first request and the row under the mouse from the 6th. For the report's requests
+// (sidebar_dialog 0xd, hover 0x6a4..0x6ab) it is put below the cursor as on the city screen: while the game draws it,
+// the row it reads is the mouse's + kReportTipRow and dialog_offset_y kReportTipOffset more, so that its rule gives
+// the mouse's y + 40.
+constexpr int kCityOverviewReport = 0xd, kFirstReportRequest = 0x6a4, kLastReportRequest = 0x6ab;
+constexpr int kReportTipRow = 0x68, kReportTipOffset = 0x200;
+bool ReportRequestTip(int screen, int dialog, int hover);
+
+// ---- The world map's sidebar ----
+//
+// The picture's frame is not at the same place on every sidebar (Zeus's city and world map sidebars: rows 604..761;
+// Poseidon's city sidebar 610..755, Poseidon's world map sidebar 614..759; Poseidon's city picture 1 px right of the
+// world map's). Which one it is: the frame's top row, found on the sidebar as the game drew it: the first dark row of
+// column 93 from row 600 (the frame's dark line, blue <= 13 of 31; the plain blue above it is 16 or more); another
+// row, or none by row 630: as Zeus's.
+struct Picture {
+    int frameTop, frameH, dx;
+};
+constexpr int kFrameColumn = 93, kFrameSearchTop = 600, kFrameSearchLast = 630;
+int FrameTop(const Px *sidebar, int pitch, int height);
+Picture PictureOf(int frameTop);
+
+// The world and campaign map sidebar (Zeus_Interface entry 1600 or Poseidon's) laid out as the city's side panel:
+// Back to City and the question mark (their table's y + 168, the game's code) on the row of the city sidebar's check,
+// gem and globe, and the picture up above them. Done right after the game draws the sidebar's picture, before its
+// buttons and texts: rows 563..566 stay (they continue the marble above); the frame (columns 11..180 of its rows)
+// moves up to start at row 567, the gold beaded edge (columns 0..10) and the bevel right of it (181..185) as drawn;
+// below it down to 767 (columns 11..185) the rows under the frame (its shadow, frameLast + 1..767) mirrored back and
+// forth, the same darker marble all the way (the lighter rows that were under the buttons would show as a lighter
+// patch). Every seam then has on its two sides rows that the game drew next to each other, or the frame's own edge.
+//
+// Poseidon's world map sidebar has the same rows as Zeus's above its picture, but its frame is 1 px right (columns
+// 12..181) and the stone around and under the frame is darker, which shows against the lighter columns beside the
+// beaded edge. There the frame is moved with its own columns, and everything else in rows 567..767 from column 11 on
+// (column 11, the columns right of the frame, the rows under it) is the stone under Zeus's frame (Zeus_Interface entry
+// 1600, rows 762..767) mirrored back and forth from row 567 (without it: Poseidon's own rows under its frame, as on
+// Zeus's sidebar).
+constexpr int kWorldKeepEnd = 567, kWorldEdgeW = 11, kWorldFrameW = 170;
+constexpr int kWorldButtonShift = 168; // Back to City 570 -> 738, the question mark 572 -> 740
+constexpr int kZeusWorldFrameTop = 604;
+constexpr int kStoneTop = 762, kStoneRows = 6; // entry 1600's rows under its frame (186 wide)
+// The frame's first column: Zeus's 11, Poseidon's world map's 12.
+int WorldFrameLeft(const Picture &p);
+// Where a pixel of the laid-out sidebar comes from (sidebar column, row), the frame found at frameTop (its last row
+// frameTop + frameH - 1): the sidebar's own row, a row of the stone (0..kStoneRows - 1; only with `stone`), or as drawn.
+struct WorldSource {
+    enum Kind { Drawn, Own, Stone } kind;
+    int row;
+};
+WorldSource WorldSourceOf(int col, int y, const Picture &p, bool stone);
+// The sidebar on screen (`sidebar`: its first pixel at its left edge and row 0, `pitch` pixels a row, 768 rows or more)
+// laid out as above; `stone`: entry 1600's rows 762..767 (kSidebarW x kStoneRows, row by row), or nullptr. Returns
+// the frame's top row as found.
+int LayOutWorldSidebar(Px *sidebar, int pitch, int height, const Px *stone);
+
+// A 5-byte `call target` at `at` (both as the running image has them).
+void CallBytes(unsigned long at, unsigned long target, unsigned char out[5]);
 
 // The messages drawn in the box (their index in the game's list and their rows), for a click on one of them.
 class MessageList {

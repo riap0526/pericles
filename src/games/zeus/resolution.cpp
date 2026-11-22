@@ -73,6 +73,7 @@
 #include "core/ui/info_window.h"
 #include "games/zeus/scroll.h"
 #include "games/zeus/side_panel.h"
+#include "games/zeus/side_panel_layout.h"
 #include "games/zeus/timing.h"
 #include "games/zeus/zoom.h"
 
@@ -647,40 +648,17 @@ constexpr Edge kCityEdge{11, 640, true};   // the city sidebar's red edge (entry
 constexpr Edge kWorldEdge{11, 470, false}; // the world map sidebar's gold beaded edge (entry 1600)
 
 // The picture's frame is not at the same place on every sidebar (measured on the screenshots of two test
-// builds): Zeus's city and world map sidebars: rows 604..761 (158 rows), the same picture; Poseidon's city sidebar:
-// rows 610..755, Poseidon's world map sidebar: rows 614..759 (146 rows each), and the world map's picture 1 px right
-// of the city's (its frame 1 px wider on the right). The frame is placed in the 168 rows at the screen's bottom one row
-// above the middle: (168 - height) / 2 - 1 rows below the inset panel -- 4 for Zeus's (the frame where the game has
-// it, 600 -> the bottom) and 10 for both of Poseidon's (as the game has the city's); and Poseidon's city picture is
-// moved 1 px right (its left frame line then 1 px right of the world map's). Which sidebar it is: the frame's top row,
-// found on the screen as the game drew it: the first dark row of column 93 from row 600 (the frame's dark line, blue
-// <= 13 of 31; the plain blue above it is 16 or more); another row (or none by row 630): as Zeus's.
-constexpr int kFrameColumn = 93, kFrameLast = 630;
-
-struct Picture {
-    int frameTop, frameH, dx;
-};
-constexpr Picture kPictures[] = {{604, 158, 0}, {610, 146, 1}, {614, 146, 0}};
-
-Picture PictureOf(int frameTop)
-{
-    for (const Picture &p : kPictures) {
-        if (p.frameTop == frameTop) {
-            return p;
-        }
-    }
-    return kPictures[0];
-}
+// builds; games/zeus/side_panel_layout finds which one it is, shared with the side panel's world map sidebar). The
+// frame is placed in the 168 rows at the screen's bottom one row above the middle: (168 - height) / 2 - 1 rows below
+// the inset panel -- 4 for Zeus's (the frame where the game has it, 600 -> the bottom) and 10 for both of Poseidon's
+// (as the game has the city's); and Poseidon's city picture is moved 1 px right (its left frame line then 1 px right of
+// the world map's).
+using zeus::side_panel_layout::Picture;
+using zeus::side_panel_layout::PictureOf;
 
 int FrameTop(const core::display::Surface16 &s, int x)
 {
-    for (int y = kPictureTop; y <= kFrameLast && y < s.h; ++y) {
-        const WORD p = reinterpret_cast<const WORD *>(s.px + static_cast<size_t>(y) * s.pitch)[x + kFrameColumn];
-        if ((p & 0x1f) <= 13) {
-            return y;
-        }
-    }
-    return kPictures[0].frameTop;
+    return zeus::side_panel_layout::FrameTop(reinterpret_cast<const WORD *>(s.px) + x, s.pitch / 2, s.h);
 }
 constexpr int kGroupInset = 0x84, kGroupStrip = 0x62; // the 800x600 strip: sidebar_draw's 800 branch (entry 1234)
 constexpr int kMarbleEntry = 1232, kMarbleX = 50, kMarbleY = 30, kMarbleW = 136, kMarbleH = 390;
@@ -781,6 +759,29 @@ void Plain(const core::display::Surface16 &s, const RECT &area, core::diag::Rest
     r.Undo();
 }
 
+// Below 768 on the world map's sidebar laid out by Pericles's side panel (its buttons on the bottom row of the 768
+// layout, the picture above them): the gold beaded edge (columns 0..10 of rows 470..529 repeated), the plain row 469
+// beside it, the bevel on the right (columns 183..185 of rows 470..529) and an inset panel between them (172 wide), as
+// the city's side panel has it below 768.
+constexpr int kWorldPlainRow = 469, kWorldInsetW = 172, kWorldBevelX = 183;
+
+void WorldBelow(const core::display::Surface16 &s, int x, int h, core::diag::Restore &r)
+{
+    const int band = kWorldEdge.bandTop;
+    core::display::RepeatRows(s, RECT{x, band, x + kWorldEdge.w, band + 60}, kBackdropH, h);
+    core::display::RepeatRows(s, RECT{x + kWorldEdge.w, kWorldPlainRow, x + kWorldBevelX, kWorldPlainRow + 1},
+                              kBackdropH, h);
+    core::display::RepeatRows(s, RECT{x + kWorldBevelX, band, x + kSidebarWidth, band + 60}, kBackdropH, h);
+    const RECT inset{x + kWorldEdge.w, kBackdropH, x + kWorldEdge.w + kWorldInsetW, h};
+    int base = GroupImage(kGroupInset);
+    if (base < 0) {
+        Plain(s, inset, r);
+    }
+    else {
+        core::display::InsetPanel(inset, &DrawInsetTile, &base); // lower than its two edges: the plain row stays
+    }
+}
+
 void DrawFiller(core::diag::Restore &r, const Edge &edge)
 {
     const core::display::Surface16 s = Screen();
@@ -796,6 +797,10 @@ void DrawFiller(core::diag::Restore &r, const Edge &edge)
     }
     if (h <= kBackdropH || (&edge == &kCityEdge && zeus::side_panel::Active())) {
         return; // Pericles's side panel lays out its rows below 768 itself (no picture)
+    }
+    if (&edge == &kWorldEdge && zeus::side_panel::WorldLayout()) {
+        WorldBelow(s, x, h, r); // the picture is above the buttons there: not moved
+        return;
     }
     const int pictureY = h - kPictureH;
     const Picture pic = PictureOf(FrameTop(s, x));

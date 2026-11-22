@@ -409,6 +409,8 @@ namespace zeus::side_panel { // games/zeus/side_panel: its own test (test_side_p
 void BackdropDrawing(bool) {}
 void ArmyBackdropDrawn() {}
 bool Active() { return false; }
+bool g_worldLayout = false; // the world map sidebar laid out as Pericles's side panel has it
+bool WorldLayout() { return g_worldLayout; }
 } // namespace zeus::side_panel
 
 namespace {
@@ -4341,6 +4343,21 @@ void SidebarFiller()
     Check(DrawsOf(inset + 0, x + 11, 600) == 1 && DrawsOf(inset + 48, x + 186 - 16, pictureY - 16) == 1 &&
               DrawsOf(strip, 1920, 0) == 0 && DrawsOf(strip, 1678, 30) == 0,
           "... the inset panel right of the edge; nothing right of the sidebar, no city gap on the world map");
+    // Laid out by Pericles's side panel (its buttons on the bottom row of the 768 layout, the picture above them):
+    // the picture not moved; below 768 the gold edge, the plain row 469, the bevel and an inset panel 172 wide.
+    zeus::side_panel::g_worldLayout = true;
+    g_cityLayout.draws = 0;
+    Res<Tick_fn>("world_map_sidebars")();
+    Check(PixelAt(x + 50, 700) == 700 && PixelAt(x + 185, 767) == 767 && PixelAt(x + 50, pictureY) == 469 &&
+              PixelAt(x + 182, 1079) == 469,
+          "laid out by the side panel: the picture where the game drew it, the plain row 469 below 768");
+    Check(PixelAt(x, 768) == 470 && PixelAt(x + 10, 827) == 529 && PixelAt(x + 3, 828) == 470 &&
+              PixelAt(x + 183, 768) == 470 && PixelAt(x + 185, 1079) == 470 + (1079 - 768) % 60,
+          "... the gold edge (columns 0..10) and the bevel (183..185) from rows 470..529 down to the bottom");
+    Check(DrawsOf(inset + 0, x + 11, 768) == 1 && DrawsOf(inset + 6, x + 183 - 16, 768) == 1 &&
+              DrawsOf(inset + 48, x + 183 - 16, 1080 - 16) == 1 && DrawsOf(inset + 0, x + 11, 600) == 0,
+          "... the inset panel (11, 768) 172 wide down to the bottom, none above 768");
+    zeus::side_panel::g_worldLayout = false;
     // The editors' sidebars: the same filler on their own pictures (the city's red edge, the frame from 604).
     using EditorSidebar_fn = void(__fastcall *)(void *, void *);
     Thunk(0x51e6c0, reinterpret_cast<void *>(&FakeEditorCitySidebar));
