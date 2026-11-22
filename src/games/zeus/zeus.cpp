@@ -24,6 +24,7 @@
 #include "games/zeus/resolution.h"
 #include "games/zeus/scroll.h"
 #include "games/zeus/scroll_arrows.h"
+#include "games/zeus/side_panel.h"
 #include "games/zeus/game_menu.h"
 #include "games/zeus/painter.h"
 #include "games/zeus/site.h"
@@ -124,7 +125,7 @@ bool ApplyResolution(int, const char *, bool initial)
 extern "C" void zeus_register_settings(void)
 {
     zeus::timing::RegisterSettings(); // [gameplay] keep_speed, full_speed, simulate_while_scrolling
-    zeus::diag::RegisterSettings();   // [debug] draw_census
+    zeus::diag::RegisterSettings();   // retires [debug] draw_census
     zeus::state_check::RegisterSettings(); // [debug] state_check
     zeus::intro::RegisterSettings();       // [ui] intro_movie
     zeus::resolution::RegisterSettings();  // [ui] info_window
@@ -134,6 +135,7 @@ extern "C" void zeus_register_settings(void)
     zeus::city_picture::RegisterSettings(); // [ui] city_picture_key, minimap_picture_key, minimap_picture_scale
     zeus::sound::RegisterSettings(); // [audio] master_volume, master_sound, background_sound, ambient_sounds
     zeus::keys::RegisterSettings();  // [keys], one setting per action
+    zeus::side_panel::RegisterSettings(); // [ui] side_panel
     // The settings file this version ships: an older file gets its descriptions.
     core::settings::SetTemplate(zeus::kIniTemplate);
 }
@@ -232,11 +234,10 @@ extern "C" void zeus_attach(void)
     // game_menu, whose confirmations the File menu uses, and city_picture, whose screenshots it adds).
     zeus::options_entry::Attach();
     zeus::scroll_arrows::Attach(); // held scroll arrows at the original pace
+    zeus::side_panel::Attach();    // [ui] side_panel: all its hooks or none
     // Screenshot file names and the present mode log's lines carry game_screen 0xf2a6dd (one byte, reads only).
-    // The tag is asked for when a screenshot is taken (game thread): the draw census sums up the next frame too.
     core::capture::SetTagProvider([](char *out, size_t size) {
         std::snprintf(out, size, "screen_0x%02x", *reinterpret_cast<volatile unsigned char *>(0xf2a6dd));
-        zeus::diag::ScreenshotTaken();
     });
     core::diag::present_mode::SetScreenProvider(
         [] { return static_cast<int>(*reinterpret_cast<volatile unsigned char *>(0xf2a6dd)); });

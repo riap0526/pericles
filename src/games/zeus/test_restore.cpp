@@ -27,6 +27,9 @@
 //                           switching off, settings refused
 //   mode_screens        a mode change on the help closes it first (not with choice buttons); on the mission goals
 //                           the city is drawn behind once as screen 1 and the goals drawn again; other screens neither
+//   mode_screens_help_fault  a fault in the help's close: the feature off, the game's own mode change still made
+//   mode_screens_draw_fault  a fault drawing the city behind the goals: screen and hovers put back, the feature off
+//   mode_screens_no_put_back without timing's put-back: no city behind the goals (logged), the feature stays on
 //   viewport_layout             the sidebar (where the open-sidebar columns end) and both city viewports at 1920x1080 and
 //                           1024x900; the game's own at 1024x768
 //   layout_fault        viewport_init faults: the 1024 layout at once, the sidebar at the game's 838, the game's
@@ -392,18 +395,14 @@ extern "C" unsigned core_timer_resolution_us(void) { return 1000; }
 extern "C" void core_timer_end(void) {}
 
 namespace zeus::diag { // games/zeus/diag: logs only (not under test)
-void FrameBegin() {}
 void FrameEnd() {}
-void CensusForReport() {}
 void CityRender(int, int, int) {}
-void CityDrawing(bool) {}
 void Describe(char *out, std::size_t size)
 {
     std::snprintf(out, size, "test");
 }
 bool GameMainMatches() { return true; }
 bool PicturesHooked() { return true; }
-bool ImageDrawHooked() { return false; }
 } // namespace zeus::diag
 
 namespace {
@@ -1461,6 +1460,9 @@ int g_helpCloses = 0, g_goalsBackgrounds = 0, g_goalsDraws = 0, g_goalsDrawScree
 void __cdecl FakeHelpClose()
 {
     ++g_helpCloses;
+    if (Fires("help_close")) {
+        Fault();
+    }
     At<unsigned char>(aGameScreen) = 0x01; // back to the screen it was opened from
 }
 void __cdecl FakeGoalsBackground(int)
@@ -1472,28 +1474,47 @@ void __cdecl FakeGoalsScreenDraw()
 {
     ++g_goalsDraws;
     g_goalsDrawScreen = At<unsigned char>(aGameScreen);
+    if (Fires("goals_draw")) {
+        Fault();
+    }
 }
 
-void ModeScreens()
+// The fakes at the three sites, timing's put-back (or not), the city screen; false when the copy buffer is missing.
+bool SetupModeScreens(bool putBack)
 {
     SetupResolution();
     Thunk(0x4f51e0, reinterpret_cast<void *>(&FakeHelpClose));
     Thunk(0x513b30, reinterpret_cast<void *>(&FakeGoalsBackground));
     Thunk(0x514020, reinterpret_cast<void *>(&FakeGoalsScreenDraw));
-    if (!zeus::timing::PrepareForTest()) {
+    if (putBack && !zeus::timing::PrepareForTest()) {
         Check(false, "the copy buffer");
-        return;
+        return false;
     }
     ToCity();
+    return true;
+}
+
+// A new fixed resolution from the settings, and the loop that changes the mode.
+void ModeChangeTo(int w, int h)
+{
     core_config c = *core_config_get();
     c.resolution = CORE_RESOLUTION_FIXED;
-    const auto changeTo = [&](int w, int h) {
-        c.resolution_w = w;
-        c.resolution_h = h;
-        zeus::resolution::SettingsChanged(&c);
-        Sleep(510); // the mode change is tried at most every 500 ms
-        zeus::resolution::OnLoop();
-    };
+    c.resolution_w = w;
+    c.resolution_h = h;
+    zeus::resolution::SettingsChanged(&c);
+    Sleep(510); // the mode change is tried at most every 500 ms
+    zeus::resolution::OnLoop();
+}
+
+constexpr char kModeScreensOff[] =
+    "feature \"help and mission goals at a mode change (games/zeus/resolution)\" switched off";
+
+void ModeScreens()
+{
+    if (!SetupModeScreens(true)) {
+        return;
+    }
+    const auto changeTo = [](int w, int h) { ModeChangeTo(w, h); };
     // The help without choice buttons: closed first, then the game's mode change.
     At<unsigned char>(aGameScreen) = 0x05;
     At<short>(0xef8cba) = 0;
@@ -1521,6 +1542,66 @@ void ModeScreens()
     At<unsigned char>(aGameScreen) = 0x07;
     changeTo(1920, 1080);
     Check(g_helpCloses == 1 && g_goalsDraws == 1, "a sidebar dialog: nothing more");
+}
+
+// A fault in the help's close: the feature off (logged), the game's own mode change still made; from then on neither
+// the help nor the goals are touched (the game's own behavior).
+void ModeScreensHelpFault()
+{
+    if (!SetupModeScreens(true)) {
+        return;
+    }
+    At<unsigned char>(aGameScreen) = 0x05;
+    At<short>(0xef8cba) = 0;
+    const int switches = g_res.switches;
+    g_fault = "help_close";
+    ModeChangeTo(1280, 1024);
+    Check(g_helpCloses == 1 && LogContains(kModeScreensOff), "a fault in help_close: the feature off (logged)");
+    Check(g_res.switches == switches + 1, "... the game's own mode change still made");
+    At<unsigned char>(aGameScreen) = 0x05;
+    ModeChangeTo(1600, 900);
+    Check(g_helpCloses == 1 && At<unsigned char>(aGameScreen) == 0x05, "then the help is left as the game leaves it");
+    At<unsigned char>(aGameScreen) = 0x3b;
+    ModeChangeTo(1440, 900);
+    Check(g_goalsDraws == 0, "... and no city behind the goals");
+}
+
+// A fault while the city is drawn behind the goals: the goals' screen and hover put back, the feature off (logged).
+void ModeScreensDrawFault()
+{
+    if (!SetupModeScreens(true)) {
+        return;
+    }
+    At<unsigned char>(aGameScreen) = 0x3b;
+    At<int>(0x781844) = 7;
+    At<int>(0x781840) = 9;
+    const int switches = g_res.switches;
+    g_fault = "goals_draw";
+    ModeChangeTo(1440, 900);
+    Check(g_res.switches == switches + 1 && g_goalsDraws == 1 && LogContains(kModeScreensOff),
+          "a fault in screen_draw behind the goals: the feature off (logged)");
+    Check(At<unsigned char>(aGameScreen) == 0x3b && At<int>(0x781844) == 7 && At<int>(0x781840) == 9 &&
+              At<char>(0xf2a6ce) == 1,
+          "... the goals' screen and both hovers put back, the goals drawn again");
+    ModeChangeTo(1920, 1080);
+    Check(g_goalsDraws == 1, "then no city behind the goals");
+}
+
+// Without timing's put-back (no copy buffer): the city is not drawn behind the goals (logged once), the goals are
+// drawn again as the game draws them.
+void ModeScreensNoPutBack()
+{
+    if (!SetupModeScreens(false)) {
+        return;
+    }
+    At<unsigned char>(aGameScreen) = 0x3b;
+    const int switches = g_res.switches;
+    ModeChangeTo(1440, 900);
+    Check(g_res.switches == switches + 1 && g_goalsDraws == 0 && At<unsigned char>(aGameScreen) == 0x3b &&
+              At<char>(0xf2a6ce) == 1,
+          "no put-back: the mode change, no city behind the goals, the goals drawn again");
+    Check(LogContains("the city behind the mission goals is not drawn") && !LogContains(kModeScreensOff),
+          "... logged, the feature stays on");
 }
 
 void LayoutFault()
@@ -6411,6 +6492,9 @@ const Scenario kScenarios[] = {
     {"mode_size", &ModeSizeScenario},
     {"mode_size_fault", &ModeSizeFault},
     {"mode_screens", &ModeScreens},
+    {"mode_screens_help_fault", &ModeScreensHelpFault},
+    {"mode_screens_draw_fault", &ModeScreensDrawFault},
+    {"mode_screens_no_put_back", &ModeScreensNoPutBack},
     {"viewport_layout", &ViewportLayout},
     {"layout_fault", &LayoutFault},
     {"narrow_fault", &NarrowFault},

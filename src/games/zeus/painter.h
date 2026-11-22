@@ -8,7 +8,7 @@
 
 namespace zeus::painter {
 
-// From zeus_attach, after resolution (image_draw's bytes are checked there, or hooked by diag's draw census). False:
+// From zeus_attach, after resolution (image_draw's bytes are checked here too). False:
 // a site does not match (logged); nothing of ours that draws with it is available.
 bool Attach();
 

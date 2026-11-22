@@ -3,7 +3,6 @@
 #include "core/display/tile_layout.h"
 #include "core/options/menu.h"
 #include "core/log.h"
-#include "games/zeus/diag.h"
 #include "games/zeus/site.h"
 
 // Evidence (Zeus.exe 2.1.4.0, SHA256 382bcd28...0a57):
@@ -19,7 +18,7 @@ namespace tl = core::display::tiles;
 // +4 is the group's first image in the pak; image_draw's id adds pak << 14.
 const Site kImageGroup{"image_group_get", 0x40fcf0, {0x8b, 0x44, 0x24, 0x04, 0x8b, 0x91, 0x38, 0xcc}};
 // image_draw 0x5acf50: __thiscall (ecx = the image manager 0x12aebe8), 6 arguments (id, x, y, 0, 0, 0), ret 0x18.
-// Checked by resolution (or hooked by diag's draw census, which changes its first bytes): see Attach.
+// Called, not hooked: its first bytes are checked in Attach.
 const Site kImageDraw{"image_draw", 0x5acf50, {0x81, 0xec, 0x14, 0x01, 0x00, 0x00, 0x8b, 0x84}};
 // text_draw 0x508800: __cdecl (text, x, y, font, 0, 0), the caller pops (0x42504d..0x425069); the first bytes are
 // Emperor's text_draw's (its push ecx only keeps a local).
@@ -182,8 +181,7 @@ ZeusPainter g_painter;
 
 bool Attach()
 {
-    // image_draw: checked here, or (draw census on) already checked and hooked by games/zeus/diag.
-    if (!Matches(kImageDraw) && !zeus::diag::ImageDrawHooked()) {
+    if (!Matches(kImageDraw)) {
         core_log("painter: image_draw at 0x%lx does not match; our windows are not available", kImageDraw.address);
         return false;
     }

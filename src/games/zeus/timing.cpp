@@ -319,7 +319,6 @@ void __cdecl GameFrame_detour()
     zeus::fullscreen::OnLoop(); // the front-end screens framed (the menus pass here too)
     zeus::display_options::OnLoop(); // the Display options dialog closed without OK: the settings put back
     DecideCountingFrame();
-    zeus::diag::FrameBegin();
     core::diag::GameFrameBegin(); // frame check: presents within one frame
     core::diag::env::NoteCore(core::diag::env::Thread::Game);
     // A city frame of a second or more is sampled (other screens load files in one frame).
@@ -351,7 +350,6 @@ void __cdecl GameFrame_detour()
         zeus::scroll::SaveCityBuffer(report);
         zeus::diag::Describe(state, sizeof(state));
         core_log("report #%d: %s", report, state);
-        zeus::diag::CensusForReport();
     }
     const int speed = *kGameSpeed;
     if (speed != g_lastSpeed) {
@@ -692,9 +690,7 @@ template <typename F> bool WithDrawnState(F draw, bool force = false)
     }
     ++g_renderDepth;
     t = perf::Now();
-    zeus::diag::CityDrawing(true);
     draw();
-    zeus::diag::CityDrawing(false);
     perf::Add(kRenderPhase, perf::Now() - t);
     --g_renderDepth;
     if (check) {

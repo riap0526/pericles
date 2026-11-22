@@ -71,7 +71,6 @@
 #include "core/scroll/zoom.h"
 #include "core/settings/settings.h"
 #include "core/ui/info_window.h"
-#include "games/zeus/diag.h"
 #include "games/zeus/scroll.h"
 #include "games/zeus/timing.h"
 #include "games/zeus/zoom.h"
@@ -103,8 +102,8 @@ const Site kTopBarDraw{"top_bar_draw", 0x59ebe0, {0xa1, 0xb4, 0xa6, 0xf2, 0x00, 
 // image_group_get: __thiscall on the image groups 0x12bc82c, 1 argument (group), ret 4; returns the group's entry,
 // whose +4 is the first image (+ 0x4000 = its id for image_draw), as top_bar_draw and sidebar_draw_units use it.
 const Site kImageGroup{"image_group_get", 0x40fcf0, {0x8b, 0x44, 0x24, 0x04, 0x8b, 0x91, 0x38, 0xcc}};
-// image_draw: __thiscall on the image manager 0x12aebe8, 6 arguments (id, x, y, 0, 0, 0), ret 0x18 (games/zeus/diag
-// counts it for the draw census). image_get_size: __thiscall on the same, (id, int *w, int *h), ret 0xc, al = found.
+// image_draw: __thiscall on the image manager 0x12aebe8, 6 arguments (id, x, y, 0, 0, 0), ret 0x18 (called, not
+// hooked). image_get_size: __thiscall on the same, (id, int *w, int *h), ret 0xc, al = found.
 const Site kImageDraw{"image_draw", 0x5acf50, {0x81, 0xec, 0x14, 0x01, 0x00, 0x00, 0x8b, 0x84}};
 const Site kImageSize{"image_get_size", 0x5aceb0, {0x53, 0x56, 0x8b, 0x74, 0x24, 0x0c, 0x8b, 0x5c}};
 // fill_rect: __cdecl (x, y, w, h, colour), ret. city_bottom_and_sidebar 0x58e2e0 blanks the screen's bottom rows with
@@ -178,7 +177,9 @@ const Site kHelpClose{"help_close", 0x4f51e0, {0xa0, 0xb0, 0x8c, 0xef, 0x00, 0xc
 const Site kScreenBackground{"screen_draw_background", 0x513b30, {0x8b, 0x44, 0x24, 0x04, 0xb1, 0x01, 0x85, 0xc0}};
 const Site kScreenDraw{"screen_draw", 0x514020, {0x33, 0xc0, 0x53, 0xa0, 0xdd, 0xa6, 0xf2, 0x00}};
 const Var<short> kHelpChoices{0xef8cba};
-const Var<int> kHover{0x781844}, kHover2{0x781840}; // screen_draw_background keeps both around its drawing
+// The two hover variables: screen_draw_background reads both, clears them for a drawing call and puts them back;
+// screen_draw does the same with the first one.
+const Var<int> kHover{0x781844}, kHover2{0x781840};
 constexpr unsigned char kScreenHelp = 0x05, kScreenGoals = 0x3b, kScreenCity = 0x01;
 core::diag::Feature g_modeScreens{"help and mission goals at a mode change (games/zeus/resolution)"};
 bool g_modeScreensOk = false; // its sites matched
@@ -1151,9 +1152,7 @@ void AttachCityLayout()
         core_log("zeus: resolution: the top bar values' compare at 0x%lx does not match; left as the game has it",
                  static_cast<unsigned long>(kTopValuesCompare));
     }
-    // image_draw: compared here, or (draw census on) already compared and hooked by games/zeus/diag, which attaches
-    // first and so has changed its bytes.
-    const bool draw = Matches(kImageDraw) || zeus::diag::ImageDrawHooked();
+    const bool draw = Matches(kImageDraw);
     if (!(draw && Matches(kTopBarDraw) && Matches(kImageGroup) && Matches(kImageSize) &&
           Install(kTopBarDraw, &TopBarDraw_detour, o_TopBarDraw))) {
         core::diag::Disable(g_bars, "its sites do not match or the hook could not be installed");

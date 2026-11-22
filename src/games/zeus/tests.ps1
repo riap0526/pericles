@@ -6,11 +6,15 @@
 #               fire at 90%, 100% capped and 50%, the clock's wrap-around)
 #   test_restore the failure fallbacks of the game layer: real detours on a copy of the game's address range with
 #               fake game functions that fault on purpose; one child process per scenario (no DLL)
+#   test_side_panel games/zeus/side_panel: the sidebar's names as the game's tooltips (groups, Poseidon's names, the
+#               report screen, text 0), the cost under the build buttons and its redraw, all hooks or none, a fault
+#               switching it off (no DLL)
 #   test_sg3    core/assets/sg3 on the player's own DATA\Zeus_Interface.sg3, if present (no DLL; nothing
 #               written)
 Run 'test_debug_log' 'emulated' @()
 Run 'test_anim_clock' 'emulated' @()
 Run 'test_restore' 'emulated' @()
+Run 'test_side_panel' 'emulated' @()
 # The framing's panel tiles from the player's own DATA\Zeus_Interface.sg3 (version 213; run_tests.ps1 -GamePath):
 # they must decode exactly as the Python reader decodes them (hashes from the Python reader, GOG Zeus 2.1.4.0;
 # nothing written).

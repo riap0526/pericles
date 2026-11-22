@@ -43,6 +43,8 @@ set(GAME_SOURCES
     src/games/zeus/options_entry.cpp
     src/games/zeus/options_original.cpp
     src/games/zeus/display_options.cpp
+    src/games/zeus/side_panel.cpp
+    src/games/zeus/side_panel_layout.cpp
 )
 
 # The offline tests of this game layer (run by src/games/zeus/tests.ps1 through proxy/ddraw/run_tests.ps1).
@@ -55,6 +57,16 @@ macro(game_add_tests)
     add_executable(test_anim_clock src/games/zeus/test_anim_clock.cpp src/games/zeus/anim_clock.cpp)
     target_include_directories(test_anim_clock PRIVATE src)
     target_link_options(test_anim_clock PRIVATE -static)
+    # games/zeus/side_panel: the sidebar's names as tooltips and the cost under the build buttons, the rules and the
+    # real detours on a copy of the game's address range with fake game functions (no game, no DLL).
+    add_executable(test_side_panel src/games/zeus/test_side_panel.cpp src/games/zeus/side_panel.cpp
+        src/games/zeus/side_panel_layout.cpp src/core/diag/guard.cpp src/core/log.cpp
+        src/core/settings/settings.cpp src/core/settings/ini_text.cpp src/core/hook/hook.cpp
+        src/core/platform/files.cpp src/core/game.cpp src/core/ui/hotkey.cpp)
+    target_include_directories(test_side_panel PRIVATE src)
+    target_compile_options(test_side_panel PRIVATE -fno-exceptions)
+    target_link_options(test_side_panel PRIVATE -static)
+    target_link_libraries(test_side_panel PRIVATE minhook)
 
     # The failure fallbacks of the game layer: the real detours of games/zeus on a copy of the game's address range
     # with fake game functions (each feature that changes the game's state adds a scenario). The

@@ -63,6 +63,12 @@ std::vector<co::Page> BuildPages()
         general.categories.push_back(std::move(c));
     }
     {
+        // Pericles only: Yongle's side panel is Emperor's own.
+        co::Category c{"Interface", {}};
+        Add(c.rows, "ui", "side_panel");
+        general.categories.push_back(std::move(c));
+    }
+    {
         co::Category c{"Speed", {}};
         if (!sr::Dry()) go::SpeedRows(c.rows, *kEditorMode != 1);
         Add(c.rows, "gameplay", "keep_speed");
