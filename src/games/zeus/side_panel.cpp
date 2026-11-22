@@ -6,6 +6,7 @@
 #include "games/zeus/side_panel_layout.h"
 
 #include "core/assets/sg3.h"
+#include "core/display/city_layout.h"
 
 #include <cstring>
 #include <cwchar>
@@ -102,11 +103,39 @@ const Site kBuildInput{"sidebar_build_buttons_input", 0x5178a0, {0xa1, 0x34, 0xf
 const Site kButtonsHover{"buttons_hover", 0x431c00, {0x8b, 0x44, 0x24, 0x10, 0x53, 0x55, 0x56, 0x57}};
 const Site kButtonsUpdate{"buttons_update", 0x4319c0, {0x51, 0x53, 0x55, 0x8b, 0x6c, 0x24, 0x1c, 0x56}};
 
+// The box at the bottom: hooked.
+const Site kListDraw{"sidebar_messages_draw", 0x430d80, {0x83, 0xec, 0x18, 0x56, 0x8b, 0xd1, 0x8b, 0x0d}};
+const Site kListInput{"sidebar_messages_input", 0x430ed0, {0x53, 0x55, 0x56, 0x8b, 0xf1, 0xbb, 0x01, 0x00}};
+const Site kMinimapHover{"minimap_hover", 0x405d40, {0xa1, 0x38, 0xa7, 0xf2, 0x00, 0x8b, 0x0d, 0x2c}};
+const Site kArmyContent{"army_sidebar_content_draw", 0x525630, {0xa1, 0x34, 0x18, 0x78, 0x00, 0x83, 0xec, 0x08}};
+const Site kShipContent{"ship_sidebar_content_draw", 0x525c10, {0xa1, 0xf4, 0x57, 0xef, 0x00, 0x53, 0x55, 0x56}};
+const Site kBottomInput{"sidebar_bottom_buttons_input", 0x517de0, {0xa1, 0x34, 0xff, 0x0d, 0x01, 0x6a, 0x0a, 0x6a}};
+const Site kFilter{"message_filter", 0x521970, {0x55, 0x56, 0x57, 0x8b, 0x7c, 0x24, 0x10, 0x85}};
+const Site kCityLoaded{"city_loaded_setup", 0x510ed0, {0xa1, 0x3c, 0xb8, 0xdb, 0x00, 0x83, 0xec, 0x0c}};
+const Site kMessagesClear{"messages_clear", 0x522230, {0xb8, 0x48, 0x38, 0xfd, 0x00, 0x33, 0xd2, 0x66}};
+// Called.
+const Site kMinimapDraw{"minimap_draw", 0x454980, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x6c, 0xa1, 0xe4}};
+const Site kMinimapClick{"minimap_click", 0x405d90, {0x83, 0x3d, 0x1c, 0x18, 0x78, 0x00, 0x01, 0x74}};
+const Site kTextId{"message_text_id", 0x477d60, {0x8b, 0x44, 0x24, 0x04, 0x3d, 0x45, 0x10, 0x00}};
+const Site kTextGet{"message_text_get", 0x466ad0, {0x56, 0x57, 0x8b, 0x7c, 0x24, 0x14, 0xc6, 0x05}};
+const Site kWrapped{"text_draw_wrapped", 0x5090a0, {0x51, 0x53, 0x8b, 0x5c, 0x24, 0x14, 0x55, 0x8b}};
+const Site kCharWidth{"text_char_width", 0x507f20, {0x8b, 0x44, 0x24, 0x04, 0x84, 0xc0, 0x75, 0x03}};
+const Site kImageButtons{"image_buttons_draw", 0x431530, {0x8b, 0x44, 0x24, 0x10, 0x85, 0xc0, 0x0f, 0x8e}};
+const Site kRepeat{"buttons_repeat_update", 0x431c80, {0x53, 0x55, 0x8b, 0x6c, 0x24, 0x18, 0x33, 0xdb}};
+const Site kOpen{"message_open", 0x522bd0, {0x8b, 0x44, 0x24, 0x04, 0x8b, 0x0d, 0xf0, 0x37}};
+const Site kRotateDraw{"sidebar_rotate_draw", 0x517a20, {0x8b, 0x4c, 0x24, 0x04, 0x8b, 0x44, 0x24, 0x08}};
+const Site kImageGroup{"image_group_get", 0x40fcf0, {0x8b, 0x44, 0x24, 0x04, 0x8b, 0x91, 0x38, 0xcc}};
+
 const Site *const kSites[] = {&kUpdate,     &kButtonText,   &kGroup,        &kDraw,         &kNameBar,
                               &kPanelDraw,  &kPanelInput,   &kReportInput,  &kOverviewToggle,
+                              &kListDraw,   &kListInput,    &kMinimapHover, &kArmyContent,  &kShipContent,
+                              &kBottomInput, &kFilter,      &kCityLoaded,   &kMessagesClear,
                               &kScienceNames, &kCost,       &kNumber,       &kImageId,      &kImageDraw,
                               &kOverlayDraw, &kInnerPanel,  &kCategoryDraw, &kBuildDraw,    &kText,
-                              &kOverlayInput, &kCategoryInput, &kBuildInput, &kButtonsHover, &kButtonsUpdate};
+                              &kOverlayInput, &kCategoryInput, &kBuildInput, &kButtonsHover, &kButtonsUpdate,
+                              &kMinimapDraw, &kMinimapClick, &kTextId,      &kTextGet,      &kWrapped,
+                              &kCharWidth,  &kImageButtons, &kRepeat,       &kOpen,         &kRotateDraw,
+                              &kImageGroup};
 constexpr int kSiteCount = static_cast<int>(sizeof(kSites) / sizeof(kSites[0]));
 
 // Bytes changed in the game's code while the side panel is active (put back otherwise).
@@ -131,6 +160,11 @@ const Patch kPatches[] = {
      9,
      {0x83, 0x3d, 0x04, 0x00, 0xfa, 0x00, 0x0a, 0x74, 0x10},
      {0x83, 0x3d, 0x04, 0x00, 0xfa, 0x00, 0x7f, 0x74, 0x10}},
+    // The check, globe and gem buttons' y (543) in the bottom buttons' table and the gem's own record (data): 711,
+    // the row under the box. Their drawing and input (the city's and the army panels') follow the tables.
+    {"the check button's y", 0x63e04a, 2, {0x1f, 0x02}, {0xc7, 0x02}},
+    {"the globe button's y", 0x63e072, 2, {0x1f, 0x02}, {0xc7, 0x02}},
+    {"the gem's y", 0x63e09a, 2, {0x1f, 0x02}, {0xc7, 0x02}},
 };
 #undef TABS_PUSH
 constexpr int kPatchCount = static_cast<int>(sizeof(kPatches) / sizeof(kPatches[0]));
@@ -144,6 +178,32 @@ Int_fn o_PanelDraw = nullptr;
 Int_fn o_PanelInput = nullptr;
 Int_fn o_ReportInput = nullptr;
 Void_fn o_OverviewToggle = nullptr;
+
+// The box: the message box's functions take the message box (0x7815a0) in ecx, nothing on the stack (plain ret);
+// message_filter is __thiscall on the message options (0xf2a760) with the message (ret 4), its answer in eax.
+using List_fn = void(__fastcall *)(void *list, void *);
+using Filter_fn = int(__fastcall *)(void *self, void *, void *message);
+using Units_fn = void(__cdecl *)();
+List_fn o_ListDraw = nullptr;
+List_fn o_ListInput = nullptr;
+Void_fn o_MinimapHover = nullptr;
+Void_fn o_ArmyContent = nullptr;
+Void_fn o_ShipContent = nullptr;
+Int_fn o_BottomInput = nullptr;
+Filter_fn o_Filter = nullptr;
+Void_fn o_CityLoaded = nullptr;
+Void_fn o_MessagesClear = nullptr;
+using MinimapDraw_fn = void(__cdecl *)(int x, int y, int cols, int rows);
+using MinimapClick_fn = int(__cdecl *)(int unused);
+using TextId_fn = int(__cdecl *)(int text);
+using TextGet_fn = void(__cdecl *)(int text, char *to, int size);
+using Wrapped_fn = void(__cdecl *)(const char *text, int x, int y, int w, int font, int flags);
+using CharWidth_fn = int(__cdecl *)(int c, int font);
+using ImageButtons_fn = void(__cdecl *)(int x, int y, void *table, int count);
+using Repeat_fn = int(__cdecl *)(int x, int y, void *table, int count);
+using Open_fn = void(__cdecl *)(int index);
+using RotateDraw_fn = void(__cdecl *)(int x, int y);
+using ImageGroup_fn = BYTE *(__thiscall *)(void *groups, int group);
 
 using Inner_fn = void(__cdecl *)(int x, int y, int cols, int rows);
 using Text_fn = int(__cdecl *)(int group, int text, int x, int y, int w, int font, int flags);
@@ -187,11 +247,37 @@ const Var<int> kPitch{0xf2a698};
 const Var<int> kDdWidth{0xf2a6a0}, kDdHeight{0xf2a69c};
 constexpr DWORD kReportKinds = 0x63e488;
 constexpr DWORD kReportRecord = 0x63dee8;
-constexpr int kRecordSize = 0x28, kRecordState = 0x18, kRecordValue = 0x1c;
+constexpr int kRecordSize = 0x28, kRecordAction = 0x10, kRecordState = 0x18, kRecordValue = 0x1c;
 constexpr int kGroupSidebar = 88, kScienceText = 0x18, kPanelX = 0x32, kPanelCols = 8;
 constexpr int kTopEntry = 1233; // Zeus_Interface: the army panel's picture, 186 wide; its rows 0..24 are the
                                 // city sidebar's without the tabs
 constexpr wchar_t kInterfacePack[] = L"DATA\\Zeus_Interface.sg3"; // next to Zeus.exe
+
+// The box at the bottom.
+constexpr unsigned char kScreenArmy = 0x48, kScreenShip = 0x20;
+constexpr DWORD kList = 0x7815a0;      // sidebar_messages: +0x10 the messages it can show, +0x18 the first one shown,
+constexpr int kListCount = 0x10, kListFirst = 0x18, kListHovered = 0x1c; // +0x1c the mouse on it (the hand cursor)
+constexpr DWORD kArrows = 0x5ed1a8;    // its two arrows (up, down), 0x1c bytes each
+constexpr int kArrowSize = 0x1c;
+const Var<int> kMessageCount{0xfd37f0};
+constexpr DWORD kMessages = 0xfd3848;  // 0x3c bytes each, the text at +0 (short)
+constexpr int kMessageSize = 0x3c;
+const Var<int> kMessageCurrent{0xfd37e4}; // the message whose text is fetched (its values in the text)
+constexpr DWORD kMessageText = 0x916af8;  // city_warning_text, 200 bytes, as the game's message box uses it
+constexpr int kMessageTextSize = 200;
+constexpr DWORD kMessageOptions = 0xf2a760;
+constexpr DWORD kPostAsks = 0x521bc8; // city_message_post's second message_filter call returns here: 1 = Condensed
+const Var<int> kWrapHeight{0xf13a6c};  // text_draw_wrapped adds the rows it took
+const Var<int> kLineHeight{0xf13960};  // text_line_height: text_draw's, for its font
+const Var<int> kMinimapHovered{0x78181c};
+const Var<unsigned char> kMousePressed{0xf2a707};
+constexpr DWORD kImageGroups = 0x12bc82c; // the interface pak's image groups (image_group_get's this)
+constexpr int kGroupInset = 0x84;          // inner_panel_draw's 16 px tiles
+constexpr int kToggleImage = 0x20c;        // the report button's picture (Zeus_Interface entry 1295), +1 hovered
+// minimap_draw's place (0x7d3b08..14: its arguments; 0x7d3b20..34: its rectangle and origin), as minimap_hover and
+// minimap_click read it: the army panel's own minimap at the top and the box's are both drawn there.
+constexpr DWORD kMinimapArgs = 0x7d3b08, kMinimapRect = 0x7d3b20;
+constexpr int kMinimapArgsSize = 16, kMinimapRectSize = 24;
 
 core::diag::Feature g_feature{"side panel (games/zeus/side_panel)"};
 bool g_installed = false;
@@ -217,6 +303,26 @@ struct Top {
 // pressed button by its address).
 alignas(4) BYTE g_titleRecord[kRecordSize];
 bool g_titleRecordSet = false;
+
+// The box at the bottom: what it shows (the minimap first, again for every city started or loaded), the box's inset
+// as laid out (put back before its content on every frame: the messages are text over it), the messages drawn in it,
+// the toggle as a button and the place where the box's minimap was drawn.
+bool g_boxMessages = false;
+struct BoxBackdrop {
+    bool has = false;
+    lay::Backdrop::Where where{};
+    lay::Px px[lay::kBoxW * lay::kBoxH];
+} g_boxBackdrop;
+lay::MessageList g_list;
+int g_lineHeight = 0; // text_line_height after the last message drawn (the box's font)
+bool g_loggedMeasure = false;
+alignas(4) BYTE g_toggleRecord[kRecordSize];
+bool g_toggleRecordSet = false;
+struct MinimapPlace {
+    BYTE args[kMinimapArgsSize], rect[kMinimapRectSize];
+};
+MinimapPlace g_boxMinimap;
+bool g_boxMinimapSet = false;
 
 const char *const kChoices[] = {"pericles", "original"};
 const char *const kChoiceLabels[] = {"pericles (Pericles style)", "original (the game's own side panel)"};
@@ -270,8 +376,11 @@ void SyncPatches()
         *kOverview = 0; // the Info tab: the only one there is now (the game clears it too on a new game and a load)
     }
     g_backdrop.Forget();
+    g_boxBackdrop.has = false;
+    g_boxMinimapSet = false;
     *kScreenRedraw = 1;
-    core_log("side panel: %s", want ? "active (no tabs, the column moved up)" : "the game's own side panel here");
+    core_log("side panel: %s", want ? "active (no tabs, the column moved up, the box at the bottom)"
+                                    : "the game's own side panel here");
 }
 
 // After a fault: the game's own side panel from now on (the feature is off), the screen drawn again.
@@ -309,6 +418,7 @@ lay::Facts ReadFacts(int hover)
     lay::Facts f{};
     f.poseidon = Function<ScienceNames_fn>(kScienceNames)(0);
     f.reportOpen = *kReportOpen != 0;
+    f.boxMessages = g_boxMessages;
     if (lay::BuildButton(hover)) {
         f.buildEnabled = BuildEnabled(hover);
         f.building = BuildingOf(hover);
@@ -610,6 +720,296 @@ void DrawTitle()
                              Font(g_titleHover ? lay::kTitleHoverFont : lay::kTitleFont), 0);
 }
 
+// ---- The box at the bottom ----
+
+// The whole sidebar on the game's drawing buffer (at least the 1024 x 768 layout's rows).
+struct Sidebar16 {
+    lay::Px *px; // the sidebar's first pixel (column 0, row 0)
+    int pitch;   // pixels a row
+    int height;
+    lay::Backdrop::Where where;
+};
+
+bool SidebarOnScreen(Sidebar16 *out)
+{
+    BYTE *px = *kDrawBuffer;
+    const int pitch = *kPitch, w = *kDdWidth, h = *kDdHeight, x = *kSidebarX;
+    if (!px || pitch <= 0 || (pitch & 1) || w <= 0 || h < lay::kLayoutH || pitch < w * 2 || x < 0 ||
+        x + lay::kSidebarW > w) {
+        return false;
+    }
+    out->px = reinterpret_cast<lay::Px *>(px) + x;
+    out->pitch = pitch / 2;
+    out->height = h;
+    out->where = lay::Backdrop::Where{x, w, h, pitch};
+    return true;
+}
+
+void *Images()
+{
+    return At<void>(kImages);
+}
+
+void DrawInsetTile(int k, int x, int y, void *base)
+{
+    Function<ImageDraw_fn>(kImageDraw)(Images(), *static_cast<int *>(base) + k, x, y, 0, 0, 0);
+}
+
+// The game's inset panel of any size (its 16 px tiles, group 0x84 of the interface pak, as inner_panel_draw has them).
+void Inset(const RECT &r)
+{
+    BYTE *entry = Function<ImageGroup_fn>(kImageGroup)(At<void>(kImageGroups), kGroupInset);
+    if (!entry) {
+        return;
+    }
+    int base = *reinterpret_cast<int *>(entry + 4) + 0x4000;
+    core::display::InsetPanel(r, &DrawInsetTile, &base);
+}
+
+// The backdrop has just been drawn (the city's sidebar, or an army panel's): the rows from 512 down laid out again,
+// the box's inset kept for its content's frames.
+void LayOutLowerHalf()
+{
+    Sidebar16 s{};
+    if (!SidebarOnScreen(&s)) {
+        g_boxBackdrop.has = false;
+        return;
+    }
+    lay::LowerHalf(s.px, s.pitch, s.height);
+    const int x = *kSidebarX;
+    Inset(RECT{x + lay::kBoxX, lay::kBoxY, x + lay::kBoxX + lay::kBoxW, lay::kBoxY + lay::kBoxH});
+    if (s.height - lay::kLayoutH >= 32) { // lower than its two edges: the plain rows as laid out
+        Inset(RECT{x + lay::kTallX, lay::kLayoutH, x + lay::kTallX + lay::kTallW, s.height});
+    }
+    for (int y = 0; y < lay::kBoxH; ++y) {
+        std::memcpy(&g_boxBackdrop.px[y * lay::kBoxW], s.px + (lay::kBoxY + y) * s.pitch + lay::kBoxX,
+                    lay::kBoxW * sizeof(lay::Px));
+    }
+    g_boxBackdrop.where = s.where;
+    g_boxBackdrop.has = true;
+}
+
+void SavePlace(MinimapPlace *p)
+{
+    std::memcpy(p->args, At<BYTE>(kMinimapArgs), kMinimapArgsSize);
+    std::memcpy(p->rect, At<BYTE>(kMinimapRect), kMinimapRectSize);
+}
+
+void LoadPlace(const MinimapPlace &p)
+{
+    std::memcpy(At<BYTE>(kMinimapArgs), p.args, kMinimapArgsSize);
+    std::memcpy(At<BYTE>(kMinimapRect), p.rect, kMinimapRectSize);
+}
+
+int MouseCol()
+{
+    return *kMouseX - *kSidebarX;
+}
+
+// The box's minimap. On an army panel the game's own minimap at the top stays the one that the game's input sees
+// (the box's place is put in only while the box is clicked).
+void DrawBoxMinimap(bool army)
+{
+    MinimapPlace top{};
+    if (army) {
+        SavePlace(&top);
+    }
+    Function<MinimapDraw_fn>(kMinimapDraw)(*kSidebarX + lay::kMinimapX, lay::kMinimapY, lay::kMinimapCols,
+                                           lay::kMinimapRows);
+    SavePlace(&g_boxMinimap);
+    g_boxMinimapSet = true;
+    if (army) {
+        LoadPlace(top);
+    }
+}
+
+int CharWidth(unsigned char c, void *font)
+{
+    return Function<CharWidth_fn>(kCharWidth)(c, *static_cast<int *>(font));
+}
+
+// The font of the game's message box: the group table's entry 16 when the table has 16 entries or more.
+int MessageFont()
+{
+    const int table = *kFontTable + (*kFontCount >= 16 ? 0x80 : 0);
+    return *reinterpret_cast<const int *>(static_cast<DWORD>(table) + 4);
+}
+
+int Filter(void *message)
+{
+    return Original(o_Filter, kFilter)(At<void>(kMessageOptions), nullptr, message);
+}
+
+// The messages as sidebar_messages_draw 0x430d80 picks them (message_filter, a text, from the first one shown on),
+// one after another from the top of the box while they fit, and its arrows while it has more than one.
+void DrawMessages()
+{
+    g_list.Begin();
+    const int count = *kMessageCount;
+    if (count <= 0) {
+        return;
+    }
+    const int font = MessageFont();
+    *kButtonsRedraw = 1;
+    BYTE *list = At<BYTE>(kList);
+    int first = 0, listCount = 0;
+    std::memcpy(&first, list + kListFirst, sizeof(first));
+    std::memcpy(&listCount, list + kListCount, sizeof(listCount));
+    const int x = *kSidebarX;
+    char *text = At<char>(kMessageText);
+    *kWrapHeight = 0;
+    int y = lay::kTextY, counted = 0;
+    for (int i = 0; i < count; ++i) {
+        void *m = At<void>(kMessages + static_cast<DWORD>(i * kMessageSize));
+        if (Filter(m) == 0) {
+            continue;
+        }
+        const int id = *static_cast<const short *>(m);
+        if (id < 0 || Function<TextId_fn>(kTextId)(id) < 0 || ++counted <= first) {
+            continue;
+        }
+        const int was = *kMessageCurrent;
+        *kMessageCurrent = i; // the message's own values in its text
+        Function<TextGet_fn>(kTextGet)(id, text, kMessageTextSize);
+        *kMessageCurrent = was;
+        int f = font;
+        const int lines = lay::WrapLines(reinterpret_cast<const unsigned char *>(text), lay::kTextW, &CharWidth, &f);
+        if (g_list.Count() > 0 && !lay::MessageFits(y, lines, g_lineHeight)) {
+            break;
+        }
+        const int before = *kWrapHeight;
+        Function<Wrapped_fn>(kWrapped)(text, x + lay::kTextX, y, lay::kTextW, font, 0);
+        const int rows = *kWrapHeight - before;
+        g_lineHeight = *kLineHeight;
+        if (!g_loggedMeasure && rows != lines * (5 + g_lineHeight)) {
+            g_loggedMeasure = true;
+            core_log("side panel: a message measured %d lines but drew %d rows (line height %d)", lines, rows,
+                     g_lineHeight);
+        }
+        g_list.Add(i, y, y + rows);
+        y += rows + lay::kMessageGap;
+        if (y >= lay::kTextBottom) {
+            break;
+        }
+    }
+    if (listCount > 1) {
+        const int ax = x + lay::kListX + lay::kListW;
+        Function<ImageButtons_fn>(kImageButtons)(ax, lay::kArrowUpY - lay::kArrowUpOffset, At<void>(kArrows), 1);
+        Function<ImageButtons_fn>(kImageButtons)(ax, lay::kArrowDownY - lay::kArrowDownOffset,
+                                                 At<void>(kArrows + kArrowSize), 1);
+    }
+}
+
+void DrawToggle()
+{
+    const bool hover = lay::OnToggle(MouseCol(), *kMouseY);
+    const int id = Function<ImageId_fn>(kImageId)(Images(), kToggleImage) + (hover ? 1 : 0);
+    Function<ImageDraw_fn>(kImageDraw)(Images(), id, *kSidebarX + lay::kToggleX, lay::kToggleY, 0, 0, 0);
+}
+
+// The box's content over its inset put back: the minimap or the messages, and the toggle.
+void DrawBox(bool army)
+{
+    Sidebar16 s{};
+    if (!SidebarOnScreen(&s) || !g_boxBackdrop.has || !(g_boxBackdrop.where == s.where)) {
+        return; // laid out with the next backdrop
+    }
+    for (int y = 0; y < lay::kBoxH; ++y) {
+        std::memcpy(s.px + (lay::kBoxY + y) * s.pitch + lay::kBoxX, &g_boxBackdrop.px[y * lay::kBoxW],
+                    lay::kBoxW * sizeof(lay::Px));
+    }
+    if (g_boxMessages) {
+        DrawMessages();
+    }
+    else {
+        g_list.Begin();
+        DrawBoxMinimap(army);
+    }
+    DrawToggle();
+}
+
+// The message box's input as sidebar_messages_input 0x430ed0 has it (its arrows, the hand cursor over it), but a
+// click opens the message under the mouse (the game shows one at a time and opens the first one shown).
+void MessagesInput(BYTE *list)
+{
+    list[kListHovered] = 0;
+    if (!g_boxMessages) {
+        return;
+    }
+    const int x = *kSidebarX;
+    int listCount = 0;
+    std::memcpy(&listCount, list + kListCount, sizeof(listCount));
+    if (listCount > 1) {
+        const int ax = x + lay::kListX + lay::kListW;
+        const int up = Function<Repeat_fn>(kRepeat)(ax, lay::kArrowUpY - lay::kArrowUpOffset, At<void>(kArrows), 1);
+        const int down = Function<Repeat_fn>(kRepeat)(ax, lay::kArrowDownY - lay::kArrowDownOffset,
+                                                      At<void>(kArrows + kArrowSize), 1);
+        if (up != 0 || down != 0) {
+            return;
+        }
+    }
+    if (!lay::OnList(MouseCol(), *kMouseY)) {
+        return;
+    }
+    list[kListHovered] = 1;
+    if (*kMousePressed == 0) {
+        return;
+    }
+    const int k = g_list.At(*kMouseY);
+    if (k >= 0) {
+        Function<Open_fn>(kOpen)(k);
+    }
+}
+
+// The toggle as a button (the report button's record at the toggle's place, its action the toggle's own: the Tab
+// key's sidebar_overview_toggle): hovered (hover number 201) and clicked as the game's buttons are.
+bool ToggleInput()
+{
+    if (!g_toggleRecordSet) {
+        std::memcpy(g_toggleRecord, At<BYTE>(kReportRecord), kRecordSize);
+        g_toggleRecordSet = true;
+    }
+    const short place[4] = {static_cast<short>(lay::kToggleX), static_cast<short>(lay::kToggleY),
+                            static_cast<short>(lay::kToggleSize), static_cast<short>(lay::kToggleSize)};
+    std::memcpy(g_toggleRecord, place, sizeof(place));
+    g_toggleRecord[kRecordState] = 1;
+    const DWORD action = kOverviewToggle.address + g_imageShift;
+    std::memcpy(g_toggleRecord + kRecordAction, &action, sizeof(action));
+    const int x = *kSidebarX;
+    if ((Function<Hover_fn>(kButtonsHover)(x, 0, g_toggleRecord, 1, lay::kToggleButton) & 0xff) != 0 &&
+        Function<Update_fn>(kButtonsUpdate)(x, 0, g_toggleRecord, 1) != 0) {
+        *kButtonsRedraw = 1;
+        return true;
+    }
+    return false;
+}
+
+// The box's input: the toggle; the minimap (with the box's place put in while asked); on an army panel the messages
+// too (the game has no message box input there).
+bool BoxInput(bool army)
+{
+    const int col = MouseCol(), y = *kMouseY;
+    if (lay::OnToggle(col, y)) {
+        return ToggleInput();
+    }
+    if (g_boxMessages) {
+        if (army) {
+            MessagesInput(At<BYTE>(kList));
+        }
+        return false;
+    }
+    if (!lay::OnMinimap(col, y) || !g_boxMinimapSet) {
+        return false;
+    }
+    MinimapPlace now{};
+    SavePlace(&now);
+    LoadPlace(g_boxMinimap);
+    Original(o_MinimapHover, kMinimapHover)();
+    const bool hit = Function<MinimapClick_fn>(kMinimapClick)(0) != 0;
+    LoadPlace(now);
+    return hit;
+}
+
 struct ColumnCall {
     bool game;   // the game's own drawing this frame (no backdrop yet, or not on screen)
     bool giveUp; // the backdrop never comes (sidebar_draw is not hooked): the game's own side panel
@@ -618,6 +1018,8 @@ struct ColumnCall {
 // sidebar_draw is not seen (its hook is not installed).
 int g_noBackdrop = 0;
 constexpr int kNoBackdropLimit = 8;
+bool g_armyLaidOut = false; // an army panel's backdrop laid out since its content was last drawn
+int g_noArmyBackdrop = 0;
 
 // sidebar_panel_draw, the column moved up: the backdrop put back, the game's drawing in its own place (without the
 // title, the Overview category's minimap, the report button and the name bar), moved up, then the title, the build
@@ -634,6 +1036,9 @@ void DrawColumn(void *p)
         g_backdrop.Take(s.column, s.pitch, s.where);
         CheckTop(s);
         g_noBackdrop = 0;
+        // Before anything is drawn there: the game's buttons (the bottom row at its new place, the gem) are drawn
+        // over it afterwards in the same sidebar_draw.
+        LayOutLowerHalf();
     }
     else if (g_backdrop.Has(s.where)) {
         g_backdrop.PutBack(s.column, s.pitch);
@@ -660,6 +1065,7 @@ void DrawColumn(void *p)
     if (*kCategory != lay::kOverviewCategory) {
         Function<Void_fn>(kBuildDraw)();
     }
+    DrawBox(false);
 }
 
 int __cdecl PanelDraw_detour()
@@ -720,6 +1126,12 @@ struct InputCall {
 void PanelInputNow(void *p)
 {
     InputCall &c = *static_cast<InputCall *>(p);
+    // The box: on the city screen, where the game's input asked its minimap (the message box is the game's own
+    // call, at the end of its input).
+    if (*kGameScreen == kScreenCity && BoxInput(false)) {
+        c.hit = true;
+        return;
+    }
     if (Function<Int_fn>(kBuildInput)() & 0xff) {
         c.hit = true;
         return;
@@ -773,13 +1185,144 @@ int __cdecl ReportInput_detour()
     return Original(o_ReportInput, kReportInput)();
 }
 
-// Tab (and the tabs, no longer shown): there is only the Info tab.
+// Tab and the box's toggle (the tabs are no longer shown): the box shows the other one.
 void __cdecl OverviewToggle_detour()
+{
+    if (ActiveNow()) {
+        g_boxMessages = !g_boxMessages;
+        *kScreenRedraw = 1;
+        *kButtonsRedraw = 1;
+        return;
+    }
+    Original(o_OverviewToggle, kOverviewToggle)();
+}
+
+// The game's message box is drawn in the box (DrawBox), over its inset put back.
+void __fastcall ListDraw_detour(void *list, void *)
 {
     if (ActiveNow()) {
         return;
     }
-    Original(o_OverviewToggle, kOverviewToggle)();
+    Original(o_ListDraw, kListDraw)(list, nullptr);
+}
+
+void __fastcall ListInput_detour(void *list, void *)
+{
+    if (ActiveNow()) {
+        if (core::diag::Guarded(g_feature, [](void *p) { MessagesInput(static_cast<BYTE *>(p)); }, list)) {
+            return;
+        }
+        FallBack("the messages' input");
+    }
+    Original(o_ListInput, kListInput)(list, nullptr);
+}
+
+// The game asks whether the mouse is on the minimap where it was drawn last: not on the box's toggle, and not on
+// the city screen while the box shows the messages (the last minimap drawn there is the box's).
+void __cdecl MinimapHover_detour()
+{
+    if (ActiveNow()) {
+        bool block = false;
+        if (core::diag::Guarded(
+                g_feature,
+                [](void *p) {
+                    *static_cast<bool *>(p) = lay::OnToggle(MouseCol(), *kMouseY) ||
+                                              (*kGameScreen == kScreenCity && g_boxMessages);
+                },
+                &block)) {
+            if (block) {
+                *kMinimapHovered = 0;
+                return;
+            }
+        }
+        else {
+            FallBack("the minimap's hover");
+        }
+    }
+    Original(o_MinimapHover, kMinimapHover)();
+}
+
+// An army or a ship panel's content (on every frame, after its backdrop): then the box's. Its backdrop is drawn on
+// every frame there, so a few frames without it mean that sidebar_draw_units is not seen (its hook is not
+// installed): the game's own side panel then, not the buttons moved over the picture.
+void ArmyBox()
+{
+    if (!ActiveNow()) {
+        return;
+    }
+    const unsigned char s = *kGameScreen;
+    if (s == kScreenArmy || s == kScreenShip) {
+        if (!g_armyLaidOut && ++g_noArmyBackdrop > kNoBackdropLimit) {
+            FallBack("the army panel's backdrop is not seen being drawn");
+            return;
+        }
+        g_armyLaidOut = false;
+    }
+    if (!core::diag::Guarded(g_feature, [](void *) { DrawBox(true); }, nullptr)) {
+        FallBack("the box on an army panel");
+    }
+}
+
+void __cdecl ArmyContent_detour()
+{
+    Original(o_ArmyContent, kArmyContent)();
+    ArmyBox();
+}
+
+void __cdecl ShipContent_detour()
+{
+    Original(o_ShipContent, kShipContent)();
+    ArmyBox();
+}
+
+// The army panels' input asks the bottom buttons after the gem: then the box (the game's own message box input is
+// not there).
+int __cdecl BottomInput_detour()
+{
+    const int r = Original(o_BottomInput, kBottomInput)();
+    const unsigned char s = *kGameScreen;
+    if ((r & 0xff) != 0 || !ActiveNow() || (s != kScreenArmy && s != kScreenShip)) {
+        return r;
+    }
+    bool hit = false;
+    if (core::diag::Guarded(g_feature, [](void *p) { *static_cast<bool *>(p) = BoxInput(true); }, &hit)) {
+        return hit ? 1 : r;
+    }
+    FallBack("the box's input on an army panel");
+    return r;
+}
+
+// city_message_post 0x521a70 asks message_filter a second time for the message just posted; 1 (Condensed: shown in
+// the sidebar, not as a window) brings the box to the messages, as Emperor's side panel does.
+int __fastcall Filter_detour(void *self, void *, void *message)
+{
+    const int r = Original(o_Filter, kFilter)(self, nullptr, message);
+    if (r == 1 && !g_boxMessages &&
+        reinterpret_cast<DWORD>(__builtin_return_address(0)) == kPostAsks + g_imageShift && ActiveNow()) {
+        g_boxMessages = true;
+        *kScreenRedraw = 1;
+        core_log("side panel: a Condensed message: the box shows the messages");
+    }
+    return r;
+}
+
+void ResetBox()
+{
+    g_boxMessages = false;
+    g_list.Begin();
+}
+
+// A city loaded (a saved game or the next mission) or started (its messages cleared): the box shows the minimap.
+void __cdecl CityLoaded_detour()
+{
+    Original(o_CityLoaded, kCityLoaded)();
+    ResetBox();
+}
+
+void __cdecl MessagesClear_detour()
+{
+    Original(o_MessagesClear, kMessagesClear)();
+    ResetBox();
 }
 
 const Detour kDetours[] = {
@@ -792,6 +1335,15 @@ const Detour kDetours[] = {
     {&kPanelInput, reinterpret_cast<void *>(&PanelInput_detour)},
     {&kReportInput, reinterpret_cast<void *>(&ReportInput_detour)},
     {&kOverviewToggle, reinterpret_cast<void *>(&OverviewToggle_detour)},
+    {&kListDraw, reinterpret_cast<void *>(&ListDraw_detour)},
+    {&kListInput, reinterpret_cast<void *>(&ListInput_detour)},
+    {&kMinimapHover, reinterpret_cast<void *>(&MinimapHover_detour)},
+    {&kArmyContent, reinterpret_cast<void *>(&ArmyContent_detour)},
+    {&kShipContent, reinterpret_cast<void *>(&ShipContent_detour)},
+    {&kBottomInput, reinterpret_cast<void *>(&BottomInput_detour)},
+    {&kFilter, reinterpret_cast<void *>(&Filter_detour)},
+    {&kCityLoaded, reinterpret_cast<void *>(&CityLoaded_detour)},
+    {&kMessagesClear, reinterpret_cast<void *>(&MessagesClear_detour)},
 };
 constexpr int kHookCount = static_cast<int>(sizeof(kDetours) / sizeof(kDetours[0]));
 
@@ -865,7 +1417,14 @@ bool Attach()
         !Install(kNameBar, &NameBar_detour, o_NameBar) || !Install(kPanelDraw, &PanelDraw_detour, o_PanelDraw) ||
         !Install(kPanelInput, &PanelInput_detour, o_PanelInput) ||
         !Install(kReportInput, &ReportInput_detour, o_ReportInput) ||
-        !Install(kOverviewToggle, &OverviewToggle_detour, o_OverviewToggle)) {
+        !Install(kOverviewToggle, &OverviewToggle_detour, o_OverviewToggle) ||
+        !Install(kListDraw, &ListDraw_detour, o_ListDraw) || !Install(kListInput, &ListInput_detour, o_ListInput) ||
+        !Install(kMinimapHover, &MinimapHover_detour, o_MinimapHover) ||
+        !Install(kArmyContent, &ArmyContent_detour, o_ArmyContent) ||
+        !Install(kShipContent, &ShipContent_detour, o_ShipContent) ||
+        !Install(kBottomInput, &BottomInput_detour, o_BottomInput) || !Install(kFilter, &Filter_detour, o_Filter) ||
+        !Install(kCityLoaded, &CityLoaded_detour, o_CityLoaded) ||
+        !Install(kMessagesClear, &MessagesClear_detour, o_MessagesClear)) {
         // The hooks already in stay, but with the feature off every one of them calls the game's own.
         core::diag::Disable(g_feature, "a hook could not be installed");
         core_log("side panel: a hook could not be installed; the game's own side panel");
@@ -922,9 +1481,32 @@ void BackdropDrawing(bool drawing)
     g_backdropNow = drawing;
 }
 
+void ArmyBackdropDrawn()
+{
+    if (!ActiveNow()) {
+        return;
+    }
+    g_armyLaidOut = true;
+    g_noArmyBackdrop = 0;
+    if (!core::diag::Guarded(
+            g_feature,
+            [](void *) {
+                LayOutLowerHalf();
+                Function<RotateDraw_fn>(kRotateDraw)(0, 0); // drawn by the game before the rows were laid out
+            },
+            nullptr)) {
+        FallBack("laying out an army panel's lower half");
+    }
+}
+
 void SetModeForTest(const char *value, bool initial)
 {
     Apply(0, value, initial);
+}
+
+bool BoxMessagesForTest()
+{
+    return g_boxMessages;
 }
 
 } // namespace zeus::side_panel

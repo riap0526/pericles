@@ -7,7 +7,11 @@
 // - no tabs: the sidebar's right column (the title, the overlay buttons, the information panel and the category's
 //   own panel) is moved up into their place and the information panel is longer; Tab does nothing; the title is
 //   clicked to open the category's report and again to close it (it is lit while the mouse is on it), the report
-//   button is gone; the Overview category no longer shows the minimap.
+//   button is gone; the Overview category no longer shows the minimap;
+// - no picture: below the Go to buttons one box shows the minimap or the messages (as many as fit, the one clicked
+//   opened), switched with the button in its corner or with Tab, and back to the minimap for every city started or
+//   loaded; a Condensed message brings it to the messages; the check, gem and globe below it; on taller screens an
+//   inset panel below 768. The army and ship panels have the same box.
 //
 // All or nothing: every hook is installed at start-up, only when every site has the bytes of the known build; a fault
 // in any of them switches the whole side panel off for the rest of the run (the game's own from then on, the screen
@@ -32,6 +36,10 @@ bool Active();
 // taken from the screen while the backdrop has just been drawn.
 void BackdropDrawing(bool drawing);
 
+// sidebar_draw_units (games/zeus/resolution's detour), after the game's drawing: the army or ship panel's lower half
+// laid out (the box, the button row).
+void ArmyBackdropDrawn();
+
 // Offline tests.
 const Detour *Detours(int *count);
 // Attach with every site matching except the one at index mismatch (sites, then code changes; -1: all match); the
@@ -44,5 +52,7 @@ int PatchCountForTest();
 void SetTopForTest(const unsigned short *top, const unsigned short *left);
 // The setting's value as the settings would hand it over (initial: as at start-up, nothing redrawn).
 void SetModeForTest(const char *value, bool initial);
+// The box shows the messages (else the minimap).
+bool BoxMessagesForTest();
 
 } // namespace zeus::side_panel

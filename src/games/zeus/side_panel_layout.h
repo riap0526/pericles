@@ -42,9 +42,16 @@ struct Facts {
     bool reportOpen;   // sidebar_dialog_open: the sidebar's report is open
     bool buildEnabled; // the hovered build button's state is 1 (it can be used)
     int building;      // the hovered build button's building type
+    bool boxMessages;  // the box at the bottom shows the messages (else the minimap)
 };
 
-// One of the buttons whose name the name bar shows.
+// The box's toggle (ours, hover number 201): the game's own words for switching to the other one: "View messages"
+// (group 68, the mouse help) while the box shows the minimap, "Show Overview Map" (group 88, the old tab's) while it
+// shows the messages.
+constexpr int kToggleButton = 201;
+constexpr int kGroupMouseHelp = 68, kViewMessages = 33, kShowOverview = 16;
+
+// One of the buttons whose name the name bar shows, or the box's toggle.
 bool Ours(int hover);
 // A build button (0x32..0x35).
 bool BuildButton(int hover);
@@ -207,6 +214,82 @@ private:
     bool has_ = false;
     Where where_{};
     Px px_[kColumnW * kColumnRows];
+};
+
+// ---- The box at the bottom ----
+//
+// Below the Go to buttons and the message count (rows 478..511, as the game has them): one box for the minimap or
+// the messages (an inset panel of the game's tiles where the message box, the button row and the picture were), the
+// check / gem / globe row moved under it, and, on taller screens, an inset panel below 768 (the box and the buttons
+// stay where they are on the 1024 x 768 layout). In sidebar columns (x - sidebar_x) and screen rows.
+constexpr int kSidebarW = 186, kLayoutH = 768;
+constexpr int kLowerTop = 512; // the first row laid out again (the old message box's)
+constexpr int kBoxX = 9, kBoxY = 512, kBoxW = 172, kBoxH = 218; // the inset panel, rows 512..729
+// The minimap: minimap_draw(sidebar_x + 12, 515, 83 columns of 2 px, 212 rows).
+constexpr int kMinimapX = 12, kMinimapY = 515, kMinimapCols = 83, kMinimapRows = 212, kMinimapW = kMinimapCols * 2;
+// The toggle: the report button's picture (and the next one under the mouse), the box's top right corner.
+constexpr int kToggleX = 160, kToggleY = 515, kToggleSize = 18;
+// The messages: the game's text drawing (its width, its lines), one after another from the top, as many as fit.
+constexpr int kTextX = 13, kTextW = 148, kTextY = 517, kTextBottom = 726, kMessageGap = 6;
+// The game's message box (sidebar_messages 0x7815a0: x sidebar_x + 8, width 0x9b): its arrows at x + width and its
+// table's places (y + 2, y + 31), here at rows 535 and 708 below the toggle; clicked within its x and the box's rows.
+constexpr int kListX = 8, kListW = 0x9b;
+constexpr int kArrowUpY = 535, kArrowDownY = 708, kArrowUpOffset = 2, kArrowDownOffset = 31;
+// The check / gem / globe row (rows 563..599 of the backdrop) at rows 731..767; their buttons' y in the game's tables
+// moved by the same.
+constexpr int kButtonRowTop = 563, kButtonRowEnd = 600, kButtonRowShift = 168;
+// The edges carried down: the left one as below 768 elsewhere (its columns 0..10, rows 640..699 repeated), the right
+// one's 5 columns (rows 512..561 repeated), and the plain row 562 between them.
+constexpr int kEdgeW = 11, kEdgeBandTop = 640, kEdgeBandRows = 60;
+constexpr int kRightX = 181, kRightBandTop = 512, kRightBandRows = 50, kPlainRow = 562;
+// Below 768: an inset panel from column 11, 172 wide.
+constexpr int kTallX = 11, kTallW = 172;
+
+// The rows from kLowerTop down to height laid out from the backdrop on screen (`sidebar`: its first pixel at the
+// sidebar's left edge and row 0, `pitch` pixels a row; height at least kLayoutH): the edges and the plain row, and the
+// button row at its new place. The inset panels are drawn over it afterwards (the game's tiles).
+void LowerHalf(Px *sidebar, int pitch, int height);
+
+// Where a point (sidebar column, screen row) is.
+bool OnToggle(int col, int y);
+bool OnMinimap(int col, int y);
+bool OnList(int col, int y); // the game's message box, as clicked: its columns, the box's rows
+
+// The lines that the game's text_draw_wrapped 0x5090a0 makes of a text in `limit` px (its rules: words of
+// 0x5091b0 -- leading spaces 4 px each, '$' a break without width, characters below 0x20 none -- added while the line
+// stays narrower than limit; a word that does not fit starts the next line; at most 99 lines). width: the game's
+// text_char_width for a character of 0x20 or above.
+int WrapLines(const unsigned char *text, int limit, int (*width)(unsigned char c, void *ctx), void *ctx);
+// Whether a message of `lines` lines (each 5 + lineHeight rows, as text_draw_wrapped advances) fits from row y.
+bool MessageFits(int y, int lines, int lineHeight);
+
+// The messages drawn in the box (their index in the game's list and their rows), for a click on one of them.
+class MessageList {
+public:
+    static constexpr int kMax = 64;
+    void Begin()
+    {
+        n_ = 0;
+    }
+    void Add(int index, int top, int bottom)
+    {
+        if (n_ < kMax) {
+            s_[n_++] = Shown{index, top, bottom};
+        }
+    }
+    // The message under row y, -1 for none.
+    int At(int y) const;
+    int Count() const
+    {
+        return n_;
+    }
+
+private:
+    struct Shown {
+        int index, top, bottom;
+    };
+    Shown s_[kMax];
+    int n_ = 0;
 };
 
 } // namespace zeus::side_panel_layout

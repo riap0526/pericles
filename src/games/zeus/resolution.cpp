@@ -794,8 +794,8 @@ void DrawFiller(core::diag::Restore &r, const Edge &edge)
     if (&edge == &kCityEdge && !zeus::scroll::Working() && *kCityClipRight > 0 && *kCityClipRight < x) {
         Plain(s, RECT{*kCityClipRight, kTopBar, x, h}, r);
     }
-    if (h <= kBackdropH) {
-        return;
+    if (h <= kBackdropH || (&edge == &kCityEdge && zeus::side_panel::Active())) {
+        return; // Pericles's side panel lays out its rows below 768 itself (no picture)
     }
     const int pictureY = h - kPictureH;
     const Picture pic = PictureOf(FrameTop(s, x));
@@ -888,6 +888,7 @@ void __cdecl SidebarDraw_detour()
 void __cdecl SidebarUnits_detour(int screen)
 {
     Original(o_SidebarUnits, kSidebarUnits)(screen);
+    zeus::side_panel::ArmyBackdropDrawn(); // its lower half, as the city's
     if (FillerWanted()) {
         Filler(kCityEdge);
     }

@@ -29,7 +29,7 @@ constexpr bool kEditorToo = true; // the editor's map has it too (game_wndproc: 
 
 // The same names and words as Yongle's for the same actions; Zeus has no
 // overlay letters of its own (ours: OverlayKey), no F9 help, army groups 1-5 only (army_group_set 0x433ab0 / army_group_recall 0x433b60 return for
-// n > 5); Tab is Zeus's own (0x516d30: the sidebar's Info / Overview).
+// n > 5); Tab is Zeus's own (0x516d30: the sidebar's Info / Overview, Pericles's side panel's box).
 const Def kDefs[] = {
     {Item{"keys", "scroll_up", "Scroll up", "", Type::Hotkey, "Up", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::KeyDown, VK_UP, false, {"scroll_up", kArrows, kNoText, 0}, kEditorToo},
@@ -58,8 +58,11 @@ const Def kDefs[] = {
      Send::Rotate, 'R', false, {"rotate_building", kCity, kNoText, 0}},
     {Item{"keys", "hold_preview", "Hold building preview", "", Type::Hotkey, "M", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, 'm', false, {"hold_preview", kCity, kNoText, 0}},
-    {Item{"keys", "sidebar_overview", "Toggle sidebar overview", "", Type::Hotkey, "Tab", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
-     Send::KeyDown, VK_TAB, false, {"sidebar_overview", kCity, kNoText, 0}},
+    {Item{"keys", "minimap_messages", "Toggle minimap / messages",
+          "Switches the box at the bottom of the side panel between the minimap and the messages. With the original "
+          "side panel: the Info / Overview map tabs.",
+          Type::Hotkey, "Tab", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
+     Send::KeyDown, VK_TAB, false, {"minimap_messages", kCity, kNoText, 0}},
     {Item{"keys", "category_1", "Building menu 1", "", Type::Hotkey, "1", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
      Send::Char, '1', false, {"category_1", kBuild, kNoText, 0}},
     {Item{"keys", "category_2", "Building menu 2", "", Type::Hotkey, "2", Effect::Live, false, true, 0, 0, 0, nullptr, nullptr, nullptr, 0},
@@ -352,6 +355,8 @@ const char *__cdecl LangGetString_detour(int group, int index)
 
 void RegisterSettings()
 {
+    // Tab's action was the sidebar's Info / Overview tabs; with Pericles's side panel it switches the box.
+    core::settings::MoveKey("keys", "sidebar_overview", "keys", "minimap_messages");
     core::input::keys::RegisterSettings(&Game());
 }
 

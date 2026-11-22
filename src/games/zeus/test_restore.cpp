@@ -407,6 +407,8 @@ bool PicturesHooked() { return true; }
 
 namespace zeus::side_panel { // games/zeus/side_panel: its own test (test_side_panel)
 void BackdropDrawing(bool) {}
+void ArmyBackdropDrawn() {}
+bool Active() { return false; }
 } // namespace zeus::side_panel
 
 namespace {
@@ -2353,7 +2355,7 @@ void KeyBindings()
     g_keysSentCount = 0;
     Check(k::Translate(WM_KEYDOWN, VK_SPACE, 1) && SentOne(WM_CHAR, ' '), "keys: Space: the character space");
     g_keysSentCount = 0;
-    Check(k::Translate(WM_KEYDOWN, VK_TAB, 1) && SentOne(WM_KEYDOWN, VK_TAB), "keys: Tab: the sidebar's Overview key");
+    Check(k::Translate(WM_KEYDOWN, VK_TAB, 1) && SentOne(WM_KEYDOWN, VK_TAB), "keys: Tab: the sidebar's box (or Overview) key");
     g_keysSentCount = 0;
     Check(k::Translate(WM_KEYDOWN, 'P', 1) && SentOne(WM_CHAR, 'p'), "keys: P: the character p (pause)");
     g_fakeMods = core::ui::kModCtrl;

@@ -10,7 +10,7 @@ bool BuildButton(int hover)
 bool Ours(int hover)
 {
     return (hover >= kFirstSidebarButton && hover <= kLastSidebarButton) || BuildButton(hover) ||
-           hover == kReportButton;
+           hover == kReportButton || hover == kToggleButton;
 }
 
 int BuildingText(int building, bool poseidon)
@@ -28,6 +28,10 @@ int BuildingText(int building, bool poseidon)
 
 bool NameFor(int hover, const Facts &f, Name *out)
 {
+    if (hover == kToggleButton) {
+        *out = f.boxMessages ? Name{kGroupSidebar, kShowOverview} : Name{kGroupMouseHelp, kViewMessages};
+        return true;
+    }
     if (hover == kReportButton) {
         if (f.reportOpen) {
             return false;
@@ -188,6 +192,154 @@ void Backdrop::PutBack(Px *screen, int pitch) const
             screen[y * pitch + x] = px_[y * kColumnW + x];
         }
     }
+}
+
+void LowerHalf(Px *sidebar, int pitch, int height)
+{
+    // The rows read lie in the rows written: copied first.
+    constexpr int kRowRows = kButtonRowEnd - kButtonRowTop;
+    Px edge[kEdgeBandRows][kEdgeW], right[kRightBandRows][kSidebarW - kRightX], plain[kRightX - kEdgeW];
+    Px row[kRowRows][kSidebarW];
+    for (int y = 0; y < kEdgeBandRows; ++y) {
+        for (int x = 0; x < kEdgeW; ++x) {
+            edge[y][x] = sidebar[(kEdgeBandTop + y) * pitch + x];
+        }
+    }
+    for (int y = 0; y < kRightBandRows; ++y) {
+        for (int x = kRightX; x < kSidebarW; ++x) {
+            right[y][x - kRightX] = sidebar[(kRightBandTop + y) * pitch + x];
+        }
+    }
+    for (int x = kEdgeW; x < kRightX; ++x) {
+        plain[x - kEdgeW] = sidebar[kPlainRow * pitch + x];
+    }
+    for (int y = 0; y < kRowRows; ++y) {
+        for (int x = 0; x < kSidebarW; ++x) {
+            row[y][x] = sidebar[(kButtonRowTop + y) * pitch + x];
+        }
+    }
+    for (int y = kLowerTop; y < height; ++y) {
+        Px *to = sidebar + y * pitch;
+        const Px *e = edge[(y - kLowerTop) % kEdgeBandRows];
+        const Px *r = right[(y - kLowerTop) % kRightBandRows];
+        for (int x = 0; x < kEdgeW; ++x) {
+            to[x] = e[x];
+        }
+        for (int x = kEdgeW; x < kRightX; ++x) {
+            to[x] = plain[x - kEdgeW];
+        }
+        for (int x = kRightX; x < kSidebarW; ++x) {
+            to[x] = r[x - kRightX];
+        }
+    }
+    for (int y = 0; y < kRowRows; ++y) {
+        Px *to = sidebar + (kButtonRowTop + kButtonRowShift + y) * pitch;
+        for (int x = 0; x < kSidebarW; ++x) {
+            to[x] = row[y][x];
+        }
+    }
+}
+
+bool OnToggle(int col, int y)
+{
+    return col >= kToggleX && col < kToggleX + kToggleSize && y >= kToggleY && y < kToggleY + kToggleSize;
+}
+
+bool OnMinimap(int col, int y)
+{
+    return col >= kMinimapX && col < kMinimapX + kMinimapW && y >= kMinimapY && y < kMinimapY + kMinimapRows;
+}
+
+bool OnList(int col, int y)
+{
+    // As the game's sidebar_messages_input: x .. x + width and y .. y + height, both ends in.
+    return col >= kListX && col <= kListX + kListW && y >= kMinimapY && y <= kMinimapY + kMinimapRows;
+}
+
+namespace {
+
+// A word as 0x5091b0 measures it from p: its width, and in *count the characters it takes (not the one it stops at).
+int Word(const unsigned char *p, int *count, int (*width)(unsigned char, void *), void *ctx)
+{
+    bool seen = false;
+    int w = 0;
+    *count = 0;
+    for (int k = 1; k < 2000; ++k) {
+        const unsigned char c = *p++;
+        if (c == 0) {
+            return w;
+        }
+        if (c == 0x20) {
+            if (seen) {
+                return w;
+            }
+            w += 4;
+        }
+        else if (c == 0x24) {
+            if (seen) {
+                return w;
+            }
+        }
+        else if (c >= 0x20) {
+            w += width(c, ctx);
+            seen = true;
+        }
+        ++*count;
+    }
+    return w;
+}
+
+} // namespace
+
+int WrapLines(const unsigned char *text, int limit, int (*width)(unsigned char c, void *ctx), void *ctx)
+{
+    const unsigned char *p = text;
+    bool more = true;
+    int lines = 0;
+    for (int n = 1; n < 100; ++n) {
+        int lineW = 0;
+        if (more) {
+            for (;;) {
+                if (lineW >= limit) {
+                    break;
+                }
+                int count = 0;
+                lineW += Word(p, &count, width, ctx);
+                if (lineW >= limit) {
+                    if (lineW != 0) {
+                        continue; // the line ends before this word
+                    }
+                    more = false;
+                    break;
+                }
+                p += count;
+                if (*p == 0) {
+                    more = false;
+                    break;
+                }
+            }
+        }
+        ++lines;
+        if (!more) {
+            break;
+        }
+    }
+    return lines;
+}
+
+bool MessageFits(int y, int lines, int lineHeight)
+{
+    return y + lines * (5 + lineHeight) <= kTextBottom;
+}
+
+int MessageList::At(int y) const
+{
+    for (int i = 0; i < n_; ++i) {
+        if (y >= s_[i].top && y < s_[i].bottom) {
+            return s_[i].index;
+        }
+    }
+    return -1;
 }
 
 } // namespace zeus::side_panel_layout
