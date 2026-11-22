@@ -59,6 +59,23 @@
 //   actions at 0x10 and 0x14, its state at 0x18 (0 and 2: not clickable), the values passed to the action at 0x1c and
 //   0x20 (0xf135f8, 0xf135f4). The report button's record 0x63dee8, its value the category's report kind
 //   (sidebar_report_kind 0x63e488, 11 ints); its action opens the report or, while one is open, closes it.
+//
+// The army and ship panels' upper half:
+// - sidebar_draw_units 0x525280 (__cdecl, the screen) draws the whole backdrop on every frame (it sets screen_redraw):
+//   the picture, units_minimap_draw(1) at 0x525359, the gem, the name box (image 0x61 at (sidebar_x + 0x17, 0x93)) with
+//   the hovered button's name and the state written in it. units_minimap_draw 0x58ea90 (__cdecl, a flag: draw even
+//   when not scrolling; ret) draws minimap_draw(sidebar_x + 0x19, 0x1c, 0x47, 0x6d) outside the editors and clears
+//   0x10dffb8 (set at 0x483999 to have it drawn once); screen_draw also calls it with 0 on every frame of screen 0x48
+//   (0x5140b6), after the sidebar's content. Its other callers (0x51e8e7, 0x51eb08) are the editors'.
+// - The content, every frame (0x525630 for 0x48, 0x525c10 for 0x20, entered by jmp from 0x58ea29 / 0x58ea32 and the
+//   help screen's 0x4f288a / 0x4f2894): buttons_draw(sidebar_x, 0x1e, 0x6402a0 or 0x640390, 6) (0x28-byte records,
+//   y at +2: 173, 225, 277 twice; these panels' inputs at 0x514fad / 0x514a0f give the same tables to
+//   buttons_hover and buttons_update), inner_panel_draw(sidebar_x + 0xe, 0x168, 10, 7) (calls at 0x5257e8 and
+//   0x525e66; the caller pops every argument with one add esp, 0x3c), then the texts (0x524ca0 / 0x5258d0, __cdecl x,
+//   y, width: push 0x168 at 0x5257fb / 0x525e78) whose clickable rows are the 5 records of 0x640480 (0x1c bytes:
+//   x1, y1, x2, y2 as shorts; y1 335, 355, .. 415; drawn at the base 0x26, clicked at 0x1e by 0x514ab3 / 0x514f59),
+//   and the report button at (sidebar_x, 0xcd) + (157, 250), which does not move. Nothing in the exe writes those
+//   records' y (the content rewrites the buttons' pictures at +0xa and their state at +0x18).
 namespace zeus::side_panel {
 namespace {
 
@@ -113,6 +130,8 @@ const Site kBottomInput{"sidebar_bottom_buttons_input", 0x517de0, {0xa1, 0x34, 0
 const Site kFilter{"message_filter", 0x521970, {0x55, 0x56, 0x57, 0x8b, 0x7c, 0x24, 0x10, 0x85}};
 const Site kCityLoaded{"city_loaded_setup", 0x510ed0, {0xa1, 0x3c, 0xb8, 0xdb, 0x00, 0x83, 0xec, 0x0c}};
 const Site kMessagesClear{"messages_clear", 0x522230, {0xb8, 0x48, 0x38, 0xfd, 0x00, 0x33, 0xd2, 0x66}};
+// The army panels' upper half: hooked.
+const Site kUnitsMinimap{"units_minimap_draw", 0x58ea90, {0x8b, 0x0d, 0x60, 0xff, 0x0d, 0x01, 0x33, 0xc0}};
 // Called.
 const Site kMinimapDraw{"minimap_draw", 0x454980, {0x55, 0x8b, 0xec, 0x83, 0xec, 0x6c, 0xa1, 0xe4}};
 const Site kMinimapClick{"minimap_click", 0x405d90, {0x83, 0x3d, 0x1c, 0x18, 0x78, 0x00, 0x01, 0x74}};
@@ -129,7 +148,7 @@ const Site kImageGroup{"image_group_get", 0x40fcf0, {0x8b, 0x44, 0x24, 0x04, 0x8
 const Site *const kSites[] = {&kUpdate,     &kButtonText,   &kGroup,        &kDraw,         &kNameBar,
                               &kPanelDraw,  &kPanelInput,   &kReportInput,  &kOverviewToggle,
                               &kListDraw,   &kListInput,    &kMinimapHover, &kArmyContent,  &kShipContent,
-                              &kBottomInput, &kFilter,      &kCityLoaded,   &kMessagesClear,
+                              &kBottomInput, &kFilter,      &kCityLoaded,   &kMessagesClear, &kUnitsMinimap,
                               &kScienceNames, &kCost,       &kNumber,       &kImageId,      &kImageDraw,
                               &kOverlayDraw, &kInnerPanel,  &kCategoryDraw, &kBuildDraw,    &kText,
                               &kOverlayInput, &kCategoryInput, &kBuildInput, &kButtonsHover, &kButtonsUpdate,
@@ -148,6 +167,18 @@ struct Patch {
 // `push 0x11; push 0x63dc40` -> `push 0x0f`: the 17 sidebar buttons without the two tabs (the table's last two).
 #define TABS_PUSH(name, at)                                                                                        \
     {name, at, 7, {0x6a, 0x11, 0x68, 0x40, 0xdc, 0x63, 0x00}, {0x6a, 0x0f, 0x68, 0x40, 0xdc, 0x63, 0x00}}
+// A short, little-endian.
+#define SHORT_BYTES(v) static_cast<BYTE>((v) & 0xff), static_cast<BYTE>(((v) >> 8) & 0xff)
+// A command button's y: record k of a table.
+#define UNITS_BUTTON_Y(name, table, k, y)                                                                          \
+    {name, (table) + (k) * 0x28 + 2, 2, {SHORT_BYTES(y)}, {SHORT_BYTES((y) - lay::kUnitsShift)}}
+// A clickable row's y1, x2 (160) and y2: record k of 0x640480 (rows 20 high from 335).
+#define UNITS_ROW(name, k)                                                                                         \
+    {name,                                                                                                         \
+     0x640480 + (k) * 0x1c + 2,                                                                                    \
+     6,                                                                                                            \
+     {SHORT_BYTES(335 + 20 * (k)), SHORT_BYTES(160), SHORT_BYTES(355 + 20 * (k))},                                                         \
+     {SHORT_BYTES(335 + 20 * (k) - lay::kUnitsShift), SHORT_BYTES(160), SHORT_BYTES(355 + 20 * (k) - lay::kUnitsShift)}}
 const Patch kPatches[] = {
     TABS_PUSH("city input: sidebar buttons hovered", 0x515138),
     TABS_PUSH("city input: sidebar buttons clicked", 0x515154),
@@ -165,8 +196,37 @@ const Patch kPatches[] = {
     {"the check button's y", 0x63e04a, 2, {0x1f, 0x02}, {0xc7, 0x02}},
     {"the globe button's y", 0x63e072, 2, {0x1f, 0x02}, {0xc7, 0x02}},
     {"the gem's y", 0x63e09a, 2, {0x1f, 0x02}, {0xc7, 0x02}},
+    // The army and ship panels' command buttons (y at +2 of 0x28-byte records), 138 rows up.
+    UNITS_BUTTON_Y("an army command button's y", 0x6402a0, 0, 173),
+    UNITS_BUTTON_Y("an army command button's y", 0x6402a0, 1, 225),
+    UNITS_BUTTON_Y("an army command button's y", 0x6402a0, 2, 277),
+    UNITS_BUTTON_Y("an army command button's y", 0x6402a0, 3, 173),
+    UNITS_BUTTON_Y("an army command button's y", 0x6402a0, 4, 225),
+    UNITS_BUTTON_Y("an army command button's y", 0x6402a0, 5, 277),
+    UNITS_BUTTON_Y("a ship command button's y", 0x640390, 0, 173),
+    UNITS_BUTTON_Y("a ship command button's y", 0x640390, 1, 225),
+    UNITS_BUTTON_Y("a ship command button's y", 0x640390, 2, 277),
+    UNITS_BUTTON_Y("a ship command button's y", 0x640390, 3, 173),
+    UNITS_BUTTON_Y("a ship command button's y", 0x640390, 4, 225),
+    UNITS_BUTTON_Y("a ship command button's y", 0x640390, 5, 277),
+    // Their inset's clickable rows (y1, x2, y2 of 0x1c-byte records from +2), 138 rows up.
+    UNITS_ROW("an army or ship panel's clickable row", 0),
+    UNITS_ROW("an army or ship panel's clickable row", 1),
+    UNITS_ROW("an army or ship panel's clickable row", 2),
+    UNITS_ROW("an army or ship panel's clickable row", 3),
+    UNITS_ROW("an army or ship panel's clickable row", 4),
+    // Their texts' y (`push 0x168`), 138 rows up.
+    {"army panel: its text's y", 0x5257fb, 5, {0x68, 0x68, 0x01, 0x00, 0x00}, {0x68, SHORT_BYTES(0x168 - 138), 0x00, 0x00}},
+    {"ship panel: its text's y", 0x525e78, 5, {0x68, 0x68, 0x01, 0x00, 0x00}, {0x68, SHORT_BYTES(0x168 - 138), 0x00, 0x00}},
+    // Their inset (`call inner_panel_draw`; the caller pops the arguments): a 5-byte nop. Ours is drawn, taller, with
+    // the backdrop before the content.
+    {"army panel: its inset", 0x5257e8, 5, {0xe8, 0xb3, 0x9a, 0x07, 0x00}, {0x0f, 0x1f, 0x44, 0x00, 0x00}},
+    {"ship panel: its inset", 0x525e66, 5, {0xe8, 0x35, 0x94, 0x07, 0x00}, {0x0f, 0x1f, 0x44, 0x00, 0x00}},
 };
 #undef TABS_PUSH
+#undef UNITS_BUTTON_Y
+#undef UNITS_ROW
+#undef SHORT_BYTES
 constexpr int kPatchCount = static_cast<int>(sizeof(kPatches) / sizeof(kPatches[0]));
 
 Int_fn o_Update = nullptr;
@@ -193,6 +253,8 @@ Int_fn o_BottomInput = nullptr;
 Filter_fn o_Filter = nullptr;
 Void_fn o_CityLoaded = nullptr;
 Void_fn o_MessagesClear = nullptr;
+using UnitsMinimap_fn = void(__cdecl *)(int force);
+UnitsMinimap_fn o_UnitsMinimap = nullptr;
 using MinimapDraw_fn = void(__cdecl *)(int x, int y, int cols, int rows);
 using MinimapClick_fn = int(__cdecl *)(int unused);
 using TextId_fn = int(__cdecl *)(int text);
@@ -271,6 +333,7 @@ const Var<int> kWrapHeight{0xf13a6c};  // text_draw_wrapped adds the rows it too
 const Var<int> kLineHeight{0xf13960};  // text_line_height: text_draw's, for its font
 const Var<int> kMinimapHovered{0x78181c};
 const Var<unsigned char> kMousePressed{0xf2a707};
+const Var<int> kUnitsMinimapOnce{0x10dffb8}; // units_minimap_draw: draw it once (cleared when it looks)
 constexpr DWORD kImageGroups = 0x12bc82c; // the interface pak's image groups (image_group_get's this)
 constexpr int kGroupInset = 0x84;          // inner_panel_draw's 16 px tiles
 constexpr int kToggleImage = 0x20c;        // the report button's picture (Zeus_Interface entry 1295), +1 hovered
@@ -806,21 +869,14 @@ int MouseCol()
     return *kMouseX - *kSidebarX;
 }
 
-// The box's minimap. On an army panel the game's own minimap at the top stays the one that the game's input sees
-// (the box's place is put in only while the box is clicked).
-void DrawBoxMinimap(bool army)
+// The box's minimap: the last one drawn (the army panels have none of their own at the top any more), so the
+// game's own input on those panels asks it where it is.
+void DrawBoxMinimap()
 {
-    MinimapPlace top{};
-    if (army) {
-        SavePlace(&top);
-    }
     Function<MinimapDraw_fn>(kMinimapDraw)(*kSidebarX + lay::kMinimapX, lay::kMinimapY, lay::kMinimapCols,
                                            lay::kMinimapRows);
     SavePlace(&g_boxMinimap);
     g_boxMinimapSet = true;
-    if (army) {
-        LoadPlace(top);
-    }
 }
 
 int CharWidth(unsigned char c, void *font)
@@ -908,7 +964,7 @@ void DrawToggle()
 }
 
 // The box's content over its inset put back: the minimap or the messages, and the toggle.
-void DrawBox(bool army)
+void DrawBox()
 {
     Sidebar16 s{};
     if (!SidebarOnScreen(&s) || !g_boxBackdrop.has || !(g_boxBackdrop.where == s.where)) {
@@ -923,7 +979,7 @@ void DrawBox(bool army)
     }
     else {
         g_list.Begin();
-        DrawBoxMinimap(army);
+        DrawBoxMinimap();
     }
     DrawToggle();
 }
@@ -1065,7 +1121,7 @@ void DrawColumn(void *p)
     if (*kCategory != lay::kOverviewCategory) {
         Function<Void_fn>(kBuildDraw)();
     }
-    DrawBox(false);
+    DrawBox();
 }
 
 int __cdecl PanelDraw_detour()
@@ -1217,18 +1273,16 @@ void __fastcall ListInput_detour(void *list, void *)
     Original(o_ListInput, kListInput)(list, nullptr);
 }
 
-// The game asks whether the mouse is on the minimap where it was drawn last: not on the box's toggle, and not on
-// the city screen while the box shows the messages (the last minimap drawn there is the box's).
+// The game asks whether the mouse is on the minimap where it was drawn last: not on the box's toggle, and not while
+// the box shows the messages (the last minimap drawn is the box's, on the city screen and on the army panels, whose
+// input asks it too).
 void __cdecl MinimapHover_detour()
 {
     if (ActiveNow()) {
         bool block = false;
         if (core::diag::Guarded(
                 g_feature,
-                [](void *p) {
-                    *static_cast<bool *>(p) = lay::OnToggle(MouseCol(), *kMouseY) ||
-                                              (*kGameScreen == kScreenCity && g_boxMessages);
-                },
+                [](void *p) { *static_cast<bool *>(p) = lay::OnToggle(MouseCol(), *kMouseY) || g_boxMessages; },
                 &block)) {
             if (block) {
                 *kMinimapHovered = 0;
@@ -1258,7 +1312,7 @@ void ArmyBox()
         }
         g_armyLaidOut = false;
     }
-    if (!core::diag::Guarded(g_feature, [](void *) { DrawBox(true); }, nullptr)) {
+    if (!core::diag::Guarded(g_feature, [](void *) { DrawBox(); }, nullptr)) {
         FallBack("the box on an army panel");
     }
 }
@@ -1325,6 +1379,18 @@ void __cdecl MessagesClear_detour()
     ResetBox();
 }
 
+// The army panels' own minimap at the top: not drawn (their upper half is moved into its place; the box at the
+// bottom has the minimap). Its flag to be drawn once is cleared as the game clears it when it looks. The editors'
+// (their own place) as the game draws it.
+void __cdecl UnitsMinimap_detour(int force)
+{
+    if (ActiveNow()) {
+        *kUnitsMinimapOnce = 0;
+        return;
+    }
+    Original(o_UnitsMinimap, kUnitsMinimap)(force);
+}
+
 const Detour kDetours[] = {
     {&kUpdate, reinterpret_cast<void *>(&Update_detour)},
     {&kButtonText, reinterpret_cast<void *>(&ButtonText_detour)},
@@ -1344,6 +1410,7 @@ const Detour kDetours[] = {
     {&kFilter, reinterpret_cast<void *>(&Filter_detour)},
     {&kCityLoaded, reinterpret_cast<void *>(&CityLoaded_detour)},
     {&kMessagesClear, reinterpret_cast<void *>(&MessagesClear_detour)},
+    {&kUnitsMinimap, reinterpret_cast<void *>(&UnitsMinimap_detour)},
 };
 constexpr int kHookCount = static_cast<int>(sizeof(kDetours) / sizeof(kDetours[0]));
 
@@ -1397,11 +1464,9 @@ void RegisterSettings()
     using core::settings::Type;
     const int i = core::settings::Register(Item{
         "ui", "side_panel", "Side panel",
-        "How the side panel looks. pericles: Pericles's style, modeled on the side panel of Emperor: Rise of the "
-        "Middle Kingdom: no tabs and no picture; the minimap and the messages share a box at the bottom (switch with "
-        "the button on the box or with Tab); category, building and report names show as tooltips, which follow "
-        "Help > Balloon help; click the title to open its report; the army panel has no minimap of its own. "
-        "original: Zeus's own side panel. Default: pericles.",
+        "How the side panel looks. pericles: modeled on the side panel of Emperor: Rise of the Middle Kingdom; the "
+        "minimap stays on the side panel, in a box shared with the messages (Tab switches them). original: Zeus's "
+        "own side panel. Default: pericles.",
         Type::Choice, "pericles", Effect::Live, true, true, 0, 0, 0, nullptr, kChoices, kChoiceLabels, 2});
     core::settings::OnChange(i, &Apply);
 }
@@ -1424,7 +1489,8 @@ bool Attach()
         !Install(kShipContent, &ShipContent_detour, o_ShipContent) ||
         !Install(kBottomInput, &BottomInput_detour, o_BottomInput) || !Install(kFilter, &Filter_detour, o_Filter) ||
         !Install(kCityLoaded, &CityLoaded_detour, o_CityLoaded) ||
-        !Install(kMessagesClear, &MessagesClear_detour, o_MessagesClear)) {
+        !Install(kMessagesClear, &MessagesClear_detour, o_MessagesClear) ||
+        !Install(kUnitsMinimap, &UnitsMinimap_detour, o_UnitsMinimap)) {
         // The hooks already in stay, but with the feature off every one of them calls the game's own.
         core::diag::Disable(g_feature, "a hook could not be installed");
         core_log("side panel: a hook could not be installed; the game's own side panel");
@@ -1483,6 +1549,7 @@ void BackdropDrawing(bool drawing)
 
 void ArmyBackdropDrawn()
 {
+    SyncPatches(); // the command buttons' and texts' places as the moved panel needs them, before they are drawn
     if (!ActiveNow()) {
         return;
     }
@@ -1491,6 +1558,15 @@ void ArmyBackdropDrawn()
     if (!core::diag::Guarded(
             g_feature,
             [](void *) {
+                Sidebar16 s{};
+                if (SidebarOnScreen(&s)) {
+                    // The upper half moved up, then its taller inset (the game's own is not drawn); the command
+                    // buttons and the texts are drawn over them in the content, in their moved places.
+                    lay::MoveUnits(s.px, s.pitch);
+                    const int x = *kSidebarX;
+                    Inset(RECT{x + lay::kUnitsInsetX, lay::kUnitsInsetY, x + lay::kUnitsInsetX + lay::kUnitsInsetW,
+                               lay::kUnitsInsetY + lay::kUnitsInsetH});
+                }
                 LayOutLowerHalf();
                 Function<RotateDraw_fn>(kRotateDraw)(0, 0); // drawn by the game before the rows were laid out
             },

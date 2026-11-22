@@ -49,10 +49,17 @@
 //              click, the toggle as a button, a Condensed message (only city_message_post's question), a city loaded
 //              or started, original and the editors
 //   box_tall   taller than 768: the inset panel below 768, the edge down to the bottom
-//   army       an army or a ship panel: laid out after its backdrop, the gem again, the box after its content, the
-//              panel's own minimap place kept and put back around a click on the box's, its messages clicked
+//   army       an army or a ship panel: the upper half moved and the taller inset after its backdrop, the lower half
+//              laid out, the gem again, the box after its content (the last minimap drawn), the panel's own minimap
+//              not drawn (its flag cleared), a click on the box's, the game's own minimap input not seeing it while
+//              the messages are shown, its messages clicked
 //   army_no_backdrop  an army panel's backdrop never laid out: off after a few frames
 //   box_fault  a fault in the box's drawing: off, the code and data back, the game's own afterwards
+//
+// The army panels' upper half:
+//   units_rules  the row every pixel comes from (the edge's top, moved, mirrored, as drawn), every pixel of a move
+//   units        the command buttons', clickable rows', texts' and insets' code and data ours, the game's in the
+//                editors and with original (the panel not moved, the game's own minimap drawn), ours again
 #include "core/diag/guard.h"
 #include "core/log.h"
 #include "games/zeus/side_panel.h"
@@ -434,7 +441,7 @@ constexpr int kInsetBase = 0x4000 + 7000; // the inset tiles' first id (the fake
 struct BoxCalls {
     int listDraw, listInput, minimapHover, armyContent, shipContent, bottomInput, cityLoaded, messagesClear;
     int minimapDraw, minimapClick, textId, textGet, wrapped, imageButtons, repeat, open, rotate, imageGroup;
-    int filter, filterThisBad;
+    int filter, filterThisBad, unitsMinimap;
     int minimapArgs[4];
     int clickLeft;        // the minimap's left edge (0x7d3b2c) when minimap_click ran
     int openIndex;
@@ -487,6 +494,11 @@ void __cdecl FakeCityLoaded()
 void __cdecl FakeMessagesClear()
 {
     ++g_box.messagesClear;
+}
+constexpr DWORD aUnitsMinimapOnce = 0x10dffb8;
+void __cdecl FakeUnitsMinimap(int)
+{
+    ++g_box.unitsMinimap;
 }
 void __cdecl FakeMinimapDraw(int x, int y, int cols, int rows) // its place written as the game does
 {
@@ -592,18 +604,42 @@ struct GameBytes {
     DWORD at;
     BYTE b[9];
     int n;
-    BYTE ours1; // the byte that becomes ours (offset 1 for the pushes, 6 for the compare)
-    int oursAt;
+    BYTE ours[9];
 };
 const GameBytes kGameBytes[] = {
-    {0x515138, {0x6a, 0x11, 0x68, 0x40, 0xdc, 0x63, 0x00}, 7, 0x0f, 1},
-    {0x515154, {0x6a, 0x11, 0x68, 0x40, 0xdc, 0x63, 0x00}, 7, 0x0f, 1},
-    {0x51535f, {0x6a, 0x11, 0x68, 0x40, 0xdc, 0x63, 0x00}, 7, 0x0f, 1},
-    {0x517ca3, {0x6a, 0x11, 0x68, 0x40, 0xdc, 0x63, 0x00}, 7, 0x0f, 1},
-    {0x5150d7, {0x83, 0x3d, 0x04, 0x00, 0xfa, 0x00, 0x0a, 0x74, 0x10}, 9, 0x7f, 6},
-    {0x63e04a, {0x1f, 0x02}, 2, 0xc7, 0}, // the check, globe and gem buttons' y: 543 -> 711
-    {0x63e072, {0x1f, 0x02}, 2, 0xc7, 0},
-    {0x63e09a, {0x1f, 0x02}, 2, 0xc7, 0},
+    {0x515138, {0x6a, 0x11, 0x68, 0x40, 0xdc, 0x63, 0x00}, 7, {0x6a, 0x0f, 0x68, 0x40, 0xdc, 0x63, 0x00}},
+    {0x515154, {0x6a, 0x11, 0x68, 0x40, 0xdc, 0x63, 0x00}, 7, {0x6a, 0x0f, 0x68, 0x40, 0xdc, 0x63, 0x00}},
+    {0x51535f, {0x6a, 0x11, 0x68, 0x40, 0xdc, 0x63, 0x00}, 7, {0x6a, 0x0f, 0x68, 0x40, 0xdc, 0x63, 0x00}},
+    {0x517ca3, {0x6a, 0x11, 0x68, 0x40, 0xdc, 0x63, 0x00}, 7, {0x6a, 0x0f, 0x68, 0x40, 0xdc, 0x63, 0x00}},
+    {0x5150d7, {0x83, 0x3d, 0x04, 0x00, 0xfa, 0x00, 0x0a, 0x74, 0x10}, 9,
+     {0x83, 0x3d, 0x04, 0x00, 0xfa, 0x00, 0x7f, 0x74, 0x10}},
+    {0x63e04a, {0x1f, 0x02}, 2, {0xc7, 0x02}}, // the check, globe and gem buttons' y: 543 -> 711
+    {0x63e072, {0x1f, 0x02}, 2, {0xc7, 0x02}},
+    {0x63e09a, {0x1f, 0x02}, 2, {0xc7, 0x02}},
+    // The army (0x6402a0) and ship (0x640390) command buttons' y: 173 -> 35, 225 -> 87, 277 -> 139.
+    {0x6402a2, {0xad, 0x00}, 2, {0x23, 0x00}},
+    {0x6402ca, {0xe1, 0x00}, 2, {0x57, 0x00}},
+    {0x6402f2, {0x15, 0x01}, 2, {0x8b, 0x00}},
+    {0x64031a, {0xad, 0x00}, 2, {0x23, 0x00}},
+    {0x640342, {0xe1, 0x00}, 2, {0x57, 0x00}},
+    {0x64036a, {0x15, 0x01}, 2, {0x8b, 0x00}},
+    {0x640392, {0xad, 0x00}, 2, {0x23, 0x00}},
+    {0x6403ba, {0xe1, 0x00}, 2, {0x57, 0x00}},
+    {0x6403e2, {0x15, 0x01}, 2, {0x8b, 0x00}},
+    {0x64040a, {0xad, 0x00}, 2, {0x23, 0x00}},
+    {0x640432, {0xe1, 0x00}, 2, {0x57, 0x00}},
+    {0x64045a, {0x15, 0x01}, 2, {0x8b, 0x00}},
+    // The clickable rows (y1, x2 160, y2): 335..355 -> 197..217, and so on 20 rows apart.
+    {0x640482, {0x4f, 0x01, 0xa0, 0x00, 0x63, 0x01}, 6, {0xc5, 0x00, 0xa0, 0x00, 0xd9, 0x00}},
+    {0x64049e, {0x63, 0x01, 0xa0, 0x00, 0x77, 0x01}, 6, {0xd9, 0x00, 0xa0, 0x00, 0xed, 0x00}},
+    {0x6404ba, {0x77, 0x01, 0xa0, 0x00, 0x8b, 0x01}, 6, {0xed, 0x00, 0xa0, 0x00, 0x01, 0x01}},
+    {0x6404d6, {0x8b, 0x01, 0xa0, 0x00, 0x9f, 0x01}, 6, {0x01, 0x01, 0xa0, 0x00, 0x15, 0x01}},
+    {0x6404f2, {0x9f, 0x01, 0xa0, 0x00, 0xb3, 0x01}, 6, {0x15, 0x01, 0xa0, 0x00, 0x29, 0x01}},
+    // The texts' y (push 0x168 -> push 0xde) and the insets (call inner_panel_draw -> a 5-byte nop).
+    {0x5257fb, {0x68, 0x68, 0x01, 0x00, 0x00}, 5, {0x68, 0xde, 0x00, 0x00, 0x00}},
+    {0x525e78, {0x68, 0x68, 0x01, 0x00, 0x00}, 5, {0x68, 0xde, 0x00, 0x00, 0x00}},
+    {0x5257e8, {0xe8, 0xb3, 0x9a, 0x07, 0x00}, 5, {0x0f, 0x1f, 0x44, 0x00, 0x00}},
+    {0x525e66, {0xe8, 0x35, 0x94, 0x07, 0x00}, 5, {0x0f, 0x1f, 0x44, 0x00, 0x00}},
 };
 
 // Every changed byte is ours (true) or every byte the game's (false).
@@ -611,7 +647,7 @@ bool CodeIs(bool ours)
 {
     for (const GameBytes &g : kGameBytes) {
         for (int i = 0; i < g.n; ++i) {
-            const BYTE want = ours && i == g.oursAt ? g.ours1 : g.b[i];
+            const BYTE want = ours ? g.ours[i] : g.b[i];
             if (At<BYTE>(g.at + static_cast<DWORD>(i)) != want) {
                 return false;
             }
@@ -730,6 +766,7 @@ void Setup()
     Thunk(0x522bd0, reinterpret_cast<void *>(&FakeOpen));
     Thunk(0x517a20, reinterpret_cast<void *>(&FakeRotate));
     Thunk(0x40fcf0, reinterpret_cast<void *>(&FakeImageGroup));
+    Thunk(0x58ea90, reinterpret_cast<void *>(&FakeUnitsMinimap));
     // The message box's arrows as the game has them (x -1; y 2 and 31 below the box's y).
     At<short>(aArrows + 0) = -1;
     At<short>(aArrows + 2) = 2;
@@ -799,7 +836,7 @@ Tip Frame(int hover)
 void Sites()
 {
     const int n = sp::SiteCountForTest();
-    Check(n == 52, "52 checks (18 hooked, 26 called, 8 code and data changes)");
+    Check(n == 74, "74 checks (19 hooked, 26 called, 29 code and data changes)");
     for (int k = 0; k < n; ++k) {
         Check(sp::AttachForTest(k) == 0, "a site that does not match: nothing installed");
         Check(!sp::Active(), "not active");
@@ -812,7 +849,7 @@ void Sites()
         Update();
         Check(g_calls.update == 1, "update: the game's own");
     }
-    Check(sp::AttachForTest(-1) == 18, "all match: 18 hooks");
+    Check(sp::AttachForTest(-1) == 19, "all match: 19 hooks");
     Check(sp::Active(), "active");
 }
 
@@ -1423,7 +1460,7 @@ void ColumnFault()
 void CodeSites()
 {
     const int n = sp::SiteCountForTest(), patches = sp::PatchCountForTest();
-    Check(patches == 8 && n == 44 + 8, "44 sites and 8 code and data changes");
+    Check(patches == 29 && n == 45 + 29, "45 sites and 29 code and data changes");
     ColumnSetup();
     for (int k = 0; k < n; ++k) {
         Check(sp::AttachForTest(k) == 0, "one that does not match: nothing installed");
@@ -1778,31 +1815,45 @@ void BoxTall()
     At<int>(aDdHeight) = kH;
 }
 
-// An army (and a ship) panel: the lower half laid out after its backdrop, the box after its content, the game's own
-// minimap at the top the one its input sees.
+// An army (and a ship) panel: the upper half moved and the lower half laid out after its backdrop, the box after its
+// content; no minimap of its own at the top, so the box's is the one its input sees.
 void Army()
 {
     BoxSetup();
     PanelDraw(); // active
     At<unsigned char>(aGameScreen) = 0x48;
     DrawBackdrop();
-    FakeMinimapDraw(kSx + 25, 28, 71, 109); // the army panel's own, drawn with its backdrop
     g_box = {};
+    g_drawn.clear();
     sp::ArmyBackdropDrawn();
     Check(g_box.rotate == 1 && Px(kSx + 100, 731) == BackdropPx(kSx + 100, 563),
           "after its backdrop: the lower half laid out, the gem drawn again");
+    Check(Px(kSx + 100, 0) == BackdropPx(kSx + 100, 138) && Px(kSx + 5, 0) == BackdropPx(kSx + 5, 0) &&
+              Px(kSx + 100, 400) == BackdropPx(kSx + 100, 402),
+          "the upper half moved up 138 rows (the edge's top as drawn, the mirrored rows)");
+    Check(TileAt(kSx + 14, 222) && TileAt(kSx + 14 + 160 - 16, 472 - 16),
+          "the taller inset at (14, 222), 160 x 250 (to row 471)");
     BoxHook<void(__cdecl *)()>("army_sidebar_content_draw")();
     Check(g_box.armyContent == 1 && g_box.minimapDraw == 1 && g_box.minimapArgs[0] == kSx + 12 &&
-              At<int>(aMinimapRect + 12) == kSx + 25 && At<int>(aMinimapArgs + 12) == kSx + 25,
-          "its content, then the box's minimap; the place of the panel's own minimap kept");
+              At<int>(aMinimapRect + 12) == kSx + 12,
+          "its content, then the box's minimap: the last one drawn");
+    // The panel's own minimap at the top: from its backdrop (forced) or on every frame while scrolling.
+    g_box = {};
+    At<int>(aUnitsMinimapOnce) = 1;
+    BoxHook<void(__cdecl *)(int)>("units_minimap_draw")(1);
+    BoxHook<void(__cdecl *)(int)>("units_minimap_draw")(0);
+    Check(g_box.unitsMinimap == 0 && g_box.minimapDraw == 0 && At<int>(aUnitsMinimapOnce) == 0,
+          "the panel's own minimap at the top: not drawn, its flag cleared as the game does");
     At<int>(aMouseX) = kSx + 100;
     At<int>(aMouseY) = 600;
     At<unsigned char>(aMousePressed) = 1;
     g_clickResult = 1;
     g_box = {};
     Check(BottomInput() == 1 && g_box.bottomInput == 1 && g_box.minimapClick == 1 && g_box.clickLeft == kSx + 12 &&
-              At<int>(aMinimapRect + 12) == kSx + 25,
-          "a click on the box's minimap: clicked with the box's place, the panel's own put back");
+              At<int>(aMinimapRect + 12) == kSx + 12,
+          "a click on the box's minimap: clicked with the box's place");
+    MinimapHover();
+    Check(At<int>(aMinimapHovered) == 1, "the game's own input there: the box's minimap under the mouse");
     g_bottomResult = 1;
     g_box = {};
     Check(BottomInput() == 1 && g_box.minimapClick == 0, "a bottom button clicked: nothing else");
@@ -1810,6 +1861,13 @@ void Army()
     g_clickResult = 0;
     // The messages there: drawn after the content, clicked through the bottom buttons' input.
     Toggle();
+    At<unsigned char>(aGameScreen) = 0x20;
+    At<int>(aMouseX) = kSx + 50;
+    At<int>(aMouseY) = 520;
+    g_box = {};
+    MinimapHover();
+    Check(g_box.minimapHover == 0 && At<int>(aMinimapHovered) == 0,
+          "the messages shown: the game's own input on the panel does not see the box's minimap");
     g_box = {};
     BoxHook<void(__cdecl *)()>("ship_sidebar_content_draw")();
     Check(g_box.shipContent == 1 && g_box.wrapped == 2 && g_box.minimapDraw == 0, "a ship panel: the messages");
@@ -1824,6 +1882,72 @@ void Army()
     Check(g_box.bottomInput == 1 && g_box.open == 0, "the city screen: the bottom buttons only (the box is asked "
                                                      "with the panel's input)");
     At<unsigned char>(aMousePressed) = 0;
+}
+
+// The army panels' upper half on its own: which row every pixel comes from, and the move on a sidebar whose every
+// pixel is different (each one compared).
+void UnitsRules()
+{
+    Check(lay::UnitsSourceRow(0, 0) == -1 && lay::UnitsSourceRow(10, 30) == -1 && lay::UnitsSourceRow(11, 0) == 138 &&
+              lay::UnitsSourceRow(10, 31) == 169,
+          "the edge's top (columns 0..10, rows 0..30) stays; next to it and below it moved");
+    Check(lay::UnitsSourceRow(100, 0) == 138 && lay::UnitsSourceRow(100, 332) == 470 &&
+              lay::UnitsSourceRow(100, 333) == 469 && lay::UnitsSourceRow(100, 471) == 331 &&
+              lay::UnitsSourceRow(100, 472) == -1 && lay::UnitsSourceRow(185, 477) == -1,
+          "rows 0..332 from 138..470, 333..471 mirrored about 470 (469..331), from 472 as drawn");
+    constexpr int kPitch = 200, kRows = 500;
+    std::vector<unsigned short> s(static_cast<size_t>(kPitch) * kRows);
+    auto orig = [](int x, int y) { return static_cast<unsigned short>(y * 200 + x); };
+    for (int y = 0; y < kRows; ++y) {
+        for (int x = 0; x < kPitch; ++x) {
+            s[static_cast<size_t>(y) * kPitch + x] = orig(x, y);
+        }
+    }
+    lay::MoveUnits(s.data(), kPitch);
+    int bad = 0;
+    for (int y = 0; y < kRows; ++y) {
+        for (int x = 0; x < kPitch; ++x) {
+            int want = y;
+            if (x < 186 && y < 472 && !(x < 11 && y < 31)) {
+                want = y < 333 ? y + 138 : 802 - y;
+            }
+            bad += s[static_cast<size_t>(y) * kPitch + x] != orig(x, want);
+        }
+    }
+    Check(bad == 0, "every pixel: from its row (the rows read before any is written), the rest untouched");
+}
+
+// The army panels' code and data: ours while a city is played, the game's in the editors and with original; the
+// panel's own minimap drawn there by the game, the panel not moved.
+void Units()
+{
+    BoxSetup();
+    PanelDraw();
+    At<unsigned char>(aGameScreen) = 0x48;
+    Check(CodeIs(true), "active: the command buttons, the clickable rows, the texts' y and the insets ours");
+    At<int>(aEditorMode) = 1;
+    Update();
+    Check(CodeIs(false), "the editors: the game's code and data");
+    g_box = {};
+    BoxHook<void(__cdecl *)(int)>("units_minimap_draw")(1);
+    Check(g_box.unitsMinimap == 1, "the editors: the game's minimap drawing");
+    DrawBackdrop();
+    g_drawn.clear();
+    sp::ArmyBackdropDrawn();
+    Check(Px(kSx + 100, 0) == BackdropPx(kSx + 100, 0) && Px(kSx + 100, 300) == BackdropPx(kSx + 100, 300) &&
+              !TileAt(kSx + 14, 222),
+          "the editors: nothing moved, no inset of ours");
+    At<int>(aEditorMode) = 0;
+    sp::ArmyBackdropDrawn();
+    Check(CodeIs(true) && Px(kSx + 100, 0) == BackdropPx(kSx + 100, 138),
+          "back in the city: ours again from the backdrop on (before the content is drawn)");
+    sp::SetModeForTest("original", false);
+    Check(CodeIs(false), "original: the game's code and data at once");
+    g_box = {};
+    BoxHook<void(__cdecl *)(int)>("units_minimap_draw")(0);
+    Check(g_box.unitsMinimap == 1, "original: the game's minimap drawing");
+    sp::SetModeForTest("pericles", false);
+    At<unsigned char>(aGameScreen) = 1;
 }
 
 // An army panel's backdrop never laid out (sidebar_draw_units not hooked): the game's own side panel after a few
@@ -1876,7 +2000,8 @@ const Scenario kScenarios[] = {
     {"column_move", &ColumnMove}, {"column", &Column},     {"column_no_backdrop", &ColumnNoBackdrop},
     {"input", &Input},          {"column_fault", &ColumnFault}, {"code_sites", &CodeSites},
     {"box_rules", &BoxRules},   {"box", &Box},             {"box_tall", &BoxTall},     {"army", &Army},
-    {"army_no_backdrop", &ArmyNoBackdrop}, {"box_fault", &BoxFault},
+    {"army_no_backdrop", &ArmyNoBackdrop}, {"box_fault", &BoxFault}, {"units_rules", &UnitsRules},
+    {"units", &Units},
 };
 
 } // namespace

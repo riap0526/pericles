@@ -263,6 +263,32 @@ int WrapLines(const unsigned char *text, int limit, int (*width)(unsigned char c
 // Whether a message of `lines` lines (each 5 + lineHeight rows, as text_draw_wrapped advances) fits from row y.
 bool MessageFits(int y, int lines, int lineHeight);
 
+// ---- The army and ship panels' upper half ----
+//
+// As on Emperor's army panel: no minimap of its own at the top (the box at the bottom has one), the name box, the
+// state and the command buttons moved up into its place, the inset panel below them as tall as the room left. The
+// game draws that sidebar's backdrop on every frame (sidebar_draw_units 0x525280), and the whole of it is moved up
+// right after that, before the command buttons, the inset and its text are drawn (their places are moved in the
+// game's tables): rows 138..470 (from below the light bottom line of the minimap's recess) go to rows 0..332 with
+// their marble, so nothing meets marble that was not moved; rows 333..471 are rows 469..331 mirrored (row 470 the
+// axis: rows 471..477 hold the light line above the Go to row, drawn as they are), mostly covered by the taller
+// inset; the left edge's top (columns 0..10 of rows 0..30: the marble that runs into the top bar and the edge's dark
+// end) stays where it is.
+constexpr int kUnitsShift = 138;
+constexpr int kUnitsMovedEnd = 333;  // rows 0..332 from 138..470
+constexpr int kUnitsMirrorAxis = 470;
+constexpr int kUnitsEnd = 472;       // rows 333..471 mirrored; from 472 as drawn
+constexpr int kUnitsCapW = kEdgeW, kUnitsCapRows = 31;
+// The inset panel (the game's: (14, 360), 10 x 7 tiles), from below the command buttons down to row 471.
+constexpr int kUnitsInsetX = 14, kUnitsInsetY = 222, kUnitsInsetW = 160, kUnitsInsetH = 250;
+// The game's rows of the command buttons (two tables of 6, from y 173, 225 and 277 at the base 0x1e) and of the
+// texts in the inset (0x168 and the clickable rows of 0x640480 at 335..435) move up by the same.
+
+// The row that a pixel of the moved panel comes from (sidebar column, screen row); -1 for one that stays as drawn.
+int UnitsSourceRow(int col, int y);
+// The army panel on screen (`sidebar` as LowerHalf's) moved as above; rows below kUnitsEnd are not touched.
+void MoveUnits(Px *sidebar, int pitch);
+
 // The messages drawn in the box (their index in the game's list and their rows), for a click on one of them.
 class MessageList {
 public:

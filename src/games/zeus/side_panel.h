@@ -11,7 +11,9 @@
 // - no picture: below the Go to buttons one box shows the minimap or the messages (as many as fit, the one clicked
 //   opened), switched with the button in its corner or with Tab, and back to the minimap for every city started or
 //   loaded; a Condensed message brings it to the messages; the check, gem and globe below it; on taller screens an
-//   inset panel below 768. The army and ship panels have the same box.
+//   inset panel below 768. The army and ship panels have the same box;
+// - the army and ship panels' upper half as Emperor's: no minimap of its own at the top, the name box, the state and
+//   the command buttons moved up into its place, the inset panel below them taller.
 //
 // All or nothing: every hook is installed at start-up, only when every site has the bytes of the known build; a fault
 // in any of them switches the whole side panel off for the rest of the run (the game's own from then on, the screen
@@ -36,8 +38,8 @@ bool Active();
 // taken from the screen while the backdrop has just been drawn.
 void BackdropDrawing(bool drawing);
 
-// sidebar_draw_units (games/zeus/resolution's detour), after the game's drawing: the army or ship panel's lower half
-// laid out (the box, the button row).
+// sidebar_draw_units (games/zeus/resolution's detour), after the game's drawing: the army or ship panel's upper half
+// moved up with its taller inset, its lower half laid out (the box, the button row).
 void ArmyBackdropDrawn();
 
 // Offline tests.

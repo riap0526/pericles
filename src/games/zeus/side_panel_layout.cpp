@@ -240,6 +240,37 @@ void LowerHalf(Px *sidebar, int pitch, int height)
     }
 }
 
+int UnitsSourceRow(int col, int y)
+{
+    if (y < 0 || y >= kUnitsEnd || col < 0 || col >= kSidebarW || (col < kUnitsCapW && y < kUnitsCapRows)) {
+        return -1;
+    }
+    const int from = y + kUnitsShift;
+    return from <= kUnitsMirrorAxis ? from : 2 * kUnitsMirrorAxis - from;
+}
+
+void MoveUnits(Px *sidebar, int pitch)
+{
+    // The rows read (331..470) overlap the rows written (0..471): copied first.
+    constexpr int kFirst = kUnitsShift, kRows = kUnitsMirrorAxis + 1 - kUnitsShift;
+    static Px from[kRows][kSidebarW];
+    for (int y = 0; y < kRows; ++y) {
+        const Px *s = sidebar + (kFirst + y) * pitch;
+        for (int x = 0; x < kSidebarW; ++x) {
+            from[y][x] = s[x];
+        }
+    }
+    for (int y = 0; y < kUnitsEnd; ++y) {
+        Px *to = sidebar + y * pitch;
+        for (int x = 0; x < kSidebarW; ++x) {
+            const int src = UnitsSourceRow(x, y);
+            if (src >= 0) {
+                to[x] = from[src - kFirst][x];
+            }
+        }
+    }
+}
+
 bool OnToggle(int col, int y)
 {
     return col >= kToggleX && col < kToggleX + kToggleSize && y >= kToggleY && y < kToggleY + kToggleSize;
