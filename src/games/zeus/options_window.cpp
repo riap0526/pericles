@@ -32,6 +32,23 @@ using sr::Toggle;
 
 const Var<int> kEditorMode{0x665e2c}; // editor_mode: 1 in the editors
 
+// The game's picture (the options window keeps the one under it): draw_buffer, dd_pitch, dd_width / dd_height,
+// game_screen. draw_buffer is 0 while the game makes its surfaces again.
+const Var<unsigned char *> kDrawBuffer{0xf9c100};
+const Var<int> kPitch{0xf2a698};
+const Var<int> kWidth{0xf2a6a0}, kHeight{0xf2a69c};
+const Var<unsigned char> kGameScreen{0xf2a6dd};
+
+bool GameFrame(oh::GameFrame *out)
+{
+    out->pixels = *kDrawBuffer;
+    out->pitch = *kPitch;
+    out->width = *kWidth;
+    out->height = *kHeight;
+    out->screen = *kGameScreen;
+    return out->pixels != nullptr;
+}
+
 // Yongle's pages with Pericles's settings, the game's own options among them (games/zeus/options_original). The pages
 // are built each time the window opens: in the editors the game speed is left out (the editors do not run the game,
 // so it does nothing there; game_speed_step 0x402430 ignores it too).
@@ -192,7 +209,8 @@ void Attach(const core::options::pause_menu::PauseGame &pause)
 {
     static const oh::OptionsGame game(pause, zeus::options_text::kOptionsTitle, &BuildPages, &BuildKeyPages,
                                       &ReservedKey, kEmergency,
-                                      static_cast<int>(sizeof(kEmergency) / sizeof(kEmergency[0])), true);
+                                      static_cast<int>(sizeof(kEmergency) / sizeof(kEmergency[0])), true,
+                                      &GameFrame);
     zeus::options_text::Register(); // Pericles's own texts, before the shared ones
     g_scienceNamesOk = Matches(kScienceNames);
     if (!g_scienceNamesOk) {

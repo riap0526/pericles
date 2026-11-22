@@ -36,14 +36,15 @@
 //                       the screen's bottom and the game's inset panel between, right of it the marble
 //                       (see the filler's section below);
 //   world_map_sidebars 0x597e50: the world map's sidebar filled the same way on its own picture;
+//   editor_city_sidebar_draw 0x51e6c0, editor_world_map_sidebar 0x5c2800: the editors' sidebars, the same way;
 //   info_window_place 0x5715a0, info_fixed_window_draw 0x5b2880, info_fixed_window_foreground 0x5b38c0,
 //   info_window_input 0x5726e0, buttons_draw 0x4316f0: the building information window where [ui] info_window
 //                       says; the four kinds the game keeps at (0, 0x20) moved on screen (see its section below).
 // Front-end screens (menus, adventure screens, scores, loading pictures) are laid out for the game's own 1024x768: from
 // a full-screen picture (jpeg_draw_background, games/zeus/diag) until the next city screen the game runs at 1024x768
 // and the output frames it (the core's OnLoop calls the game's own screen_switch_mode 0x5c4a30, __cdecl mode, as its
-// F7 does). Overlays (menus, messages, the file dialog) keep the screen beneath. The world map and the campaign map
-// run at the city's resolution (their layout: games/zeus/world_map).
+// F7 does). Overlays (menus, messages, the file dialog) keep the screen beneath. The world map, the campaign map and
+// the editor's world map run at the city's resolution (their layout: games/zeus/world_map).
 // Shift+F7 cycles a few settings until the game ends (on a front-end screen it applies on the next city screen). F6
 // and F7 stay the game's (F6: the game's own 800x600; F7: mode 3, i.e. ours).
 // The game's own screenshot (Alt+1 / Alt+2 in the city: game_wndproc -> 0x42c700 -> bmp_screenshot 0x50b030,
@@ -72,6 +73,7 @@
 #include "core/ui/info_window.h"
 #include "games/zeus/diag.h"
 #include "games/zeus/scroll.h"
+#include "games/zeus/timing.h"
 #include "games/zeus/zoom.h"
 
 #include <cstring>
@@ -146,10 +148,13 @@ core::diag::Feature g_layout{"city layout at this resolution (games/zeus/resolut
 core::diag::Feature g_bars{"top bar (games/zeus/resolution)"};
 core::diag::Feature g_message{"city message panel and bottom strip (games/zeus/resolution)"};
 
-// The screens the game draws the city for; overlays on them keep the city's size.
+// The screens that run at our resolution: the city (also the adventure editor's city, 0x01 with editor_mode 1) and
+// the editor's world map (0x15, and 0x2d, its name box over it), which games/zeus/world_map lays out as the game's
+// world map. Overlays on them keep their size. The editor's world map is entered from the adventure editor (a front-end
+// screen in the 1024x768 frame): leaving the frame there is one mode change, as the editor's city has.
 bool CityScreen(unsigned char s)
 {
-    return s == 0x01 || s == 0x20 || s == 0x48;
+    return s == 0x01 || s == 0x20 || s == 0x48 || s == 0x15 || s == 0x2d;
 }
 
 using Mode_fn = void(__cdecl *)(int);
@@ -161,11 +166,78 @@ Config_fn o_ConfigLoad;
 void (*g_afterConfigLoad)() = nullptr;
 Void_fn o_SidebarPos, o_ViewportWide, o_ViewportNarrow;
 
+// Around the game's mode change, each with the guard g_modeScreens:
+//   help 0x05 (also About): screen_switch_mode does nothing there, so the old picture stayed until the help was left.
+//   The help is closed first as its right click closes it (help_close 0x4f51e0: __cdecl, no arguments, ret; back to
+//   the screen it was opened from), when its right click would (no choice buttons: 0xef8cba is 0, 0x4f4cf0).
+//   mission goals 0x3b: its drawing is the dialog only (screen_draw_background 0x513b30, screen_draw 0x514020), so the
+//   new picture was black around it. Its right click goes back to the city (0x52be10: game_screen 1), so the city is
+//   drawn behind it once, as the city screen draws it, inside timing's drawing that never counts (as the Display
+//   options dialog draws the city behind it).
+const Site kHelpClose{"help_close", 0x4f51e0, {0xa0, 0xb0, 0x8c, 0xef, 0x00, 0xc6, 0x05, 0xce}};
+const Site kScreenBackground{"screen_draw_background", 0x513b30, {0x8b, 0x44, 0x24, 0x04, 0xb1, 0x01, 0x85, 0xc0}};
+const Site kScreenDraw{"screen_draw", 0x514020, {0x33, 0xc0, 0x53, 0xa0, 0xdd, 0xa6, 0xf2, 0x00}};
+const Var<short> kHelpChoices{0xef8cba};
+const Var<int> kHover{0x781844}, kHover2{0x781840}; // screen_draw_background keeps both around its drawing
+constexpr unsigned char kScreenHelp = 0x05, kScreenGoals = 0x3b, kScreenCity = 0x01;
+core::diag::Feature g_modeScreens{"help and mission goals at a mode change (games/zeus/resolution)"};
+bool g_modeScreensOk = false; // its sites matched
+bool g_behindDrawn = false;
+bool g_behindLogged = false;
+
+void CloseHelpNow(void *)
+{
+    if (*kGameScreen == kScreenHelp && *kHelpChoices == 0) {
+        Function<Void_fn>(kHelpClose)();
+        core_log("zeus: resolution: the help closed for the mode change (back to screen 0x%02x)", *kGameScreen);
+    }
+}
+
+using ScreenBackground_fn = void(__cdecl *)(int force);
+
+void GameDrawsCity(void *)
+{
+    Function<ScreenBackground_fn>(kScreenBackground)(1);
+    Function<Void_fn>(kScreenDraw)();
+}
+
+void DrawCityNow(void *)
+{
+    g_behindDrawn = true;
+    core::diag::Restore undo;
+    undo.Save(kGameScreen.ptr());
+    undo.Save(kHover.ptr());
+    undo.Save(kHover2.ptr());
+    *kGameScreen = kScreenCity;
+    const bool ok = core::diag::Guarded(g_modeScreens, &GameDrawsCity, nullptr, &undo);
+    if (ok) {
+        undo.Undo(); // the goals' screen and hover back
+    }
+}
+
+void DrawCityBehindGoals()
+{
+    g_behindDrawn = false;
+    zeus::timing::PutBackDrawingOutside(&DrawCityNow, nullptr);
+    if (!g_behindDrawn && !g_behindLogged) {
+        g_behindLogged = true;
+        core_log("zeus: resolution: the city behind the mission goals is not drawn (timing's put-back is not working)");
+    }
+    *kRedraw = 1; // the goals over it in the next frame
+}
+
 // The game's own mode change (as its F7). It does nothing on screens 0x0f, 0x0e, 0x21 and 0x05; the core tries again.
 void ChangeMode()
 {
+    const bool screens = g_modeScreensOk && core::diag::Enabled(g_modeScreens);
+    if (screens) {
+        core::diag::Guarded(g_modeScreens, &CloseHelpNow, nullptr);
+    }
     Function<Mode_fn>(kSwitchMode)(3);
     *kRedraw = 1;
+    if (screens && core::diag::Enabled(g_modeScreens) && *kGameScreen == kScreenGoals) {
+        DrawCityBehindGoals();
+    }
 }
 
 switching::SwitchGame Game()
@@ -817,6 +889,36 @@ void __cdecl SidebarUnits_detour(int screen)
     }
 }
 
+// The editors' sidebars (Zeus_Interface entries 1752 and 1675, 186x768): the same red edge and plain blue as the city's
+// (columns 0..10 of rows 640..699), the picture's frame from row 604 as on the city's, so the city's filler fits.
+//   editor_city_sidebar_draw 0x51e6c0 (__thiscall on the editor's city screen object 0xfa0600, no stack arguments,
+//      ret; only through its vtable 0x5d9538 + 0x10, called by city_bottom_and_sidebar when editor_mode is 1): blanks
+//      sidebar_x + 6 .. the right edge from row 0x18 to the bottom, then draws its picture at (sidebar_x, 0), down to
+//      768 only, and its buttons and minimap above row 600;
+//   editor_world_map_sidebar 0x5c2800 (no arguments, ret; vtable 0x5e4b58 + 0x10 of the editor's world map, 0x15):
+//      its picture at sidebar_x (wider than 800), its buttons, frame_top_panel(1).
+const Site kEditorCitySidebar{"editor_city_sidebar_draw", 0x51e6c0, {0xa1, 0x9c, 0xa6, 0xf2, 0x00, 0x83, 0xec, 0x28}};
+const Site kEditorWorldSidebar{"editor_world_map_sidebar", 0x5c2800, {0x83, 0xec, 0x08, 0x8d, 0x44, 0x24, 0x04, 0x8d}};
+using EditorSidebar_fn = void(__fastcall *)(void *, void *); // __thiscall: this in ecx, edx unused
+EditorSidebar_fn o_EditorCitySidebar;
+Void_fn o_EditorWorldSidebar;
+
+void __fastcall EditorCitySidebar_detour(void *self, void * /*edx*/)
+{
+    Original(o_EditorCitySidebar, kEditorCitySidebar)(self, nullptr);
+    if (FillerWanted()) {
+        Filler(kCityEdge);
+    }
+}
+
+void __cdecl EditorWorldSidebar_detour()
+{
+    Original(o_EditorWorldSidebar, kEditorWorldSidebar)();
+    if (Wanted(*kModeWidth, *kModeHeight)) {
+        Filler(kCityEdge);
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // The building information window ([ui] info_window)
 //
@@ -1071,6 +1173,17 @@ void AttachCityLayout()
     if (!side || !units || !world) {
         core::diag::Disable(g_filler, "its sites do not match or a hook could not be installed");
     }
+    // The editors' sidebars: without them only the editors' sidebars stay as the game draws them (black below 768).
+    for (const Site *s : {&kEditorCitySidebar, &kEditorWorldSidebar}) {
+        const bool ok = images && Matches(*s) &&
+                        (s == &kEditorCitySidebar
+                             ? Install(kEditorCitySidebar, &EditorCitySidebar_detour, o_EditorCitySidebar)
+                             : Install(kEditorWorldSidebar, &EditorWorldSidebar_detour, o_EditorWorldSidebar));
+        if (!ok) {
+            core_log("zeus: resolution: %s at 0x%lx not hooked: that editor's sidebar is not filled below 768",
+                     s->name, static_cast<unsigned long>(s->address));
+        }
+    }
     // The info window: its place, and the four fixed-place kinds moved on screen (all or none of these).
     const Site *info[] = {&kInfoPlace, &kFixedDraw, &kFixedFore, &kInfoInput, &kButtonsDraw};
     bool infoOk = true;
@@ -1221,6 +1334,8 @@ const Detour *Detours(int *count)
         {&kInfoInput, reinterpret_cast<void *>(&InfoInput_detour)},
         {&kButtonsDraw, reinterpret_cast<void *>(&ButtonsDraw_detour)},
         {&kWorldSidebars, reinterpret_cast<void *>(&WorldSidebars_detour)},
+        {&kEditorCitySidebar, reinterpret_cast<void *>(&EditorCitySidebar_detour)},
+        {&kEditorWorldSidebar, reinterpret_cast<void *>(&EditorWorldSidebar_detour)},
     };
     *count = static_cast<int>(sizeof(kDetours) / sizeof(kDetours[0]));
     return kDetours;
@@ -1230,6 +1345,7 @@ void InstalledForTest(const core_config *cfg)
 {
     switching::InstalledForTest(Game(), cfg);
     zeus::zoom::SetRelayout(&RelayoutCity);
+    g_modeScreensOk = true; // the help and the goals at a mode change: the test's fakes at their sites
 }
 
 bool FrontEndForTest()
@@ -1250,6 +1366,15 @@ bool Attach(const core_config *cfg)
             core_log("zeus: resolution: %s at 0x%lx does not match; custom resolutions not installed", s->name,
                      static_cast<unsigned long>(s->address));
             return false;
+        }
+    }
+    g_modeScreensOk = true;
+    for (const Site *s : {&kHelpClose, &kScreenBackground, &kScreenDraw}) {
+        if (!Matches(*s)) {
+            core_log("zeus: resolution: %s at 0x%lx does not match; the help and the mission goals stay as the game "
+                     "leaves them at a mode change",
+                     s->name, static_cast<unsigned long>(s->address));
+            g_modeScreensOk = false;
         }
     }
     // Before the hooks, as Yongle's: their fallbacks go back to the game's size through it (switching::ToGameSize

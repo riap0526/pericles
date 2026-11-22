@@ -25,7 +25,9 @@
 //                           a full-screen picture outside the city starts the frame, one on the city screen does not
 //   mode_size_fault     a fault after mode 3's size was written: 1024x768 back (logged: 2 values put back),
 //                           switching off, settings refused
-//   viewport_layout              the sidebar (where the open-sidebar columns end) and both city viewports at 1920x1080 and
+//   mode_screens        a mode change on the help closes it first (not with choice buttons); on the mission goals
+//                           the city is drawn behind once as screen 1 and the goals drawn again; other screens neither
+//   viewport_layout             the sidebar (where the open-sidebar columns end) and both city viewports at 1920x1080 and
 //                           1024x900; the game's own at 1024x768
 //   layout_fault        viewport_init faults: the 1024 layout at once, the sidebar at the game's 838, the game's
 //                           own size on the next loop
@@ -66,7 +68,9 @@
 //
 // Esc and the pause menu (games/zeus/game_menu, core/options/pause_menu):
 //   esc_and_pause                  a confirmation's No; lParam 0 the game's; the main menu asks; dialogs and menu screens a
-//                           right click in the next input pass; the world map; the city (tool, company, pause menu);
+//                           right click in the next input pass (on the dialogs whose buttons take it first: the mouse
+//                           off the screen for three passes, the right click in the third); the world map; the city
+//                           (tool, company, pause menu);
 //                           the pause menu's items at the next loop, Replay map's No back to the menu
 //   esc_editor           the editors: 0x58 the game's, pages and dialogs a right click, the map's tool, the three
 //                           editor pause menus and their File menu functions with button_param
@@ -80,8 +84,8 @@
 //                           framing follows the new scale at once (the changed listener)
 //   framed_fault        a fault while the framing follows the setting: framing off (the game's own frame), the
 //                           resolution switching stays on and the setting is applied
-//   city_around         menu_screens = city: the panel pattern before an episode and in the editors; the
-//                           drop-down menu 0x03 judged by the screen under it
+//   city_around         menu_screens = city: the panel pattern before an episode, the city elsewhere (the editors'
+//                           screens and dialogs too); the drop-down menu 0x03 judged by the screen under it
 //   keep_city           the city on screen kept after city_render's detour, saved when a front-end screen comes
 //                           up, at most every 3 s, not on a front-end screen (the map editor) or in the editors'
 //                           city (editor_mode)
@@ -99,7 +103,7 @@
 //   sidebar_filler              the sidebar's picture moved to the bottom, its left edge carried on, the inset panel's
 //                           tiles edge to edge; both sidebars; not on the world map; 768 and 790 high; without the
 //                           pack the strip inside a narrowed clip; the world map's sidebar on its own picture;
-//                           a fault: the clip back, off
+//                           the editors' two sidebars (the editor city's a __thiscall); a fault: the clip back, off
 //   pace_behind         the pace's cap when frames come slowly (Emperor's falling_behind): at most 2 ticks per
 //                           frame, logged when it starts and ends
 //   info_window                [ui] info_window: original (the game's 768 rule at any height, moved with the city
@@ -112,7 +116,10 @@
 // The world map's layout (games/zeus/world_map with the core's core/display/map_screen):
 //   world_map           the first map (not loaded yet) into our layer with the game's 768, native in the middle,
 //                           background city and map, the mouse in map coordinates (hover, beside the map, sidebar),
-//                           scaled fit and 200%; the game's own at 1024x768 and in the editors; the campaign map (the
+//                           scaled fit and 200%; the game's own at 1024x768; the editor's world map laid out the
+//                           same way (never over the city; its input with the map's mouse, a __thiscall; a city
+//                           placed with the 1024x768 dialog offset; its sidebar's popups at their 1024x768 places
+//                           beside the sidebar, called from the game's call sites); the campaign map (the
 //                           blurred map whatever the setting, the top bar tiled, markers and clicks in map
 //                           coordinates, the sidebar's filler); a fault: the game's own drawing, the real mouse, off
 
@@ -1134,6 +1141,20 @@ void __cdecl FakeSidebarUnits(int)
     PaintSidebar();
 }
 
+// The editors' sidebars (the editor city's: __thiscall on its screen object; the editor world map's: __cdecl).
+void *g_editorSidebarThis = nullptr;
+
+void __fastcall FakeEditorCitySidebar(void *self, void *)
+{
+    g_editorSidebarThis = self;
+    PaintSidebar();
+}
+
+void __cdecl FakeEditorWorldSidebar()
+{
+    PaintSidebar();
+}
+
 // world_map_sidebars: the world map's sidebar picture (rows numbered as above) down to 768.
 void __cdecl FakeWorldSidebars()
 {
@@ -1433,6 +1454,75 @@ void SwitchFault()
     Check(!zeus::resolution::SettingsChanged(&c), "a new setting is refused");
 }
 
+// The help and the mission goals at a mode change (games/zeus/resolution): the help is closed first when its right
+// click would close it (no choice buttons), else left (the game's mode change does nothing there, as before); on the
+// mission goals the city is drawn behind once, as screen 1, inside timing's put-back, and the goals drawn again.
+int g_helpCloses = 0, g_goalsBackgrounds = 0, g_goalsDraws = 0, g_goalsDrawScreen = -1;
+void __cdecl FakeHelpClose()
+{
+    ++g_helpCloses;
+    At<unsigned char>(aGameScreen) = 0x01; // back to the screen it was opened from
+}
+void __cdecl FakeGoalsBackground(int)
+{
+    ++g_goalsBackgrounds;
+    At<char>(0xf2a6ce) = 0; // screen_redraw: drawn
+}
+void __cdecl FakeGoalsScreenDraw()
+{
+    ++g_goalsDraws;
+    g_goalsDrawScreen = At<unsigned char>(aGameScreen);
+}
+
+void ModeScreens()
+{
+    SetupResolution();
+    Thunk(0x4f51e0, reinterpret_cast<void *>(&FakeHelpClose));
+    Thunk(0x513b30, reinterpret_cast<void *>(&FakeGoalsBackground));
+    Thunk(0x514020, reinterpret_cast<void *>(&FakeGoalsScreenDraw));
+    if (!zeus::timing::PrepareForTest()) {
+        Check(false, "the copy buffer");
+        return;
+    }
+    ToCity();
+    core_config c = *core_config_get();
+    c.resolution = CORE_RESOLUTION_FIXED;
+    const auto changeTo = [&](int w, int h) {
+        c.resolution_w = w;
+        c.resolution_h = h;
+        zeus::resolution::SettingsChanged(&c);
+        Sleep(510); // the mode change is tried at most every 500 ms
+        zeus::resolution::OnLoop();
+    };
+    // The help without choice buttons: closed first, then the game's mode change.
+    At<unsigned char>(aGameScreen) = 0x05;
+    At<short>(0xef8cba) = 0;
+    int switches = g_res.switches;
+    changeTo(1280, 1024);
+    Check(g_helpCloses == 1 && g_res.switches == switches + 1 && At<unsigned char>(aGameScreen) == 0x01 &&
+              LogContains("the help closed for the mode change"),
+          "help: closed first (as its right click), then the mode change");
+    // With choice buttons: left as it is (its right click does not close it either).
+    At<unsigned char>(aGameScreen) = 0x05;
+    At<short>(0xef8cba) = 1;
+    changeTo(1600, 900);
+    Check(g_helpCloses == 1 && At<unsigned char>(aGameScreen) == 0x05, "help with choice buttons: left open");
+    At<short>(0xef8cba) = 0;
+    // The mission goals: the city drawn behind once as the city screen, then the goals' screen and a redraw.
+    At<unsigned char>(aGameScreen) = 0x3b;
+    At<int>(0x781844) = 7;
+    switches = g_res.switches;
+    changeTo(1440, 900);
+    Check(g_res.switches == switches + 1 && g_goalsBackgrounds == 1 && g_goalsDraws == 1 && g_goalsDrawScreen == 0x01,
+          "mission goals: the city drawn behind once, as screen 1");
+    Check(At<unsigned char>(aGameScreen) == 0x3b && At<int>(0x781844) == 7 && At<char>(0xf2a6ce) == 1,
+          "... the goals' screen and hover back, drawn again over it");
+    // Other screens: neither.
+    At<unsigned char>(aGameScreen) = 0x07;
+    changeTo(1920, 1080);
+    Check(g_helpCloses == 1 && g_goalsDraws == 1, "a sidebar dialog: nothing more");
+}
+
 void LayoutFault()
 {
     SetupResolution();
@@ -1570,8 +1660,8 @@ void FramedFault()
     Check(At<int>(aModeW) == 1536 && At<int>(aModeH) == 864, "the city at the new setting (1920x1080 at 125%)");
 }
 
-// menu_screens = city: the screens before an episode and the editors show the panel pattern; the player's own picture
-// everywhere.
+// menu_screens = city: the screens before an episode show the panel pattern, the rest (the editors too) the city; the
+// player's own picture everywhere.
 void CityAroundScenario()
 {
     using zeus::fullscreen::CityAround;
@@ -1580,17 +1670,19 @@ void CityAroundScenario()
           "the city around: main menu, leader and game choice, high scores, victory, adventure screens");
     Check(!CityAround(0x3d, false) && !CityAround(0x35, false) && !CityAround(0x04, false),
           "the panel pattern: before an episode");
-    Check(!CityAround(0x10, false) && !CityAround(0x58, false) && !CityAround(0x15, false) &&
-              !CityAround(0x2d, false) && !CityAround(0x57, false) && !CityAround(0x46, false),
-          "the panel pattern: the editors");
+    Check(CityAround(0x10, false) && CityAround(0x58, false) && CityAround(0x15, false) && CityAround(0x2d, false) &&
+              CityAround(0x57, false) && CityAround(0x46, false) && CityAround(0x2e, false) &&
+              CityAround(0x1c, false) && CityAround(0x0e, false) && CityAround(0x05, false),
+          "the city: the editors' screens and the dialogs over them, as the menus");
     Check(CityAround(0x35, true) && CityAround(0x3d, true) && CityAround(0x10, true),
           "the player's own picture on every screen");
     using zeus::fullscreen::CityAroundShown;
-    At<int>(0x781894) = 0x57; // the drop-down menu 0x03 over the adventure editor (seen in testing)
-    Check(!CityAroundShown(0x03, false), "the drop-down menu over the editor: the panel pattern (the screen beneath)");
+    At<int>(0x781894) = 0x3d; // the drop-down menu 0x03 over a screen before a mission
+    Check(!CityAroundShown(0x03, false), "the drop-down menu: judged by the screen beneath (here the panel pattern)");
+    At<int>(0x781894) = 0x57; // ... over the adventure editor
+    Check(CityAroundShown(0x03, false) && CityAroundShown(0x57, false) && !CityAroundShown(0x3d, false),
+          "... over the editor: the city; other screens as they are");
     At<int>(0x781894) = 0x00;
-    Check(CityAroundShown(0x03, false) && !CityAroundShown(0x57, false) && CityAroundShown(0x00, false),
-          "... over the main menu: the city; other screens as they are");
 }
 
 // The city on screen is kept while playing and saved when a front-end screen comes up (and at the game's end).
@@ -2430,7 +2522,8 @@ void OverlayKeysFault()
 // button_param; input_update_mouse clears the right-button edge as the game does each pass.
 constexpr DWORD aRightUpM = 0xf2a6fc, aModalDoneM = 0x10df2e8, aModalChoiceM = 0x10df2ec, aModalButtonsM = 0x10df2f0,
                 aMapSelM = 0x903120, aMapSel2M = 0x5fb7d0, aQuitM = 0xf1389d, aBuildTypeM = 0x665dcc,
-                aBuildingM = 0x665dc8, aEditorToolM = 0xf135ec, aDialogXM = 0xf2a6ac, aDialogYM = 0xf2a6a8;
+                aBuildingM = 0x665dc8, aEditorToolM = 0xf135ec, aDialogXM = 0xf2a6ac, aDialogYM = 0xf2a6a8,
+                aMouseXM = 0xf2a738, aMouseYM = 0xf2a734;
 int g_modalAnswer = 7, g_modalCalls = 0, g_cancelCalls = 0, g_mapToCityCalls = 0, g_loadCalls = 0,
     g_replayCalls = 0, g_leaveCalls = 0, g_editorCalls = 0, g_editorParam = -1, g_loadParam = -1;
 std::string g_modalTitle, g_modalText;
@@ -2588,6 +2681,42 @@ void EscAndPause()
         zeus::game_menu::InputMouseForTest();
         Check(At<char>(aRightUpM) == 0, "esc: ... only once");
     }
+    // The dialogs whose buttons take a right click first (the sidebar's dialogs, the message list, the message box):
+    // the mouse off the screen for three passes (a button keeps the mouse for one more call after it leaves), the
+    // right click in the third (no button's help); elsewhere a right click where the mouse is, in the next pass.
+    for (int s : {0x07, 0x11, 0x3f}) {
+        At<unsigned char>(aGameScreenK) = static_cast<unsigned char>(s);
+        const bool taken = EscM();
+        bool away = true, early = false;
+        for (int pass = 1; pass <= 3; ++pass) {
+            At<int>(aMouseXM) = 2400; // input_update_mouse's own position at each pass
+            At<int>(aMouseYM) = 300;
+            zeus::game_menu::InputMouseForTest();
+            away = away && At<int>(aMouseXM) == -10000 && At<int>(aMouseYM) == -10000;
+            early = early || (pass < 3 && At<char>(aRightUpM) != 0);
+        }
+        char what[112];
+        std::snprintf(what, sizeof what, "esc: screen 0x%02x: the mouse off the screen 3 passes, the right click in the "
+                      "third", s);
+        Check(taken && away && !early && At<char>(aRightUpM) == 1, what);
+        At<int>(aMouseXM) = 2400;
+        zeus::game_menu::InputMouseForTest();
+        Check(At<char>(aRightUpM) == 0 && At<int>(aMouseXM) == 2400, "esc: ... and nothing after it");
+    }
+    At<unsigned char>(aGameScreenK) = 0x07;
+    EscM();
+    zeus::game_menu::InputMouseForTest();
+    At<unsigned char>(aGameScreenK) = 0x01; // the dialog closed meanwhile
+    At<int>(aMouseXM) = 2400;
+    zeus::game_menu::InputMouseForTest();
+    zeus::game_menu::InputMouseForTest();
+    Check(At<char>(aRightUpM) == 0 && At<int>(aMouseXM) == 2400,
+          "esc: 0x07 left before the right click: no right click, the mouse left as it is");
+    At<unsigned char>(aGameScreenK) = 0x05;
+    At<int>(aMouseXM) = 2400;
+    Check(EscM(), "esc: screen 0x05: taken");
+    zeus::game_menu::InputMouseForTest();
+    Check(At<char>(aRightUpM) == 1 && At<int>(aMouseXM) == 2400, "esc: ... a right click where the mouse is, next pass");
     // Screens that do not read a right click (but 0x35): the game's own Esc.
     for (int s : {0x2d, 0x4c}) {
         At<unsigned char>(aGameScreenK) = static_cast<unsigned char>(s);
@@ -2676,7 +2805,8 @@ void EscEditor()
     At<int>(aEditorModeK) = 1;
     At<unsigned char>(aGameScreenK) = 0x58;
     Check(!EscM() && !pm::IsOpen(), "esc editor: the city editor 0x58: the game's own Esc (no pause menu)");
-    for (int s : {0x18, 0x29, 0x46, 0x0d, 0x03, 0x1f}) { // 0x1f: the editor's first screen (choose an adventure)
+    // 0x1f: the editor's first screen (choose an adventure); 0x2d: the world map editor's name box.
+    for (int s : {0x18, 0x29, 0x46, 0x0d, 0x03, 0x1f, 0x2d}) {
         At<unsigned char>(aGameScreenK) = static_cast<unsigned char>(s);
         const bool taken = EscM();
         zeus::game_menu::InputMouseForTest();
@@ -4124,6 +4254,40 @@ void SidebarFiller()
     Check(DrawsOf(inset + 0, x + 11, 600) == 1 && DrawsOf(inset + 48, x + 186 - 16, pictureY - 16) == 1 &&
               DrawsOf(strip, 1920, 0) == 0 && DrawsOf(strip, 1678, 30) == 0,
           "... the inset panel right of the edge; nothing right of the sidebar, no city gap on the world map");
+    // The editors' sidebars: the same filler on their own pictures (the city's red edge, the frame from 604).
+    using EditorSidebar_fn = void(__fastcall *)(void *, void *);
+    Thunk(0x51e6c0, reinterpret_cast<void *>(&FakeEditorCitySidebar));
+    Thunk(0x5c2800, reinterpret_cast<void *>(&FakeEditorWorldSidebar));
+    At<unsigned char>(aGameScreen) = 0x01;
+    At<int>(0x665e2c) = 1; // editor_mode: the adventure editor's city
+    std::fill(buf.begin(), buf.end(), static_cast<WORD>(0));
+    g_cityLayout.draws = 0;
+    const int sidebarsBefore = g_cityLayout.sidebars;
+    Res<EditorSidebar_fn>("editor_city_sidebar_draw")(reinterpret_cast<void *>(0xfa0600), nullptr);
+    Check(g_cityLayout.sidebars == sidebarsBefore + 1 && g_editorSidebarThis == reinterpret_cast<void *>(0xfa0600) &&
+              PixelAt(x + 50, pictureY) == 600 && PixelAt(x + 185, 1079) == 767 && PixelAt(x + 10, 659) == 699 &&
+              DrawsOf(inset + 0, x + 11, 600) == 1,
+          "the editor city's sidebar (its object in ecx): the picture at the bottom, the edge, the inset panel");
+    std::fill(buf.begin(), buf.end(), static_cast<WORD>(0));
+    At<unsigned char>(aGameScreen) = 0x15; // the editor's world map
+    g_cityLayout.draws = 0;
+    Res<Tick_fn>("editor_world_map_sidebar")();
+    Check(g_cityLayout.sidebars == sidebarsBefore + 2 && PixelAt(x + 50, pictureY) == 600 &&
+              PixelAt(x + 10, 659) == 699 && DrawsOf(inset + 0, x + 11, 600) == 1,
+          "the editor world map's sidebar: the same");
+    At<int>(aModeH) = 768;
+    At<int>(aDdHeight2) = 768;
+    g_cityLayout.draws = 0;
+    Res<Tick_fn>("editor_world_map_sidebar")();
+    At<unsigned char>(aGameScreen) = 0x58; // the map editor in the 1024x768 frame
+    At<int>(aModeW) = 1024;
+    Res<EditorSidebar_fn>("editor_city_sidebar_draw")(reinterpret_cast<void *>(0xfa0600), nullptr);
+    Check(g_cityLayout.draws == 0 && g_cityLayout.sidebars == sidebarsBefore + 4,
+          "768 high and the game's own 1024x768: the game's sidebar only");
+    At<int>(aModeW) = 1920;
+    At<int>(aModeH) = 1080;
+    At<int>(aDdHeight2) = 1080;
+    At<int>(0x665e2c) = 0;
     At<unsigned char>(aGameScreen) = 0x01;
     g_cityLayout.draws = 0;
     g_fault = "image_draw";
@@ -4487,6 +4651,62 @@ void __cdecl FakeCampaignClick()
     g_wm.mouseY = At<int>(aMouseYw);
 }
 
+// The editor's world map: its input (__thiscall on its screen object) and its city placing (__cdecl city, flag).
+struct EditorMapCalls {
+    void *self = nullptr;
+    int inputs = 0, places = 0, city = 0, flag = 0, dialogX = 0, dialogY = 0;
+} g_em;
+
+// The popups' openers (keypad, list: __thiscall on the popup object, 4 stack arguments): the place they were given.
+struct PopupCalls {
+    int opens = 0, x = 0, y = 0, arg = 0;
+} g_pop;
+
+void __fastcall FakePopupOpen(void *, void *, int a, int, int, int)
+{
+    ++g_pop.opens;
+    g_pop.x = At<int>(0x160a814);
+    g_pop.y = At<int>(0x160a818);
+    g_pop.arg = a;
+}
+
+// Calls an opener's detour from the game's call at `site` (returning to site + 5), as the game does: a stub at
+// site - 25 loads ecx with the popup object, pushes 4 arguments and calls; the callee pops them.
+void OpenPopupFrom(DWORD site, void *detour, int x, int y)
+{
+    At<int>(0x160a814) = x;
+    At<int>(0x160a818) = y;
+    BYTE *stub = reinterpret_cast<BYTE *>(site - 25 + g_imageShift);
+    stub[0] = 0xb9; // mov ecx, popup
+    *reinterpret_cast<DWORD *>(stub + 1) = 0x160a808 + g_imageShift;
+    for (int i = 0; i < 4; ++i) {
+        stub[5 + i * 5] = 0x68; // push 11, 0, 0, 0 (the first argument pushed last)
+        *reinterpret_cast<DWORD *>(stub + 5 + i * 5 + 1) = i == 3 ? 11 : 0;
+    }
+    BYTE *call = stub + 25;
+    call[0] = 0xe8;
+    *reinterpret_cast<DWORD *>(call + 1) = reinterpret_cast<DWORD>(detour) - reinterpret_cast<DWORD>(call + 5);
+    call[5] = 0xc3;
+    reinterpret_cast<void(__cdecl *)()>(stub)();
+}
+
+void __fastcall FakeEditorMapInput(void *self, void *)
+{
+    ++g_em.inputs;
+    g_em.self = self;
+    g_wm.mouseX = At<int>(aMouseXw);
+    g_wm.mouseY = At<int>(aMouseYw);
+}
+
+void __cdecl FakeEditorCityPlace(int city, int flag)
+{
+    ++g_em.places;
+    g_em.city = city;
+    g_em.flag = flag;
+    g_em.dialogX = At<int>(0xf2a6ac);
+    g_em.dialogY = At<int>(0xf2a6a8);
+}
+
 std::vector<WORD> g_wmScreen;
 
 template <typename F> F Map(const char *name)
@@ -4619,16 +4839,80 @@ void WorldMap()
     draw();
     Check(g_wm.drawBuffer == At<BYTE *>(aDrawBuffer) && Wm(5, 35) == MapPattern(5, 5) && g_wm.drawHeight == 768,
           "1024x768: the game's own drawing, straight to the screen");
+    // The editor's world map (0x15, at our resolution): laid out the same way, never over the city played last; its
+    // input with the map's mouse, its city placing with the game's 1024x768 dialog offset.
+    using EditorInput_fn = void(__fastcall *)(void *, void *);
+    using CityPlace_fn = void(__cdecl *)(int, int);
+    Thunk(0x5c1d90, reinterpret_cast<void *>(&FakeEditorMapInput));
+    Thunk(0x406ca0, reinterpret_cast<void *>(&FakeEditorCityPlace));
     WorldScreen(2560, 1440);
+    for (WORD &p : g_wmScreen) {
+        p = 0x7777; // the adventure editor's screen left behind
+    }
     At<int>(aEditorMode) = 1;
+    At<unsigned char>(aGameScreen) = 0x15;
+    ms::SetBackgroundForTest(true);
     draw();
-    Check(g_wm.drawBuffer == At<BYTE *>(aDrawBuffer) && g_wm.drawHeight == 768 && At<int>(aDdHeight2) == 1440,
-          "the editors: the game's own drawing, still with the game's own height");
+    Check(g_wm.drawBuffer != At<BYTE *>(aDrawBuffer) && g_wm.drawHeight == 768 && At<int>(aDdHeight2) == 1440 &&
+              Wm(nx + 300, ny + 200) == MapPattern(300, 200),
+          "the editor's world map: into our layer with the game's 768, native in the middle");
+    Check(Wm(20, 700) != 0x7777 && Wm(20, 700) != kSentinel16,
+          "... the blurred map around it, whatever the background setting (no city in the editor)");
+    g_em = EditorMapCalls{};
+    At<int>(aMouseXw) = nx + 300;
+    At<int>(aMouseYw) = ny + 200;
+    Map<EditorInput_fn>("editor_world_map_input")(reinterpret_cast<void *>(0x160a9e0), nullptr);
+    Check(g_em.inputs == 1 && g_em.self == reinterpret_cast<void *>(0x160a9e0) && g_wm.mouseX == 300 &&
+              g_wm.mouseY == 230 && At<int>(aMouseXw) == nx + 300,
+          "the editor's input (its object in ecx): the mouse in map coordinates, the real one back afterwards");
+    At<int>(aMouseXw) = 2400;
+    At<int>(aMouseYw) = 100;
+    Map<EditorInput_fn>("editor_world_map_input")(reinterpret_cast<void *>(0x160a9e0), nullptr);
+    Check(g_wm.mouseX == 2400 && g_wm.mouseY == 100, "... on the sidebar (its buttons): the real position");
+    At<int>(0xf2a6ac) = (2560 - 640) / 2;
+    At<int>(0xf2a6a8) = (1440 - 480) / 2;
+    Map<CityPlace_fn>("editor_world_city_place")(3, 1);
+    Check(g_em.places == 1 && g_em.city == 3 && g_em.flag == 1 && g_em.dialogX == 192 && g_em.dialogY == 144 &&
+              At<int>(0xf2a6ac) == 960 && At<int>(0xf2a6a8) == 480,
+          "placing a city: the game's 1024x768 dialog offset (192, 144) for the call, ours back afterwards");
+    // The sidebar's popups: the city properties' (placed for 1024x768) beside the sidebar as the price keypad is (its
+    // panel's right edge 8 px left of the sidebar at 2374), their top at the row clicked, kept on the screen; the
+    // world properties' (from sidebar_x) as they are; not on other screens. The fake opener sees the game's place
+    // (it runs first); the place afterwards is in the popup object.
+    Thunk(0x5bf8a0, reinterpret_cast<void *>(&FakePopupOpen));
+    Thunk(0x5befe0, reinterpret_cast<void *>(&FakePopupOpen));
+    void *keypad = Map<void *>("keypad_open"), *list = Map<void *>("list_open");
+    const auto px = [] { return At<int>(0x160a814); };
+    const auto py = [] { return At<int>(0x160a818); };
+    g_pop = PopupCalls{};
+    At<int>(aMouseYw) = 320; // the tribute row
+    OpenPopupFrom(0x40a098, keypad, 0x28d, 1440 - 0x13a);
+    Check(g_pop.opens == 1 && g_pop.arg == 11 && g_pop.x == 0x28d && px() == 2374 - 8 - 128 + 16 &&
+              py() == 320 - 16 + 16,
+          "city properties' keypad: its panel (128 x 224 at x - 16, y - 16) ending 8 px left of the sidebar, its top "
+          "at the row clicked; the opener saw the game's place and its arguments");
+    At<int>(0x160a810) = 10; // a list of 23 items in columns of 10: 3 columns of 6 tiles (column width 90)
+    At<int>(0x160a81c) = 23;
+    At<int>(0x160a9a8) = 90;
+    At<int>(0x160a9ac) = 3;
+    At<int>(aMouseYw) = 1400; // near the bottom: kept on the screen ((10 x 20 + 24) / 16 = 14 tiles high)
+    OpenPopupFrom(0x407d37, list, 0xc8, 0);
+    Check(g_pop.opens == 2 && px() == 2374 - 8 - 3 * 6 * 16 && py() == 1440 - 14 * 16,
+          "a list in 3 columns: right edge 8 px left of the sidebar, moved up to stay on the screen");
+    At<int>(0x160a810) = 30; // one column of 5 items: (5 x 21 + 24) / 16 = 8 tiles high
+    At<int>(0x160a81c) = 5;
+    At<int>(aMouseYw) = 20; // above the map area: below the top bar
+    OpenPopupFrom(0x40a01d, list, 0x175, 1440 - 0x216);
+    Check(px() == 2374 - 8 - 6 * 16 && py() == 30, "a list in one column, kept below the top bar");
+    OpenPopupFrom(0x4099d5, keypad, 2374 - 0x78, 0x168); // world properties: a price
+    Check(g_pop.opens == 4 && px() == 2374 - 0x78 && py() == 0x168,
+          "world properties' keypad (from sidebar_x): where the game puts it");
+    At<unsigned char>(aGameScreen) = 0x01; // the editor's city: not this screen
+    OpenPopupFrom(0x40a098, keypad, 0x28d, 1440 - 0x13a);
+    Check(px() == 0x28d && py() == 1440 - 0x13a, "another screen: the game's place");
+    At<unsigned char>(aGameScreen) = 0x15;
+    ms::SetBackgroundForTest(false);
     At<int>(aEditorMode) = 0;
-    At<int>(aMouseXw) = 100;
-    At<int>(aMouseYw) = 700;
-    hit(nullptr, nullptr);
-    Check(g_wm.mouseX == 100, "... and the real mouse");
 
     // The campaign map (0x34): the background on a redraw (always the blurred map), the top bar tiled; each frame the
     // markers into the layer and shown on the map, the sidebar's strip on the screen, then the filler below it.
@@ -6126,6 +6410,7 @@ const Scenario kScenarios[] = {
     {"state_check_fault", &StateCheckFault},
     {"mode_size", &ModeSizeScenario},
     {"mode_size_fault", &ModeSizeFault},
+    {"mode_screens", &ModeScreens},
     {"viewport_layout", &ViewportLayout},
     {"layout_fault", &LayoutFault},
     {"narrow_fault", &NarrowFault},

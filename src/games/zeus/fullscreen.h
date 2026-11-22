@@ -35,8 +35,10 @@ void OnGameEnd();
 
 // menu_screens = city: whether this front-end screen shows the city around it.
 // The screens before a mission (0x3d adventure and episode choice, 0x35 the episode's introduction, 0x04 the defeat
-// picture before trying again) and the editors' screens get the panel pattern: the next episode is usually another
-// map, and the editors have nothing to do with the city played last. The player's own menu_background picture is
+// picture before trying again) get the panel pattern: the next episode is usually another map. The editors' screens
+// show the city as the menus do: their pages, the dialogs over them and the screens they share with the game (the save
+// screen 0x22, help 0x05, the keypad 0x0e, ...) are too many to tell apart, and a list of them kept missing some
+// (seen in testing: the city around a few, the pattern around the rest). The player's own menu_background picture is
 // shown on every screen.
 inline bool CityAround(unsigned char screen, bool playerPicture)
 {
@@ -44,9 +46,7 @@ inline bool CityAround(unsigned char screen, bool playerPicture)
         return true;
     }
     switch (screen) {
-    case 0x3d: case 0x35: case 0x04:                                             // before a mission
-    case 0x10: case 0x15: case 0x18: case 0x1b: case 0x27: case 0x29:            // the editors
-    case 0x2b: case 0x2c: case 0x2d: case 0x46: case 0x57: case 0x58:
+    case 0x3d: case 0x35: case 0x04: // before a mission
         return false;
     default:
         return true;

@@ -100,6 +100,17 @@ constexpr DWORD kPresentFromPaint = 0x5c4ccd;
 core::diag::Feature g_feature{"Esc and the pause menu (games/zeus/game_menu)"};
 bool g_attached = false;
 bool g_rightClick = false; // a right click for the next input pass
+// ButtonsFirstScreen: the input passes left with the mouse off the screen; the right click comes in the last of them,
+// if the screen is still the one Esc was pressed on.
+int g_awayPasses = 0;
+int g_awayScreen = -1;
+// The game's mouse (mouse_x / mouse_y in game pixels): input_update_mouse writes both at every pass (0x50b5de,
+// 0x50b5e4), so a position set after it lasts for that pass only. Far outside every button, without overflowing the
+// hit tests' sums.
+const Var<int> kMouseX{0xf2a738}, kMouseY{0xf2a734};
+constexpr int kMouseAway = -10000;
+// Two passes for the button's count (2) to run out, the right click in the third.
+constexpr int kAwayPasses = 3;
 
 const char *Lang(int group, int index)
 {
@@ -119,6 +130,18 @@ bool RightClickScreen(int s)
     default:
         return false;
     }
+}
+
+// The dialogs whose input lets the buttons under the mouse take a right click before the dialog closes with it
+// (screen_handle_input 0x514c10): the sidebar's dialogs 0x07 (the sidebar's buttons first: a right click on one opens
+// its help, 0x516a00 / 0x516a10), the message list 0x11 (0x5229c0) and the message box 0x3f (0x4323f0). Each closes
+// with a right click wherever the mouse is when no button takes it, so Esc's right click comes with the mouse off the
+// screen: it closes the dialog and opens no help. buttons_update 0x4319c0 keeps a button under the mouse for one more
+// call after the mouse leaves it (+0x1a: set to 2 while the mouse is on it, one less at each call, the button's
+// actions while it is not 0), so the mouse is off the screen for kAwayPasses passes before the right click.
+bool ButtonsFirstScreen(int s)
+{
+    return s == 0x07 || s == 0x11 || s == 0x3f;
 }
 
 // The menu screens that go back a step with a right click: tutorials 0x02, choose an adventure 0x1f, the
@@ -149,11 +172,12 @@ bool NoEscScreen(int s)
 }
 
 // The editors' pages that go back with a right click (0.6): event editing 0x18, the adventure editor's pages 0x1b,
-// 0x1c, 0x27, 0x29, 0x2b, 0x2c, 0x2e, 0x46.
+// 0x1c, 0x27, 0x29, 0x2b, 0x2c, 0x2e, 0x46; and the world map editor's name box 0x2d (a city's or leader's name), whose
+// drawing 0x5c30d0 cancels it on a right click (0x5c2d00 -> 0x5c2fb0: the old name kept, back to 0x15).
 bool EditorBackScreen(int s)
 {
     switch (s) {
-    case 0x18: case 0x1b: case 0x1c: case 0x27: case 0x29: case 0x2b: case 0x2c: case 0x2e: case 0x46:
+    case 0x18: case 0x1b: case 0x1c: case 0x27: case 0x29: case 0x2b: case 0x2c: case 0x2d: case 0x2e: case 0x46:
         return true;
     default:
         return false;
@@ -492,7 +516,13 @@ void EscapeNow(void *p)
         return;
     }
     if (RightClickScreen(s)) {
-        g_rightClick = true;
+        if (ButtonsFirstScreen(s)) {
+            g_awayPasses = kAwayPasses;
+            g_awayScreen = s;
+        }
+        else {
+            g_rightClick = true;
+        }
         c.handled = true;
     }
 }
@@ -500,6 +530,18 @@ void EscapeNow(void *p)
 void __cdecl InputMouse_detour()
 {
     Original(o_InputMouse, kInputMouse)();
+    if (g_awayPasses > 0) {
+        if (*kGameScreen != g_awayScreen) { // the dialog went away meanwhile: no right click on another screen
+            g_awayPasses = 0;
+            return;
+        }
+        *kMouseX = kMouseAway;
+        *kMouseY = kMouseAway;
+        if (--g_awayPasses == 0) {
+            *kRightUp = 1;
+        }
+        return;
+    }
     if (g_rightClick) {
         g_rightClick = false;
         *kRightUp = 1;
@@ -558,6 +600,7 @@ bool Escape(LPARAM lparam)
     EscCall c{lparam, false};
     if (!core::diag::Guarded(g_feature, &EscapeNow, &c)) {
         g_rightClick = false;
+        g_awayPasses = 0;
         pm::Close("an error in Esc");
         core_log("game menu: off after an error; Esc is the game's own again");
         return false;

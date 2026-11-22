@@ -18,7 +18,8 @@
 // The map's layout: the core's map_screen (shared with Emperor's China map) draws the
 // map into a buffer of ours and shows it in the middle of the map area, in the dialog panel's border, over the same map
 // blurred or the city ([video] world_map, world_map_scale, world_map_background). Not at the game's own sizes (all 14
-// maps are 838 x 738, the map area at 1024x768: the game's own drawing fills it), never on the editor's map. Hooked:
+// maps are 838 x 738, the map area at 1024x768: the game's own drawing fills it). The editor's world map (0x15) the
+// same way, never over the city played last (its input and city placing below). Hooked:
 //   world_map_draw 0x599da0: the core's Draw (the game's drawing with the height above, into our buffer);
 //   frame_top_panel 0x58eb20 (__cdecl 1 argument, ret; world_map_draw calls it with 1): waits until the map is shown
 //               and is drawn on the screen (it draws only into the top bar; at 0x34 it returns at once);
@@ -139,6 +140,7 @@ Hit_fn o_Hit;
 bool g_heightLogged = false;
 core::diag::Feature g_layoutFeature{"world map layout (games/zeus/world_map)"};
 bool g_layout = false; // the layout's hooks are installed (AttachLayout)
+bool g_editorLayout = true; // the editor's world map input is hooked too (AttachLayout)
 
 bool Standard(int w, int h)
 {
@@ -151,15 +153,20 @@ bool EditorMap()
     return *kEditorMode == 1 || s == 0x15 || s == 0x2d || (s == 0x03 && *kBeneath == 0x15);
 }
 
+// The game's world map, the campaign map and the editor's world map (0x15, at our resolution: games/zeus/resolution).
+// The editor's own parts of that screen are in its sidebar (drawn after the map, at sidebar_x); the map itself is
+// world_map_draw's, as in the game.
 bool TakeOver()
 {
     const int w = *kModeWidth, h = *kModeHeight;
-    return !(Standard(w, h) || w < 1024) && !EditorMap();
+    return !(Standard(w, h) || w < 1024) && (g_editorLayout || !EditorMap());
 }
 
 bool CityBackground()
 {
-    return *kGameScreen != kCampaignMap; // after a victory screen: nothing of the city is behind it
+    // After a victory screen nothing of the city is behind the campaign map; the editor's world map has nothing to do
+    // with the city played last.
+    return *kGameScreen != kCampaignMap && !EditorMap();
 }
 
 // The game's map drawing, with the game's own height above 768 (through r: undone after it, also after an error).
@@ -258,6 +265,163 @@ void __cdecl CampaignClick_detour()
     map_screen::WithMapMouse([](void *) { Original(o_CampaignClick, kCampaignClick)(); }, nullptr);
 }
 
+// The editor's world map input (editor_world_map_input 0x5c1d90: __thiscall on the screen object 0x160a9e0, no stack
+// arguments, ret; vtable 0x5e4b58 + 0x0c): the map's points (cities, their dragging and placing: 0x407140, 0x406ca0)
+// from the mouse, and the sidebar's buttons from the same mouse. Run with the map's mouse: WithMapMouse converts it
+// only while it is in the map area left of the sidebar, where no sidebar button is.
+const Site kEditorInput{"editor_world_map_input", 0x5c1d90, {0x83, 0xec, 0x2c, 0x53, 0x55, 0x56, 0x57, 0x6a}};
+// editor_world_city_place 0x406ca0 (__cdecl city, flag; ret; called only by the input above): a city is placed only
+// inside a box around the dialog offset (dialog_offset - 0x26 .. + 0x206, + 0xf .. + 0x23a), which is the map's middle
+// at the game's 1024x768 only. While it runs the dialog offset is the game's 1024x768 one, as the mouse is the map's.
+const Site kCityPlace{"editor_world_city_place", 0x406ca0, {0xa0, 0x08, 0xa7, 0xf2, 0x00, 0x83, 0xec, 0x08}};
+const Var<int> kDialogX{0xf2a6ac}, kDialogY{0xf2a6a8};
+constexpr int kDialogX1024 = (1024 - 640) / 2, kDialogY768 = (768 - 480) / 2; // screen_set_mode's at 1024x768
+using EditorInput_fn = void(__fastcall *)(void *, void *); // __thiscall: this in ecx, edx unused
+using CityPlace_fn = void(__cdecl *)(int, int);
+EditorInput_fn o_EditorInput;
+CityPlace_fn o_CityPlace;
+
+void __fastcall EditorInput_detour(void *self, void * /*edx*/)
+{
+    if (!g_layout) {
+        Original(o_EditorInput, kEditorInput)(self, nullptr);
+        return;
+    }
+    map_screen::WithMapMouse([](void *p) { Original(o_EditorInput, kEditorInput)(p, nullptr); }, self);
+}
+
+// The editor's world map sidebar opens the game's keypad (keypad_open 0x5bf8a0) and list (list_open 0x5befe0)
+// popups: both __thiscall on the popup object 0x160a808, 4 stack arguments, ret 0x10; the caller writes the popup's
+// place into the object (+0x0c x, +0x10 y) right before. The world properties' price keypad is placed from sidebar_x
+// (sidebar_x - 0x78, 0x168: its panel's right edge 8 px left of the sidebar, beside the prices); the city properties'
+// popups at places laid out for the game's 1024x768 (x a constant left of its sidebar at 838 -- 0x1a7, 0x1c5, 0x28d,
+// ...; y a constant or mode_height - 0x13a / - 0x216), at different distances from the sidebar and, at our sizes,
+// anywhere around the map. While the editor's world map is shown at our size, a popup the game placed left of 838 is
+// put as the price keypad is: its right edge 8 px left of the sidebar, its top at the row clicked (the mouse), kept on
+// the screen below the top bar. Sizes as the popups draw themselves:
+//   keypad (keypad_draw 0x5bf8d0): the dialog panel 0x59ee90 at (x - 16, y - 16), 8 x 14 tiles of 16 px;
+//   list (list_draw 0x5bf1e0): the panel at (x, y), ((column width +0x1a0) + 15) / 16 tiles per column, times the
+//      columns +0x1a4 (worked out by list_open) when the rows per column +0x08 are fewer than the items +0x14; its
+//      height (rows x 20 + 24) / 16 tiles, or (items x 21 + 24) / 16 tiles in one column.
+const Site kKeypadOpen{"keypad_open", 0x5bf8a0, {0x8b, 0x44, 0x24, 0x10, 0x8b, 0x54, 0x24, 0x04}};
+const Site kListOpen{"list_open", 0x5befe0, {0x8b, 0x15, 0x1c, 0xa8, 0x60, 0x01, 0xb8, 0x5a}};
+constexpr int kSidebar1024 = 1024 - 186, kPopupGap = 8, kTile = 16;
+constexpr int kPopupX = 0x0c, kPopupY = 0x10, kListRows = 0x08, kListItems = 0x14, kListColW = 0x1a0,
+              kListCols = 0x1a4;
+constexpr int kKeypadW = 8 * kTile, kKeypadH = 14 * kTile, kKeypadInset = kTile; // its panel at (x - 16, y - 16)
+constexpr unsigned char kEditorWorldMap = 0x15;
+using Open_fn = void(__fastcall *)(void *, void *, int, int, int, int); // __thiscall: this in ecx, edx unused
+Open_fn o_KeypadOpen, o_ListOpen;
+
+struct PopupBox {
+    int w, h, inset; // the panel's size, and how far left / up of (x, y) it starts
+};
+
+PopupBox ListBox(const BYTE *popup)
+{
+    const auto field = [popup](int off) { return *reinterpret_cast<const int *>(popup + off); };
+    const int rows = field(kListRows), items = field(kListItems), colTiles = (field(kListColW) + 15) / kTile;
+    if (rows < items) {
+        return PopupBox{colTiles * field(kListCols) * kTile, (rows * 20 + 24) / kTile * kTile, 0};
+    }
+    return PopupBox{colTiles * kTile, (items * 21 + 24) / kTile * kTile, 0};
+}
+
+// Wanted before the opener runs (it changes game_screen): the editor's world map at our size.
+bool PopupsPlaced()
+{
+    return g_layout && core::diag::Enabled(g_layoutFeature) && *kGameScreen == kEditorWorldMap && TakeOver();
+}
+
+struct PopupCall {
+    BYTE *popup;
+    bool list;
+    core::diag::Restore r;
+};
+
+void PlacePopup(void *self, bool list)
+{
+    PopupCall c{static_cast<BYTE *>(self), list, {}};
+    if (!core::diag::Guarded(
+            g_layoutFeature,
+            [](void *p) {
+                PopupCall &c = *static_cast<PopupCall *>(p);
+                int *x = reinterpret_cast<int *>(c.popup + kPopupX), *y = reinterpret_cast<int *>(c.popup + kPopupY);
+                if (*x >= kSidebar1024) {
+                    return; // placed from sidebar_x by the game (the prices)
+                }
+                c.r.Save(x);
+                c.r.Save(y);
+                const int x0 = *x, y0 = *y;
+                const PopupBox b = c.list ? ListBox(c.popup) : PopupBox{kKeypadW, kKeypadH, kKeypadInset};
+                int top = *kMouseY - kTile; // the panel's top: just above the row clicked
+                if (top + b.h > *kModeHeight) {
+                    top = *kModeHeight - b.h;
+                }
+                if (top < kTopBarH) {
+                    top = kTopBarH;
+                }
+                *x = *kSidebarX - kPopupGap - b.w + b.inset;
+                *y = top + b.inset;
+                c.r.Forget();
+                static long logs = 0;
+                if (++logs <= 40) {
+                    core_log("zeus: world map: the editor's %s (%dx%d) beside the sidebar at the row clicked: %d,%d -> "
+                             "%d,%d",
+                             c.list ? "list" : "keypad", b.w, b.h, x0, y0, *x, *y);
+                }
+            },
+            &c, &c.r)) {
+        core_log("zeus: world map: the editor's popups keep the game's places after an error");
+    }
+}
+
+void __fastcall KeypadOpen_detour(void *self, void *edx, int a, int b, int c, int d)
+{
+    const bool place = PopupsPlaced();
+    Original(o_KeypadOpen, kKeypadOpen)(self, edx, a, b, c, d);
+    if (place) {
+        PlacePopup(self, false);
+    }
+}
+
+// After the opener: it works out the list's columns, which the size needs.
+void __fastcall ListOpen_detour(void *self, void *edx, int a, int b, int c, int d)
+{
+    const bool place = PopupsPlaced();
+    Original(o_ListOpen, kListOpen)(self, edx, a, b, c, d);
+    if (place) {
+        PlacePopup(self, true);
+    }
+}
+
+struct PlaceCall {
+    int city, flag;
+    core::diag::Restore r;
+};
+
+void __cdecl CityPlace_detour(int city, int flag)
+{
+    if (!g_layout || !core::diag::Enabled(g_layoutFeature) || (*kDialogX == kDialogX1024 && *kDialogY == kDialogY768)) {
+        Original(o_CityPlace, kCityPlace)(city, flag);
+        return;
+    }
+    PlaceCall c{city, flag, {}};
+    if (core::diag::Guarded(
+            g_layoutFeature,
+            [](void *p) {
+                PlaceCall &c = *static_cast<PlaceCall *>(p);
+                c.r.Set(kDialogX.ptr(), kDialogX1024);
+                c.r.Set(kDialogY.ptr(), kDialogY768);
+                Original(o_CityPlace, kCityPlace)(c.city, c.flag);
+                c.r.Undo();
+            },
+            &c, &c.r)) {
+        return;
+    }
+    Original(o_CityPlace, kCityPlace)(city, flag); // the dialog offset is back: the game's own
+}
+
 const Detour kDetours[] = {
     {&kAnim, reinterpret_cast<void *>(&Anim_detour)},
     {&kMapDraw, reinterpret_cast<void *>(&MapDraw_detour)},
@@ -266,6 +430,10 @@ const Detour kDetours[] = {
     {&kCampaignBack, reinterpret_cast<void *>(&CampaignBack_detour)},
     {&kCampaignDraw, reinterpret_cast<void *>(&CampaignDraw_detour)},
     {&kCampaignClick, reinterpret_cast<void *>(&CampaignClick_detour)},
+    {&kEditorInput, reinterpret_cast<void *>(&EditorInput_detour)},
+    {&kCityPlace, reinterpret_cast<void *>(&CityPlace_detour)},
+    {&kKeypadOpen, reinterpret_cast<void *>(&KeypadOpen_detour)},
+    {&kListOpen, reinterpret_cast<void *>(&ListOpen_detour)},
 };
 
 } // namespace
@@ -343,6 +511,20 @@ bool AttachLayout()
         return false;
     }
     g_layout = true;
+    // The editor's world map: without these two its map would answer the mouse where the game drew it (top left).
+    const bool editor = Matches(kEditorInput) && Matches(kCityPlace) &&
+                        Install(kCityPlace, &CityPlace_detour, o_CityPlace) &&
+                        Install(kEditorInput, &EditorInput_detour, o_EditorInput);
+    if (!editor) {
+        g_editorLayout = false;
+        core_log("zeus: world map: the editor's world map input could not be hooked: the editor's map is drawn the "
+                 "game's way (top left)");
+    }
+    else if (!(Matches(kKeypadOpen) && Matches(kListOpen) && Install(kKeypadOpen, &KeypadOpen_detour, o_KeypadOpen) &&
+               Install(kListOpen, &ListOpen_detour, o_ListOpen))) {
+        core_log("zeus: world map: the popups' openers could not be hooked: the editor's popups open at the game's "
+                 "places");
+    }
     char scale[16];
     std::snprintf(scale, sizeof(scale), map_screen::ScalePercent() ? "%d%%" : "fit", map_screen::ScalePercent());
     core_log("zeus: world map: layout installed (video.world_map %s, scale %s, background %s)", map_screen::ModeName(),
