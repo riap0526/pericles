@@ -405,6 +405,10 @@ bool GameMainMatches() { return true; }
 bool PicturesHooked() { return true; }
 } // namespace zeus::diag
 
+namespace zeus::side_panel { // games/zeus/side_panel: its own test (test_side_panel)
+void BackdropDrawing(bool) {}
+} // namespace zeus::side_panel
+
 namespace {
 
 using zeus::g_imageShift;

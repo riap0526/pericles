@@ -62,7 +62,7 @@ macro(game_add_tests)
     add_executable(test_side_panel src/games/zeus/test_side_panel.cpp src/games/zeus/side_panel.cpp
         src/games/zeus/side_panel_layout.cpp src/core/diag/guard.cpp src/core/log.cpp
         src/core/settings/settings.cpp src/core/settings/ini_text.cpp src/core/hook/hook.cpp
-        src/core/platform/files.cpp src/core/game.cpp src/core/ui/hotkey.cpp)
+        src/core/platform/files.cpp src/core/game.cpp src/core/ui/hotkey.cpp src/core/assets/sg3.cpp)
     target_include_directories(test_side_panel PRIVATE src)
     target_compile_options(test_side_panel PRIVATE -fno-exceptions)
     target_link_options(test_side_panel PRIVATE -static)

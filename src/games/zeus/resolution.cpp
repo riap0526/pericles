@@ -72,6 +72,7 @@
 #include "core/settings/settings.h"
 #include "core/ui/info_window.h"
 #include "games/zeus/scroll.h"
+#include "games/zeus/side_panel.h"
 #include "games/zeus/timing.h"
 #include "games/zeus/zoom.h"
 
@@ -876,7 +877,9 @@ bool FillerWanted()
 
 void __cdecl SidebarDraw_detour()
 {
+    zeus::side_panel::BackdropDrawing(true); // its column is taken while the backdrop is fresh
     Original(o_SidebarDraw, kSidebarDraw)();
+    zeus::side_panel::BackdropDrawing(false);
     if (FillerWanted()) {
         Filler(kCityEdge);
     }

@@ -5,7 +5,9 @@
 // The names are the ones the game's own name bar shows (sidebar_name_bar_draw 0x517210, Zeus.exe 2.1.4.0): the 17
 // sidebar buttons (hover 0x19..0x29: the 11 categories, Build Road, Roadblock, Clear, Undo and the two tabs) the
 // sidebar's group 88; the 4 build buttons (0x32..0x35) the building's name in group 28, only while the button can be
-// used; the report button (200) group 51's "See more information" or, while a report is open, "Hide full report".
+// used; the report button (200) group 51's "See more information". The report button's place is now the title's
+// (hover 200 too): while its report is open the title has no tooltip (the game's own would show above the screen's
+// top edge there; Emperor's title has none then either, only its lit font says it can be clicked).
 #pragma once
 
 namespace zeus::side_panel_layout {
@@ -17,7 +19,7 @@ constexpr int kReportButton = 200;
 
 // The text groups and texts.
 constexpr int kGroupSidebar = 88, kGroupBuildings = 28, kGroupReport = 51;
-constexpr int kReportShow = 79, kReportHide = 80;
+constexpr int kReportShow = 79;
 // Category 6 is Culture; Poseidon's maps call it Science (text 0x18 of the same group), as the name bar does.
 constexpr int kCultureCategory = 6, kScienceText = 0x18;
 // Two buildings that Poseidon's maps name differently (their texts in group 28).
@@ -48,8 +50,8 @@ bool Ours(int hover);
 bool BuildButton(int hover);
 // The building's name text in group 28 (Poseidon's two renamed buildings).
 int BuildingText(int building, bool poseidon);
-// The name for hover, as the name bar would show it; false when it shows none (not ours, or a build button that
-// cannot be used).
+// The name for hover, as the name bar would show it; false when it shows none (not ours, a build button that
+// cannot be used, or the title while its report is open).
 bool NameFor(int hover, const Facts &f, Name *out);
 
 // The game's state as balloon_help_update 0x4f6110 sees it on the report screen (game_screen 7).
@@ -111,6 +113,100 @@ public:
 
 private:
     int last_ = 0;
+};
+
+// ---- The column moved up ----
+//
+// The sidebar's right column (from the tabs down to the build buttons) without the tabs: the game draws the column in
+// its own place (sidebar_panel_draw 0x517480: the title at y 0x1e, the overlay buttons from y 0x32, the information
+// panel and the category's own panel above y 300), and that drawing is moved up by the tabs' 25 rows. Every frame
+// starts from a copy of the column as the backdrop left it (taken when the backdrop has just been drawn), so that
+// what the game draws only on some frames (its buttons) or never again (the marble under the title) is not moved a
+// second time. Pixels the game left as the backdrop had them are not moved: they become the backdrop's pixels at
+// the new place, so that the marble stays where it is.
+
+// The column, in sidebar columns (x - sidebar_x) and screen rows (the 1024 layout's).
+constexpr int kColumnLeft = 50, kColumnRight = 186, kColumnW = kColumnRight - kColumnLeft;
+constexpr int kColumnRows = 424; // down to the build buttons' last row (421) and the first rows of their costs
+constexpr int kShift = 25;       // the tabs' rows (0..24)
+// The rows moved (the game's rows 25..332: the title's place down to the information panel's new bottom edge) and
+// where they go (0..307); the rows below them (308..423) are the backdrop's, and the build buttons are drawn there.
+constexpr int kMovedFirst = kShift, kMovedEnd = 333, kMovedRows = kMovedEnd - kMovedFirst;
+// The title: centered in 0x82 px from column 50, at y 0x1e in the game's place (5 moved); clicked and hovered over
+// its whole row above the overlay buttons.
+constexpr int kTitleX = kColumnLeft, kTitleW = 0x82, kTitleY = 0x1e - kShift;
+constexpr int kTitleRight = 182, kTitleBottom = kShift;
+// The left part of the tabs' rows (columns 0..49 of rows 0..21, above the category buttons): what tells whether the
+// backdrop is the one whose army panel's picture (Zeus_Interface entry 1233) has the same rows without the tabs.
+constexpr int kTopCheckW = kColumnLeft, kTopCheckRows = 22;
+// The information panel: the game's height for n overlay buttons, two tiles (32 rows) longer at the bottom.
+struct InfoPanel {
+    int top, rows; // rows of 16 px
+};
+InfoPanel InfoPanelFor(int overlayButtons);
+// The font of a font group as the game picks it: the group table's entry g (8 bytes each) while the table has more
+// than g entries, else entry 0. Returns the byte offset of the entry.
+int FontEntryOffset(int group, int count);
+// The title's font groups: the game's (1) and the one while it can be clicked and the mouse is on it (15).
+constexpr int kTitleFont = 1, kTitleHoverFont = 15;
+
+// The report for the category under the title: the report button's rule (sidebar_report_button_draw 0x516fa0): a
+// report kind, and category 9 only on Poseidon's maps.
+constexpr int kCategoryCount = 11, kPoseidonOnlyReport = 9, kOverviewCategory = 10;
+bool TitleClickable(int category, int reportKind, bool poseidon);
+// A point in sidebar columns and screen rows: on the title.
+bool OnTitle(int col, int y);
+// Whether the mouse (sidebar column, screen row) is where the game's panels are seen moved: those inputs are given
+// the game's row (y + kShift).
+bool InMovedArea(int col, int y);
+
+// 16-bit pixels of the column (kColumnW x kColumnRows) and of the tabs' rows of entry 1233 (kColumnW x kShift),
+// row by row.
+using Px = unsigned short;
+
+// Whether the left part of the tabs' rows on the screen (kTopCheckW x kTopCheckRows, row by row) is entry 1233's
+// (entry: its full width w): at most one step of each colour channel apart (the game's 16-bit drawing and ours),
+// and nearly every pixel.
+bool TopFits(const Px *screenLeft, const Px *entry, int entryW);
+
+// The column on screen (`screen`: its first pixel at the column's left edge and row 0, `pitch` pixels a row):
+// rows kMovedFirst..kMovedEnd - 1 moved up by kShift, the pixels that equal the backdrop at the same place replaced
+// by the backdrop at the new place (the tabs' rows from `top`, or, without it, the backdrop's next 25 rows), and the
+// rows below the moved ones put back from the backdrop.
+void MoveColumn(Px *screen, int pitch, const Px *backdrop, const Px *top);
+// Whether the game drew anything below the moved rows (rows kMovedEnd..kColumnRows - 1 differ from the backdrop).
+bool DrawnBelow(const Px *screen, int pitch, const Px *backdrop);
+
+// The column as the backdrop left it, and where it was taken: put back only on the same screen.
+class Backdrop {
+public:
+    struct Where {
+        int sidebarX, width, height, pitch;
+        bool operator==(const Where &o) const
+        {
+            return sidebarX == o.sidebarX && width == o.width && height == o.height && pitch == o.pitch;
+        }
+    };
+    // Copies the column from screen (as MoveColumn's screen).
+    void Take(const Px *screen, int pitch, const Where &w);
+    bool Has(const Where &w) const
+    {
+        return has_ && where_ == w;
+    }
+    void PutBack(Px *screen, int pitch) const;
+    void Forget()
+    {
+        has_ = false;
+    }
+    const Px *Pixels() const
+    {
+        return px_;
+    }
+
+private:
+    bool has_ = false;
+    Where where_{};
+    Px px_[kColumnW * kColumnRows];
 };
 
 } // namespace zeus::side_panel_layout

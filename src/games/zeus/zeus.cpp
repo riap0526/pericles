@@ -233,8 +233,10 @@ extern "C" void zeus_attach(void)
     // The Options and File menus and the main menu's Options (our texts through keys' lang_get_string hook; after
     // game_menu, whose confirmations the File menu uses, and city_picture, whose screenshots it adds).
     zeus::options_entry::Attach();
+    // [ui] side_panel: all its hooks or none. Before scroll_arrows: it checks the bytes of buttons_update, which it
+    // calls (through scroll_arrows' hook afterwards, as the game's own calls go).
+    zeus::side_panel::Attach();
     zeus::scroll_arrows::Attach(); // held scroll arrows at the original pace
-    zeus::side_panel::Attach();    // [ui] side_panel: all its hooks or none
     // Screenshot file names and the present mode log's lines carry game_screen 0xf2a6dd (one byte, reads only).
     core::capture::SetTagProvider([](char *out, size_t size) {
         std::snprintf(out, size, "screen_0x%02x", *reinterpret_cast<volatile unsigned char *>(0xf2a6dd));
