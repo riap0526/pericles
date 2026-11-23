@@ -3,11 +3,13 @@
 #include "core/diag/guard.h"
 #include "core/log.h"
 #include "core/settings/settings.h"
+#include "games/zeus/minimap_part.h"
 #include "games/zeus/side_panel_layout.h"
 
 #include "core/assets/sg3.h"
 #include "core/display/city_layout.h"
 
+#include <algorithm>
 #include <cstring>
 #include <cwchar>
 #include <vector>
@@ -397,6 +399,16 @@ constexpr int kToggleImage = 0x20c;        // the report button's picture (Zeus_
 // minimap_click read it: the army panel's own minimap at the top and the box's are both drawn there.
 constexpr DWORD kMinimapArgs = 0x7d3b08, kMinimapRect = 0x7d3b20;
 constexpr int kMinimapArgsSize = 16, kMinimapRectSize = 24;
+// minimap_center's origin as the last drawing used it, and the map's range (games/zeus/minimap_part).
+const Var<int> kMinimapOriginCol{0x7d3b34};
+const Var<int> kMinimapOriginRow{0x7d3b30};
+const Var<int> kMapColMin{0xfa05b4};
+const Var<int> kMapColMax{0xfa05b0};
+const Var<int> kMapRowMin{0xfa05ac};
+const Var<int> kMapRowMax{0xfa05a8};
+// minimap_center's inputs (games/zeus/minimap_part CenterInputs): the minimap's bounds and the view.
+const Var<int> kMinimapColLo{0x7d3b84}, kMinimapColHi{0x7d3b7c}, kMinimapRowLo{0x7d3b80}, kMinimapRowHi{0x7d3b78};
+const Var<int> kViewportCols{0x7d3bbc}, kViewportRows{0x7d3bb8}, kViewDrawnX{0x7d3bd0}, kViewDrawnY{0x7d3bcc};
 
 // The category panels in the taller column.
 constexpr DWORD kAutoDefendRecord = 0x63ed68 + 3 * kRecordSize; // Military's 4th button (0x28-byte records)
@@ -461,6 +473,8 @@ struct MinimapPlace {
 };
 MinimapPlace g_boxMinimap;
 bool g_boxMinimapSet = false;
+int g_aroundMapRows = -1; // the rows put back around the map last time (logged when it changes)
+bool g_loggedOrigin = false;
 
 const char *const kChoices[] = {"pericles", "original"};
 const char *const kChoiceLabels[] = {"pericles (Pericles style)", "original (the game's own side panel)"};
@@ -522,6 +536,7 @@ void SyncPatches()
     g_backdrop.Forget();
     g_boxBackdrop.has = false;
     g_boxMinimapSet = false;
+    g_aroundMapRows = -1;
     *kScreenRedraw = 1;
     core_log("side panel: %s", want ? "active (no tabs, the column moved up, the box at the bottom)"
                                     : "the game's own side panel here");
@@ -995,13 +1010,49 @@ int MouseCol()
 }
 
 // The box's minimap: the last one drawn (the army panels have none of their own at the top any more), so the
-// game's own input on those panels asks it where it is.
-void DrawBoxMinimap()
+// game's own input on those panels asks it where it is. Around a map smaller than the box, the inset is put back
+// over the game's filler (side_panel_layout PutBackAroundMap).
+void DrawBoxMinimap(const Sidebar16 &s)
 {
-    Function<MinimapDraw_fn>(kMinimapDraw)(*kSidebarX + lay::kMinimapX, lay::kMinimapY, lay::kMinimapCols,
-                                           lay::kMinimapRows);
+    const lay::MinimapDrawing place{*kSidebarX + lay::kMinimapX, lay::kMinimapY, lay::kMinimapCols,
+                                    lay::kMinimapRows};
+    const zeus::minimap_part::MapRange m{*kMapColMin, *kMapColMax, *kMapRowMin, *kMapRowMax};
+    const zeus::minimap_part::CenterInputs c{*kMinimapColLo, *kMinimapColHi, *kMinimapRowLo, *kMinimapRowHi,
+                                             *kViewportCols,  *kViewportRows, *kViewDrawnX,   *kViewDrawnY};
+    // A map larger than the place, at its edge: drawn moved and larger so that the map reaches the place's edge
+    // (inside the box; what is outside the place is put back below).
+    lay::MinimapDrawing d{};
+    const bool redrawn = lay::FitMinimap(place, c, m, &d);
+    Function<MinimapDraw_fn>(kMinimapDraw)(d.x, d.y, d.cols, d.rows);
+    const int originCol = *kMinimapOriginCol, originRow = *kMinimapOriginRow;
+    if ((originCol != zeus::minimap_part::CenterCol(c, d.cols) ||
+         originRow != zeus::minimap_part::CenterRow(c, d.rows)) &&
+        !g_loggedOrigin) {
+        g_loggedOrigin = true;
+        core_log("side panel: the box's minimap: the game's origin (%d,%d) is not the one worked out (%d,%d): the map's "
+                 "part follows the game's",
+                 originCol, originRow, zeus::minimap_part::CenterCol(c, d.cols),
+                 zeus::minimap_part::CenterRow(c, d.rows));
+    }
+    const RECT part = zeus::minimap_part::MapPart(d.x, d.y, originCol, originRow, m);
     SavePlace(&g_boxMinimap);
     g_boxMinimapSet = true;
+    // Only the map, and only within the place.
+    const long pr = place.x + 2L * place.cols, pb = place.y + place.rows;
+    const long l = std::max<long>(part.left, place.x), t = std::max<long>(part.top, place.y);
+    const long r = std::min<long>(part.right, pr), b = std::min<long>(part.bottom, pb);
+    const long bx = *kSidebarX + lay::kBoxX, by = lay::kBoxY;
+    const int rows = lay::PutBackAroundMap(s.px + lay::kBoxY * s.pitch + lay::kBoxX, s.pitch, g_boxBackdrop.px,
+                                           l - bx, t - by, r - bx, b - by);
+    const int logged = rows * 2 + (redrawn ? 1 : 0);
+    if (logged != g_aroundMapRows) {
+        g_aroundMapRows = logged;
+        core_log("side panel: the box's minimap: the map at (%ld,%ld)-(%ld,%ld) of the box (columns %d..%d, half rows "
+                 "%d..%d, origin %d,%d%s): the inset put back on %d row(s) around it",
+                 part.left - bx, part.top - by, part.right - bx, part.bottom - by, m.colMin, m.colMax, m.rowMin,
+                 m.rowMax, *kMinimapOriginCol, *kMinimapOriginRow,
+                 redrawn ? "; drawn moved and larger to reach the place's edges" : "", rows);
+    }
 }
 
 int CharWidth(unsigned char c, void *font)
@@ -1104,7 +1155,7 @@ void DrawBox()
     }
     else {
         g_list.Begin();
-        DrawBoxMinimap();
+        DrawBoxMinimap(s);
     }
     DrawToggle();
 }

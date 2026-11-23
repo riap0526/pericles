@@ -22,6 +22,7 @@
 #include "core/display/city_strips.h"
 #include "core/log.h"
 #include "core/scroll/picture.h"
+#include "games/zeus/minimap_part.h"
 #include "games/zeus/scroll.h"
 #include "games/zeus/site.h"
 #include "games/zeus/state_check.h"
@@ -235,12 +236,8 @@ void DrawStrip(int vx, int vy, int orientation)
 
 using MinimapDraw_fn = void(__cdecl *)(int, int, int, int);
 
-// minimap_draw paints every cell of the view table: outside the map's range (map_col_min .. max, map_row_min ..
-// (max - 1) & ~1) and on cells with no tile a filler picture (seen in testing, and in the
-// decompiled non-editor loop of 0x454980): the map's part of the buffer is worked out here. Its loops
-// start 4 columns and 4 half rows before the origin (0x7d3b34 / 30): the columns before it move x by 2 while they are
-// off the table (below column 0), the rows before it move y by 1 while they are on it, and y starts at y0 - 4. Each
-// cell is 2 px, odd rows (counted from the first loop row) 1 px further left.
+// minimap_draw paints every cell of the view table, the map's part of the buffer is worked out by
+// games/zeus/minimap_part (the drawing's rules are written there).
 const Var<int> kMapColMin{0xfa05b4};
 const Var<int> kMapColMax{0xfa05b0};
 const Var<int> kMapRowMin{0xfa05ac};
@@ -250,16 +247,8 @@ const Var<int> kMinimapRow{0x7d3b30};
 
 RECT MinimapArea(int x0, int y0)
 {
-    const int c34 = *kMinimapCol, c30 = *kMinimapRow;
-    const int xLead = c34 < 4 ? 2 * (4 - c34) : 0;
-    const int yLead = c30 > 4 ? c30 - 4 : 0;
-    const int rowLast = (*kMapRowMax - 1) & ~1;
-    RECT a;
-    a.left = x0 + xLead + 2 * (*kMapColMin - c34) - 1;
-    a.right = x0 + xLead + 2 * (*kMapColMax - c34) + 2; // exclusive: the last cell's two pixels
-    a.top = y0 - 4 + *kMapRowMin - yLead;
-    a.bottom = y0 - 4 + rowLast - yLead + 1;
-    return a;
+    const zeus::minimap_part::MapRange m{*kMapColMin, *kMapColMax, *kMapRowMin, *kMapRowMax};
+    return zeus::minimap_part::MapPart(x0, y0, *kMinimapCol, *kMinimapRow, m);
 }
 
 void DrawMinimap(core::diag::Restore &r, BYTE *buf, int pitchPx, int rows, int x0, int y0, RECT *area)

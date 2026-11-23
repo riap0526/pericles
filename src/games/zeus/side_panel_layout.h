@@ -10,6 +10,8 @@
 // top edge there; Emperor's title has none then either, only its lit font says it can be clicked).
 #pragma once
 
+#include "games/zeus/minimap_part.h"
+
 namespace zeus::side_panel_layout {
 
 // The hover numbers (hover_button 0x781834) of the buttons whose names the name bar shows.
@@ -259,6 +261,26 @@ constexpr int kTallX = 11, kTallW = 172;
 // sidebar's left edge and row 0, `pitch` pixels a row; height at least kLayoutH): the edges and the plain row, and the
 // button row at its new place. The inset panels are drawn over it afterwards (the game's tiles).
 void LowerHalf(Px *sidebar, int pitch, int height);
+
+// A map smaller than the minimap's place: minimap_draw fills the rest with a filler picture that cannot be clicked
+// (games/zeus/minimap_part). The box's inset (`backdrop`, kBoxW x kBoxH) is put back on screen (`box`: the box's
+// first pixel, `pitch` pixels a row) everywhere in the box outside `part` (the map's rectangle in box coordinates,
+// right and bottom exclusive), as Emperor's sidebar shows only the map. A map as large as the box: nothing changes.
+// Returns the number of rows touched.
+int PutBackAroundMap(Px *box, int pitch, const Px *backdrop, long partLeft, long partTop, long partRight,
+                     long partBottom);
+
+// At the map's edges minimap_center keeps its origin a little outside the map (2 half rows above it, 1 or 2 below,
+// a column to the left: its bounds, not the map's range), so a map larger than the place leaves a gap of filler on
+// that side. The drawing that closes it: the origin worked out as minimap_center will (games/zeus/minimap_part),
+// for each direction the smallest move and growth, within the box's margins around the place, that puts the map's
+// edges at or beyond the place's on both sides. A map smaller than the place in a direction, or no such drawing:
+// that direction as placed. Returns false when the drawing is the place itself.
+struct MinimapDrawing {
+    int x, y, cols, rows;
+};
+bool FitMinimap(const MinimapDrawing &place, const zeus::minimap_part::CenterInputs &c,
+                const zeus::minimap_part::MapRange &m, MinimapDrawing *out);
 
 // Where a point (sidebar column, screen row) is.
 bool OnToggle(int col, int y);

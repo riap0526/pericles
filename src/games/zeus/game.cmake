@@ -6,9 +6,9 @@
 # carry a suffix (e.g. "-dev") so their logs are not taken for a release; empty for a release.
 set(GAME_PROJECT zeus_engine)
 set(GAME_VERSION 0.1.0)
-set(GAME_VERSION_SUFFIX "-dev")
+set(GAME_VERSION_SUFFIX "")
 set(GAME_PRODUCT "Pericles")
-set(GAME_DESCRIPTION "Pericles: modern display layer for Zeus: Master of Olympus")
+set(GAME_DESCRIPTION "Pericles: modern display and quality-of-life layer for Zeus: Master of Olympus")
 
 # The settings file this version ships (copied next to the DLL and embedded in it), and the namespace of the
 # generated header that holds it (games/zeus/zeus.cpp: core::settings::SetTemplate).

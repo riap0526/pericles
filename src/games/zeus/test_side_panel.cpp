@@ -76,6 +76,7 @@
 //   panel_fault  a fault in the requests' input: off, every change back (the world map's too), the game's own
 #include "core/diag/guard.h"
 #include "core/log.h"
+#include "games/zeus/minimap_part.h"
 #include "games/zeus/side_panel.h"
 #include "games/zeus/side_panel_layout.h"
 #include "games/zeus/site.h"
@@ -83,6 +84,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -543,11 +545,20 @@ void __cdecl FakeUnitsMinimap(int)
 {
     ++g_box.unitsMinimap;
 }
+bool g_minimapPaint = false;               // the fake paints its whole place (map and filler alike) with this
+constexpr unsigned short kMinimapPx = 0x5555;
 void __cdecl FakeMinimapDraw(int x, int y, int cols, int rows) // its place written as the game does
 {
     ++g_box.minimapDraw;
     if (g_minimapFaults) {
         *reinterpret_cast<volatile int *>(0x10) = 1;
+    }
+    if (g_minimapPaint) {
+        for (int py = y; py < y + rows && py < kH; ++py) {
+            for (int px = x; px < x + cols * 2 && px < kW; ++px) {
+                Px(px, py) = kMinimapPx;
+            }
+        }
     }
     const int a[4] = {x, y, cols, rows};
     std::memcpy(g_box.minimapArgs, a, sizeof(a));
@@ -559,7 +570,12 @@ void __cdecl FakeMinimapDraw(int x, int y, int cols, int rows) // its place writ
     At<int>(aMinimapRect + 8) = y;             // top
     At<int>(aMinimapRect + 4) = x + cols * 2;  // right
     At<int>(aMinimapRect + 0) = y + rows;      // bottom
-    At<int>(aMinimapRect + 16) = 77;           // its origin
+    // Its origin as minimap_center works it out from the bounds and the view in memory.
+    const zeus::minimap_part::CenterInputs c{At<int>(0x7d3b84), At<int>(0x7d3b7c), At<int>(0x7d3b80),
+                                             At<int>(0x7d3b78), At<int>(0x7d3bbc), At<int>(0x7d3bb8),
+                                             At<int>(0x7d3bd0), At<int>(0x7d3bcc)};
+    At<int>(0x7d3b34) = zeus::minimap_part::CenterCol(c, cols);
+    At<int>(0x7d3b30) = zeus::minimap_part::CenterRow(c, rows);
 }
 int __cdecl FakeMinimapClick(int)
 {
@@ -1640,6 +1656,80 @@ void BoxRules()
     Check(lay::OnMinimap(12, 515) && lay::OnMinimap(177, 726) && !lay::OnMinimap(11, 600) &&
               !lay::OnMinimap(178, 600) && !lay::OnMinimap(100, 727),
           "the minimap: 166 x 212 at (12, 515)");
+
+    // The map's part of a minimap drawing: the minimap picture's case seen in the game (columns 59..171, half rows
+    // 116..340, origin (0, 0), drawn at (8, 8): (133,120)-(360,343)), and an origin past the loops' lead.
+    {
+        const zeus::minimap_part::MapRange m{59, 171, 116, 340};
+        const RECT a = zeus::minimap_part::MapPart(8, 8, 0, 0, m);
+        Check(a.left == 133 && a.top == 120 && a.right == 360 && a.bottom == 343,
+              "the map's part: the minimap picture's case as the game drew it");
+        const RECT b = zeus::minimap_part::MapPart(100, 515, 60, 120, m);
+        Check(b.left == 100 - 1 - 2 && b.right == 100 + 2 * 111 + 2 && b.top == 515 - 4 + 116 - 116 &&
+                  b.bottom == 515 - 4 + 338 - 116 + 1,
+              "the map's part: an origin inside the map (no x lead, y lead origin - 4)");
+    }
+    // minimap_center as the game has it, and the drawing fitted to a large map's edges. The cases seen in the game's
+    // log: Thebes (columns 59..171, half rows 116..340) with the bounds 58..171 and 114..341 (origins 58..88 and
+    // 114..128 seen at its edges), Thera smaller than the place (origin 74, 122).
+    {
+        namespace mp = zeus::minimap_part;
+        const mp::MapRange thebes{59, 171, 116, 340};
+        auto Inputs = [](int viewX, int viewY) { return mp::CenterInputs{58, 171, 114, 341, 40, 40, viewX, viewY}; };
+        Check(mp::CenterCol(Inputs(91, 0), 83) == 70 && mp::CenterCol(Inputs(0, 0), 83) == 58 &&
+                  mp::CenterCol(Inputs(400, 0), 83) == 88 && mp::CenterCol(Inputs(400, 0), 84) == 87,
+              "minimap_center's column: the view's middle, kept within the bounds (the top one moves with w)");
+        Check(mp::CenterRow(Inputs(0, 211), 212) == 124 && mp::CenterRow(Inputs(0, 0), 212) == 114 &&
+                  mp::CenterRow(Inputs(0, 0), 214) == 114 && mp::CenterRow(Inputs(0, 400), 212) == 128 &&
+                  mp::CenterRow(Inputs(0, 400), 213) == 128 && mp::CenterRow(Inputs(0, 400), 214) == 126,
+              "minimap_center's half row: kept within the bounds and made even (a row more does not move it)");
+        const mp::CenterInputs thera{80, 150, 156, 299, 40, 40, 100, 200};
+        Check(mp::CenterCol(thera, 83) == 74 && mp::CenterRow(thera, 212) == 122,
+              "a map smaller than the place: the view table's middle (Thera's 74, 122)");
+
+        const lay::MinimapDrawing place{100, 515, 83, 212};
+        lay::MinimapDrawing d{};
+        Check(!lay::FitMinimap(place, Inputs(91, 211), thebes, &d) && d.x == 100 && d.y == 515 && d.cols == 83 &&
+                  d.rows == 212,
+              "inside a large map: drawn as placed");
+        Check(lay::FitMinimap(place, Inputs(91, 0), thebes, &d) && d.x == 100 && d.cols == 83 && d.y == 513 &&
+                  d.rows == 214,
+              "at its top (origin half row 114, the map 2 rows down): 2 rows up and 2 more");
+        Check(lay::FitMinimap(place, Inputs(91, 400), thebes, &d) && d.y == 515 && d.rows == 214,
+              "at its bottom (origin 128, the map 1 row short): 2 rows more, the origin 126");
+        Check(lay::FitMinimap(place, Inputs(0, 211), thebes, &d) && d.x == 99 && d.cols == 84 && d.y == 515 &&
+                  d.rows == 212,
+              "at its left (origin column 58, the map 1 px in): 1 px left and a column more");
+        Check(!lay::FitMinimap(place, Inputs(400, 211), thebes, &d), "at its right edge the map reaches the place");
+        Check(!lay::FitMinimap(place, thera, {81, 149, 158, 298}, &d), "a map smaller than the place: as placed");
+        for (const auto &v : {Inputs(91, 0), Inputs(91, 400), Inputs(0, 211), Inputs(0, 0), Inputs(400, 400)}) {
+            lay::FitMinimap(place, v, thebes, &d);
+            const RECT a = mp::MapPart(d.x, d.y, mp::CenterCol(v, d.cols), mp::CenterRow(v, d.rows), thebes);
+            Check(a.left <= 100 && a.right >= 266 && a.top <= 515 && a.bottom >= 727 && d.x >= 97 && d.y >= 512 &&
+                      d.x + 2 * d.cols <= 269 && d.y + d.rows <= 730 && d.x <= 100 && d.y <= 515 &&
+                      d.x + 2 * d.cols >= 266 && d.y + d.rows >= 727,
+                  "every edge and corner: the map covers the place, the drawing covers it and stays in the box");
+        }
+    }
+    // The inset put back around the map (a box of 1 for the inset, 2 for the game's drawing).
+    {
+        std::vector<lay::Px> box(static_cast<size_t>(lay::kBoxW) * lay::kBoxH, 2), backdrop(box.size(), 1);
+        auto At2 = [&](int x, int y) { return box[static_cast<size_t>(y) * lay::kBoxW + x]; };
+        int rows = lay::PutBackAroundMap(box.data(), lay::kBoxW, backdrop.data(), 20, 30, 120, 150);
+        Check(rows == lay::kBoxH && At2(0, 0) == 1 && At2(19, 30) == 1 && At2(20, 30) == 2 && At2(119, 149) == 2 &&
+                  At2(120, 30) == 1 && At2(171, 100) == 1 && At2(60, 29) == 1 && At2(60, 150) == 1 &&
+                  At2(171, 217) == 1,
+              "a small map: the inset put back on every side, the map left as drawn");
+        std::fill(box.begin(), box.end(), 2);
+        rows = lay::PutBackAroundMap(box.data(), lay::kBoxW, backdrop.data(), -1, -40, 300, 400);
+        Check(rows == 0 && At2(0, 0) == 2 && At2(171, 217) == 2, "a map as large as the box: nothing changed");
+        rows = lay::PutBackAroundMap(box.data(), lay::kBoxW, backdrop.data(), -5, 10, 400, 400);
+        Check(rows == 10 && At2(0, 9) == 1 && At2(171, 9) == 1 && At2(0, 10) == 2 && At2(171, 217) == 2,
+              "wider than the box: only the rows above the map");
+        std::fill(box.begin(), box.end(), 2);
+        rows = lay::PutBackAroundMap(box.data(), lay::kBoxW, backdrop.data(), 50, 50, 50, 60);
+        Check(rows == lay::kBoxH && At2(50, 55) == 1, "no map at all: the whole inset back");
+    }
     Check(lay::OnList(8, 515) && lay::OnList(163, 727) && !lay::OnList(164, 600) && !lay::OnList(7, 600) &&
               !lay::OnList(50, 514),
           "the message box as clicked: its columns 8..163, the box's rows (both ends in)");
@@ -1789,6 +1879,95 @@ void Box()
           "the minimap in the box on both calls: (sidebar_x + 12, 515), 83 x 212");
     Check(DrawnAt(9100, kSx + 160, 515), "the toggle: the report button's picture at (160, 515)");
     Check(g_box.wrapped == 0, "no messages while the box shows the minimap");
+    // The minimap's bounds and view in memory (the fake works the origin out from them as minimap_center does).
+    // Thera, smaller than the box (origin 74, 122): the game's filler around it covered with the inset.
+    {
+        auto Bounds = [](int colLo, int colHi, int rowLo, int rowHi, int viewX, int viewY) {
+            At<int>(0x7d3b84) = colLo;
+            At<int>(0x7d3b7c) = colHi;
+            At<int>(0x7d3b80) = rowLo;
+            At<int>(0x7d3b78) = rowHi;
+            At<int>(0x7d3bbc) = 40;
+            At<int>(0x7d3bb8) = 40;
+            At<int>(0x7d3bd0) = viewX;
+            At<int>(0x7d3bcc) = viewY;
+        };
+        auto Map = [](int colMin, int colMax, int rowMin, int rowMax) {
+            At<int>(0xfa05b4) = colMin;
+            At<int>(0xfa05b0) = colMax;
+            At<int>(0xfa05ac) = rowMin;
+            At<int>(0xfa05a8) = rowMax;
+        };
+        Bounds(80, 150, 156, 299, 100, 200);
+        Map(81, 149, 158, 298);
+        ColumnFrame(false);
+        const RECT part = zeus::minimap_part::MapPart(kSx + 12, 515, 74, 122, {81, 149, 158, 298});
+        Check(At<int>(0x7d3b34) == 74 && At<int>(0x7d3b30) == 122 && part.left == kSx + 9 + 16 &&
+                  part.top == 512 + 39 && part.right == kSx + 9 + 155 && part.bottom == 512 + 178,
+              "Thera: its part (16,39)-(155,178) of the box, as the game's log has it");
+        std::vector<unsigned short> inset;
+        for (int y = 512; y < 730; ++y) {
+            for (int x = kSx + 9; x < kSx + 181; ++x) {
+                inset.push_back(Px(x, y));
+            }
+        }
+        auto InsetPx = [&](int x, int y) { return inset[static_cast<size_t>(y - 512) * 172 + (x - kSx - 9)]; };
+        g_minimapPaint = true;
+        ColumnFrame(false);
+        g_minimapPaint = false;
+        const int mx = (part.left + part.right) / 2, my = (part.top + part.bottom) / 2;
+        Check(Px(part.left, part.top) == kMinimapPx && Px(part.right - 1, part.bottom - 1) == kMinimapPx &&
+                  Px(mx, my) == kMinimapPx,
+              "a small map: the map as the game drew it");
+        Check(Px(part.left - 1, my) == InsetPx(part.left - 1, my) && Px(part.right, my) == InsetPx(part.right, my) &&
+                  Px(mx, part.top - 1) == InsetPx(mx, part.top - 1) &&
+                  Px(mx, part.bottom) == InsetPx(mx, part.bottom) && Px(kSx + 12, 515) == InsetPx(kSx + 12, 515) &&
+                  Px(kSx + 177, 726) == InsetPx(kSx + 177, 726),
+              "a small map: the inset around it, not the game's filler");
+        // Thebes, larger than the box (bounds 58..171, 114..341).
+        Map(59, 171, 116, 340);
+        struct Case {
+            int viewX, viewY;
+            int x, y, cols, rows; // the drawing expected
+            const char *what;
+        } const cases[] = {
+            {91, 211, kSx + 12, 515, 83, 212, "Thebes in the middle: drawn as placed, the whole place the map"},
+            {91, 0, kSx + 12, 513, 83, 214, "at its top: 2 rows up and 2 more, the whole place the map"},
+            {91, 400, kSx + 12, 515, 83, 214, "at its bottom: 2 rows more, the whole place the map"},
+            {0, 211, kSx + 11, 515, 84, 212, "at its left: 1 px left and a column more, the whole place the map"},
+            {0, 0, kSx + 11, 513, 84, 214, "at its top left corner: both, the whole place the map"},
+        };
+        for (const Case &k : cases) {
+            Bounds(58, 171, 114, 341, k.viewX, k.viewY);
+            g_box.minimapDraw = 0;
+            g_minimapPaint = true;
+            ColumnFrame(false);
+            g_minimapPaint = false;
+            bool full = true;
+            for (int y = 515; y < 727; ++y) {
+                for (int x = kSx + 12; x < kSx + 178; ++x) {
+                    full = full && Px(x, y) == kMinimapPx;
+                }
+            }
+            bool margin = true; // the box's margin around the place: the inset
+            for (int x = kSx + 9; x < kSx + 181; ++x) {
+                for (int y : {512, 513, 514, 727, 728, 729}) {
+                    margin = margin && Px(x, y) == InsetPx(x, y);
+                }
+            }
+            for (int y = 515; y < 727; ++y) {
+                for (int x : {kSx + 9, kSx + 10, kSx + 11, kSx + 178, kSx + 179, kSx + 180}) {
+                    margin = margin && Px(x, y) == InsetPx(x, y);
+                }
+            }
+            Check(g_box.minimapDraw == 1 && g_box.minimapArgs[0] == k.x && g_box.minimapArgs[1] == k.y &&
+                      g_box.minimapArgs[2] == k.cols && g_box.minimapArgs[3] == k.rows && full && margin,
+                  k.what);
+        }
+        Bounds(58, 171, 114, 341, 91, 211); // back in the middle: drawn as placed for what follows
+        ColumnFrame(false);
+        g_box = {};
+    }
     g_box = {};
     ListDraw();
     Check(g_box.listDraw == 0 && g_box.wrapped == 0, "the game's message box draws nothing (the box does)");

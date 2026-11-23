@@ -1,5 +1,8 @@
 #include "games/zeus/side_panel_layout.h"
 
+#include <algorithm>
+#include <cstring>
+
 namespace zeus::side_panel_layout {
 
 bool BuildButton(int hover)
@@ -280,6 +283,88 @@ void MoveUnits(Px *sidebar, int pitch)
 bool OnToggle(int col, int y)
 {
     return col >= kToggleX && col < kToggleX + kToggleSize && y >= kToggleY && y < kToggleY + kToggleSize;
+}
+
+int PutBackAroundMap(Px *box, int pitch, const Px *backdrop, long partLeft, long partTop, long partRight,
+                     long partBottom)
+{
+    const long left = std::clamp<long>(partLeft, 0, kBoxW), right = std::clamp<long>(partRight, left, kBoxW);
+    const long top = std::clamp<long>(partTop, 0, kBoxH), bottom = std::clamp<long>(partBottom, top, kBoxH);
+    int touched = 0;
+    for (int y = 0; y < kBoxH; ++y) {
+        Px *row = box + y * pitch;
+        const Px *from = backdrop + y * kBoxW;
+        if (y < top || y >= bottom || left >= right) {
+            std::memcpy(row, from, kBoxW * sizeof(Px));
+            ++touched;
+            continue;
+        }
+        if (left > 0 || right < kBoxW) {
+            std::memcpy(row, from, static_cast<size_t>(left) * sizeof(Px));
+            std::memcpy(row + right, from + right, static_cast<size_t>(kBoxW - right) * sizeof(Px));
+            ++touched;
+        }
+    }
+    return touched;
+}
+
+bool FitMinimap(const MinimapDrawing &place, const zeus::minimap_part::CenterInputs &c,
+                const zeus::minimap_part::MapRange &m, MinimapDrawing *out)
+{
+    namespace mp = zeus::minimap_part;
+    // The box's margins around the place: a larger drawing stays inside the box (its inset is put back there).
+    constexpr int kLeftMargin = kMinimapX - kBoxX, kTopMargin = kMinimapY - kBoxY;
+    constexpr int kRightMargin = kBoxX + kBoxW - (kMinimapX + kMinimapW);
+    constexpr int kBottomMargin = kBoxY + kBoxH - (kMinimapY + kMinimapRows);
+    const long left = place.x, right = place.x + 2L * place.cols, top = place.y, bottom = place.y + place.rows;
+    MinimapDrawing d = place;
+    // Columns: x moved left by dx, dw columns more; the drawing within [left - kLeftMargin, right + kRightMargin].
+    auto PartCols = [&](int x, int w) {
+        return mp::MapPart(x, place.y, mp::CenterCol(c, w), mp::CenterRow(c, place.rows), m);
+    };
+    const RECT asPlaced = PartCols(place.x, place.cols);
+    if (asPlaced.right - asPlaced.left >= right - left && (asPlaced.left > left || asPlaced.right < right)) {
+        bool found = false;
+        for (int cost = 1; cost <= kLeftMargin + kRightMargin && !found; ++cost) {
+            for (int dx = 0; dx <= std::min(cost, kLeftMargin) && !found; ++dx) {
+                const int dw = cost - dx; // columns: 2 px each; the drawing still covers the place
+                if (2 * dw - dx > kRightMargin || 2 * dw < dx) {
+                    continue;
+                }
+                const RECT a = PartCols(place.x - dx, place.cols + dw);
+                if (a.left <= left && a.right >= right) {
+                    d.x = place.x - dx;
+                    d.cols = place.cols + dw;
+                    found = true;
+                }
+            }
+        }
+    }
+    // Half rows likewise: y moved up by dy, dh rows more.
+    auto PartRows = [&](int y, int h) {
+        return mp::MapPart(place.x, y, mp::CenterCol(c, place.cols), mp::CenterRow(c, h), m);
+    };
+    const RECT asPlacedRows = PartRows(place.y, place.rows);
+    if (asPlacedRows.bottom - asPlacedRows.top >= bottom - top &&
+        (asPlacedRows.top > top || asPlacedRows.bottom < bottom)) {
+        bool found = false;
+        for (int cost = 1; cost <= 2 * kTopMargin + kBottomMargin && !found; ++cost) {
+            for (int dy = 0; dy <= std::min(cost, kTopMargin) && !found; ++dy) {
+                const int dh = cost - dy;
+                if (dh - dy > kBottomMargin || dh < dy) {
+                    continue;
+                }
+                const RECT a = PartRows(place.y - dy, place.rows + dh);
+                if (a.top <= top && a.bottom >= bottom) {
+                    d.y = place.y - dy;
+                    d.rows = place.rows + dh;
+                    found = true;
+                }
+            }
+        }
+    }
+    *out = d;
+    return d.x != place.x || d.y != place.y || d.cols != place.cols || d.rows != place.rows;
 }
 
 bool OnMinimap(int col, int y)

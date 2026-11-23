@@ -45,12 +45,13 @@
 // and the output frames it (the core's OnLoop calls the game's own screen_switch_mode 0x5c4a30, __cdecl mode, as its
 // F7 does). Overlays (menus, messages, the file dialog) keep the screen beneath. The world map, the campaign map and
 // the editor's world map run at the city's resolution (their layout: games/zeus/world_map).
-// Shift+F7 cycles a few settings until the game ends (on a front-end screen it applies on the next city screen). F6
-// and F7 stay the game's (F6: the game's own 800x600; F7: mode 3, i.e. ours).
+// Shift+F7 cycles a few settings until the game ends (on a front-end screen it applies on the next city screen). The
+// game's own F6 (800x600) and F7 (1024x768) never reach the game: with our resolutions it stays in mode 3 (the key
+// bindings in games/zeus/keys block them; KeyFilter below blocks F6 when the bindings are off after an error).
 // The game's own screenshot (Alt+1 / Alt+2 in the city: game_wndproc -> 0x42c700 -> bmp_screenshot 0x50b030,
 // shot1.bmp / shot2.bmp; __cdecl file name, the caller pops) puts the picture into a fixed 0x2f4d60-byte buffer: enough
 // for 1024x768 x 3 bytes, not for larger modes (it would write past it, the crash Emperor had at 0x52abc0). As in
-// Emperor's layer (keys.cpp) it is not run; F11 takes our screenshots.
+// Emperor's layer (games/emperor/resolution) it is not run; F11 takes our screenshots.
 //
 // Failure (each part's guard): switching (mode size, changing it, Shift+F7; the core's guard) -> the game's own
 // 1024x768 from the next loop; city layout (sidebar, viewport) -> the 1024 layout's values at once, then the game's
